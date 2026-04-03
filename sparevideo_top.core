@@ -1,0 +1,33 @@
+CAPI=2:
+name: "opensoc:video:vga_top"
+description: "VGA top-level with pattern generator"
+
+filesets:
+  files_rtl:
+    depend:
+      - "opensoc:ip:vga"
+    files:
+      - hw/top/vga_top.sv
+    file_type: systemVerilogSource
+
+  files_lint:
+    files:
+      - hw/lint/verilator_waiver.vlt: {file_type: vlt}
+
+targets:
+  default:
+    filesets:
+      - files_rtl
+    toplevel: vga_top
+
+  lint:
+    filesets:
+      - files_rtl
+      - files_lint
+    toplevel: vga_top
+    default_tool: verilator
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - "-Wall"

@@ -1,0 +1,15 @@
+CAPI=2:
+name: "opensoc:ip:vga"
+description: "VGA controller and pattern generator"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/vga_controller.sv
+      - rtl/pattern_gen.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

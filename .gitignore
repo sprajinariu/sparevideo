@@ -1,3 +1,13 @@
+# Simulation artifacts
+*.vvp
+*.vcd
+sim_build/
+results.xml
+dv/cocotb/output/
+
+# FuseSoC build
+build/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
