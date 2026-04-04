@@ -102,3 +102,34 @@ Cocotb tests (`dv/cocotb/test_vga.py`):
 - clean-up large files (e.g. VCDs, simulation outputs, binaries), don't upload them to git
 
 ## General guidelines
+
+### Workflow
+
+- Always run `make lint` after any RTL change to catch Verilator warnings early.
+- After RTL changes, run `make sim-sv` to verify basic timing and pixel correctness before touching cocotb.
+- Use `make viz` (or `make viz PATTERN=N`) to visually verify output — it's the fastest feedback loop (~3s/pattern).
+- Run `make sim` (cocotb) for final verification — it takes a few minutes, so don't run it on every iteration.
+
+### RTL changes
+
+- All RTL is in `hw/ip/vga/rtl/` and `hw/top/`. Keep modules small and focused.
+- Never use `reg`/`wire` — always `logic`. Never use `always` — always `always_ff` or `always_comb`.
+- Do not put bit-selects (e.g. `pixel_x[9:2]`) inside `always_comb` blocks — Icarus 12 rejects them. Use intermediate `assign` signals instead.
+- Adding a new pattern: edit `pattern_gen.sv` and add a new case in the `always_comb` pattern mux. Update `tb_vga_top.sv` pixel spot-checks, `test_vga.py`, `README.md`, and `CLAUDE.md` timing tables if needed.
+
+### Testbench / verification
+
+- The SV testbench (`dv/sv/tb_vga_top.sv`) uses `$display`/`$error` and `if` checks — no SVA. Do not introduce `assert` statements (Icarus 12 does not support them in this context).
+- cocotb tests use edge triggers (`FallingEdge`, `RisingEdge`) for timing and `ClockCycles` for bulk navigation to pixel positions. Avoid per-clock polling loops — they are too slow with Icarus VPI.
+- Do not add per-frame pixel capture in cocotb — use `make viz` (SV `$fwrite` path) for visual output instead.
+
+### Visualization
+
+- `make viz` runs two steps: (1) Icarus simulates `tb_vga_viz.sv` and dumps a raw `.bin`, (2) Python `viz.py` converts to PNG. Both must stay consistent with the frame format (3 bytes/pixel, row-major, 640×480).
+- Output PNGs go to `dv/cocotb/output/` which is gitignored. Do not commit `.bin` or `.png` files.
+
+### Python environment
+
+- All Python tooling runs from the venv at `.venv/`. Never use system Python directly.
+- The root Makefile prepends `.venv/bin` to PATH before invoking cocotb sub-make — don't remove this.
+- If adding a new Python dependency, add it to `requirements.txt`.

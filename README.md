@@ -39,14 +39,17 @@ dv/cocotb/
 ## Setup
 
 ```bash
-# Install Icarus Verilog (if not already installed)
-sudo apt install -y iverilog
+# Install Icarus Verilog, Verilator, and GTKWave
+sudo apt install -y iverilog verilator gtkwave
+
+# Install FuseSoC
+pip install fusesoc
 
 # Create Python venv and install cocotb + Pillow
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
-# Or use the setup target:
+# Or use the setup target (installs iverilog + Python deps):
 make setup
 ```
 
@@ -74,9 +77,13 @@ make viz PATTERN=0
 
 ## Visualization
 
-`make viz` simulates the actual RTL at native Icarus speed (no cocotb overhead), dumps raw pixel data via `$fwrite`, and converts to PNG with Pillow. This is the fast path for visually inspecting VGA output — all 4 patterns complete in ~12 seconds.
+`make viz` is a two-step pipeline:
 
-Output PNGs are saved to `dv/cocotb/output/`.
+1. **Icarus Verilog** compiles and runs `dv/sv/tb_vga_viz.sv` — a dedicated SV testbench that instantiates the actual RTL (`vga_top`), drives the clock, and captures one frame of VGA output by writing raw RGB bytes to a `.bin` file via `$fwrite`. No cocotb/VPI overhead — runs at native simulator speed.
+
+2. **Python (`dv/cocotb/viz.py`)** reads the `.bin` file (921,600 bytes = 640×480×3) and converts it to a PNG using Pillow.
+
+All 4 patterns complete in ~12 seconds. Output PNGs are saved to `dv/cocotb/output/`.
 
 ## VGA Controller Interface
 
