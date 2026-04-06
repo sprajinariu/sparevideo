@@ -1,59 +1,103 @@
 FUSESOC    := fusesoc
 CORES_ROOT := --cores-root=. --cores-root=hw/ip/vga
 VENV_PY    := $(CURDIR)/.venv/bin/python3
-VIZ_SCRIPT := dv/cocotb/viz.py
-VIZ_OUT    := dv/cocotb/output
+HARNESS    := $(VENV_PY) $(CURDIR)/py/harness.py
+DATA_DIR   := dv/data
 
-.PHONY: help lint sim-sv sim-sv-waves sim viz setup clean
+# Simulation configuration
+SOURCE     ?= synthetic:color_bars
+WIDTH      ?= 320
+HEIGHT     ?= 240
+FRAMES     ?= 4
+MODE       ?= text
+
+# Derived file paths
+ifeq ($(MODE),binary)
+  PIPE_INFILE  = $(DATA_DIR)/input.bin
+  PIPE_OUTFILE = $(DATA_DIR)/output.bin
+else
+  PIPE_INFILE  = $(DATA_DIR)/input.txt
+  PIPE_OUTFILE = $(DATA_DIR)/output.txt
+endif
+
+.PHONY: help lint run-pipeline prepare sim sim-dry-run verify render sim-waves setup clean
 
 help:
 	@echo "Usage: make <target>"
 	@echo ""
-	@echo "  lint          Run Verilator lint on all RTL"
-	@echo "  sim-sv        Run SV testbench (iverilog)"
-	@echo "  sim-sv-waves  Run SV testbench + open GTKWave"
-	@echo "  sim           Run cocotb tests — timing + pixel checks"
-	@echo "  viz           Simulate all 4 patterns and save PNGs (fast, RTL-based)"
-	@echo "  viz PATTERN=N Simulate a single pattern (0-3) and save PNG"
-	@echo "  setup         One-time setup (install deps)"
-	@echo "  clean         Remove build artifacts"
+	@echo "  run-pipeline   Run full pipeline (see below)"
+	@echo "  lint           Run Verilator lint on all RTL"
+	@echo "  setup          One-time setup (install deps)"
+	@echo "  clean          Remove build artifacts"
+	@echo ""
+	@echo "  run-pipeline runs these steps in order:"
+	@echo "    1. prepare   Generate input frames from SOURCE"
+	@echo "    2. sim       Run RTL simulation (feed input → DUT → capture output)"
+	@echo "    3. verify    Check output matches input (passthrough)"
+	@echo "    4. render    Save input vs output comparison PNG"
+	@echo ""
+	@echo "  Each step can also be run individually, e.g. to re-run sim after"
+	@echo "  an RTL change without re-preparing input."
+	@echo ""
+	@echo "  Additional targets:"
+	@echo "    sim-dry-run  Bypass RTL (file loopback, zero sim time)"
+	@echo "    sim-waves    RTL simulation + open GTKWave"
+	@echo ""
+	@echo "  Options:"
+	@echo "    SOURCE=synthetic:color_bars  Input source (synthetic:<pattern>, path/to/video.mp4)"
+	@echo "    WIDTH=320                    Frame width"
+	@echo "    HEIGHT=240                   Frame height"
+	@echo "    FRAMES=4                     Number of frames"
+	@echo "    MODE=text|binary             File format (default: text)"
 
-lint:
-	$(FUSESOC) $(CORES_ROOT) run --target=lint opensoc:video:vga_top
+# ---- Main pipeline flow ----
 
-sim-sv:
-	$(MAKE) -C dv/sv sim
+run-pipeline: prepare sim verify render
+	@echo "Pipeline complete!"
 
-sim-sv-waves:
-	$(MAKE) -C dv/sv sim-waves
+prepare:
+	@mkdir -p $(DATA_DIR)/renders
+	cd py && $(HARNESS) prepare \
+		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
+		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
 
 sim:
-	PATH=$(CURDIR)/.venv/bin:$$PATH $(MAKE) -C dv/cocotb
+	$(MAKE) -C dv/sim sim \
+		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
+		MODE=$(MODE) \
+		INFILE=$(CURDIR)/$(PIPE_INFILE) \
+		OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
-# Visualization: simulate RTL at native speed, dump raw pixels, convert to PNG.
-# With PATTERN=N: single pattern. Without: all 4 patterns.
-ifdef PATTERN
-viz:
-	@mkdir -p $(VIZ_OUT)
-	$(MAKE) -C dv/sv viz PATTERN=$(PATTERN) OUTFILE=$(CURDIR)/$(VIZ_OUT)/pattern_$(PATTERN).bin
-	$(VENV_PY) $(VIZ_SCRIPT) $(VIZ_OUT)/pattern_$(PATTERN).bin $(VIZ_OUT)/pattern_$(PATTERN).png
-else
-viz:
-	@mkdir -p $(VIZ_OUT)
-	@echo "--- Pattern 0: color_bars ---"
-	@$(MAKE) --no-print-directory -C dv/sv viz PATTERN=0 OUTFILE=$(CURDIR)/$(VIZ_OUT)/color_bars.bin
-	@$(VENV_PY) $(VIZ_SCRIPT) $(VIZ_OUT)/color_bars.bin $(VIZ_OUT)/color_bars.png
-	@echo "--- Pattern 1: checkerboard ---"
-	@$(MAKE) --no-print-directory -C dv/sv viz PATTERN=1 OUTFILE=$(CURDIR)/$(VIZ_OUT)/checkerboard.bin
-	@$(VENV_PY) $(VIZ_SCRIPT) $(VIZ_OUT)/checkerboard.bin $(VIZ_OUT)/checkerboard.png
-	@echo "--- Pattern 2: solid_red ---"
-	@$(MAKE) --no-print-directory -C dv/sv viz PATTERN=2 OUTFILE=$(CURDIR)/$(VIZ_OUT)/solid_red.bin
-	@$(VENV_PY) $(VIZ_SCRIPT) $(VIZ_OUT)/solid_red.bin $(VIZ_OUT)/solid_red.png
-	@echo "--- Pattern 3: gradient ---"
-	@$(MAKE) --no-print-directory -C dv/sv viz PATTERN=3 OUTFILE=$(CURDIR)/$(VIZ_OUT)/gradient.bin
-	@$(VENV_PY) $(VIZ_SCRIPT) $(VIZ_OUT)/gradient.bin $(VIZ_OUT)/gradient.png
-	@echo "All patterns saved to $(VIZ_OUT)/"
-endif
+verify:
+	cd py && $(HARNESS) verify \
+		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
+		--mode $(MODE)
+
+render:
+	@mkdir -p $(DATA_DIR)/renders
+	cd py && $(HARNESS) render \
+		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
+		--mode $(MODE) \
+		--render-output $(CURDIR)/$(DATA_DIR)/renders/comparison.png
+
+# ---- Additional targets ----
+
+lint:
+	$(FUSESOC) $(CORES_ROOT) run --target=lint opensoc:video:sparesoc_top
+
+sim-dry-run:
+	$(MAKE) -C dv/sim sim-dry-run \
+		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
+		MODE=$(MODE) \
+		INFILE=$(CURDIR)/$(PIPE_INFILE) \
+		OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
+
+sim-waves:
+	$(MAKE) -C dv/sim sim-waves \
+		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
+		MODE=$(MODE) \
+		INFILE=$(CURDIR)/$(PIPE_INFILE) \
+		OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 setup:
 	sudo apt install -y iverilog
@@ -62,6 +106,6 @@ setup:
 
 clean:
 	rm -rf build
-	$(MAKE) -C dv/sv clean
-	$(MAKE) -C dv/cocotb clean
-	rm -rf $(VIZ_OUT)
+	$(MAKE) -C dv/sim clean
+	rm -f $(DATA_DIR)/*.txt $(DATA_DIR)/*.dat $(DATA_DIR)/*.bin
+	rm -rf $(DATA_DIR)/renders

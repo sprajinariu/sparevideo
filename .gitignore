@@ -5,6 +5,13 @@ sim_build/
 results.xml
 dv/cocotb/output/
 
+# Pipeline harness data
+dv/data/*.txt
+dv/data/*.dat
+dv/data/*.bin
+dv/data/*.json
+dv/data/renders/
+
 # FuseSoC build
 build/
 

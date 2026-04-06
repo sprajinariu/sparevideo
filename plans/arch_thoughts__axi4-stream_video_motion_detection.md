@@ -1,3 +1,7 @@
+
+Start with this as a base and Develop this Plan further before implementing!
+This plan was written down on an old architecture that used cocotb, parts are no longer valid
+
 # AXI4-Stream Video Motion Detection + Bounding Box Overlay (Simulation Project)
 
 Simulation-only RTL project that generates a synthetic “camera” video stream (AXI4-Stream), performs motion detection against the previous frame, extracts a bounding box around motion, overlays the box on the video, and outputs frames for inspection via cocotb (optionally through a VGA-style output stage).

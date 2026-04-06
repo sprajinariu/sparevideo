@@ -1,3 +1,5 @@
 cocotb>=1.8.0
 Pillow>=9.0.0
 pygame>=2.1.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0

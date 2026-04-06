@@ -1,13 +1,11 @@
 CAPI=2:
-name: "opensoc:video:vga_top"
-description: "VGA top-level with pattern generator"
+name: "opensoc:video:sparesoc_top"
+description: "Sparesoc top-level — video passthrough pipeline"
 
 filesets:
   files_rtl:
-    depend:
-      - "opensoc:ip:vga"
     files:
-      - hw/top/vga_top.sv
+      - hw/top/sparesoc_top.sv
     file_type: systemVerilogSource
 
   files_lint:
@@ -18,13 +16,13 @@ targets:
   default:
     filesets:
       - files_rtl
-    toplevel: vga_top
+    toplevel: sparesoc_top
 
   lint:
     filesets:
       - files_rtl
       - files_lint
-    toplevel: vga_top
+    toplevel: sparesoc_top
     default_tool: verilator
     tools:
       verilator:
