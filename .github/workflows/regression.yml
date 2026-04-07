@@ -1,0 +1,64 @@
+name: Regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y iverilog verilator
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Check no large generated files committed
+        run: |
+          bad=$(git ls-files -- '*.vcd' '*.vvp' '*.bin' 'dv/data/*.txt' | head -20)
+          if [ -n "$bad" ]; then
+            echo "ERROR: large/generated files found in repo:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Import check
+        run: |
+          cd py && ../.venv/bin/python -c \
+            "import frames.frame_io, frames.video_source, viz.render"
+
+      - name: Python unit tests
+        run: make test-py
+
+      - name: Lint
+        run: make lint
+
+      - name: Compile RTL + testbench
+        run: make compile
+
+      - name: Dry-run (file loopback, zero sim time)
+        run: make sw-dry-run
+
+      - name: Pipeline — text mode, color_bars (default)
+        run: make run-pipeline
+
+      - name: Pipeline — text mode, gradient
+        run: make run-pipeline SOURCE="synthetic:gradient"
+
+      - name: Pipeline — binary mode
+        run: make run-pipeline MODE=binary

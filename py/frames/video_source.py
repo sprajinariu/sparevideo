@@ -165,7 +165,7 @@ def _gen_moving_box(width, height, num_frames):
 if __name__ == "__main__":
     import argparse
 
-    from frame_io import write_frames
+    from frames.frame_io import write_frames
 
     parser = argparse.ArgumentParser(description="Load video frames and write to file")
     parser.add_argument("source", help="Video file, image dir, or synthetic:<pattern>")

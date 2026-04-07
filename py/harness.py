@@ -8,9 +8,9 @@ from pathlib import Path
 
 import numpy as np
 
-from frame_io import read_frames, write_frames
-from render import compare_frames, render_grid
-from video_source import load_frames
+from frames.frame_io import read_frames, write_frames
+from frames.video_source import load_frames
+from viz.render import compare_frames, render_grid
 
 META_FILENAME = "meta.json"
 

@@ -1,8 +1,8 @@
 """Read/write frame files in text and binary formats.
 
 Text format (.txt):
-    Space-separated hex bytes, one row per line. No header.
-    FF 00 00 FF 00 00 ...
+    Space-separated 6-digit hex pixels (RRGGBB), one row per line. No header.
+    FF0000 00FF00 0000FF ...
     ...
 
 Binary format (.bin):
@@ -70,11 +70,11 @@ def _write_text(path, frames, width, height):
     with open(path, "w") as f:
         for frame in frames:
             for row in range(height):
-                hex_bytes = []
+                pixels = []
                 for col in range(width):
                     r, g, b = frame[row, col]
-                    hex_bytes.extend([f"{r:02X}", f"{g:02X}", f"{b:02X}"])
-                f.write(" ".join(hex_bytes) + "\n")
+                    pixels.append(f"{r:02X}{g:02X}{b:02X}")
+                f.write(" ".join(pixels) + "\n")
 
 
 def _read_text(path, width, height, num_frames):
@@ -90,9 +90,10 @@ def _read_text(path, width, height, num_frames):
             tokens = data_lines[line_idx].split()
             line_idx += 1
             for col in range(width):
-                frame[row, col, 0] = int(tokens[col * 3], 16)
-                frame[row, col, 1] = int(tokens[col * 3 + 1], 16)
-                frame[row, col, 2] = int(tokens[col * 3 + 2], 16)
+                pixel = int(tokens[col], 16)
+                frame[row, col, 0] = (pixel >> 16) & 0xFF
+                frame[row, col, 1] = (pixel >> 8) & 0xFF
+                frame[row, col, 2] = pixel & 0xFF
         frames.append(frame)
     return frames
 

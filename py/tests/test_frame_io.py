@@ -1,11 +1,14 @@
 """Unit tests for frame_io.py — round-trip read/write in text and binary modes."""
 
+import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import numpy as np
 
-from frame_io import read_frames, write_frames
+from frames.frame_io import read_frames, write_frames
 
 
 def _make_test_frames(width=8, height=4, num_frames=2):
