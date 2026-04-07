@@ -91,6 +91,8 @@ module tb_sparevideo;
         integer frame_idx, row_idx, col_idx;
         integer scan_r, scan_g, scan_b;
         integer scan_count;
+        integer scan_pixel;
+        realtime t_frame_start, t_frame_end;
 
         // Parse plusargs
         if ($value$plusargs("WIDTH=%d", cfg_width)) ;
@@ -162,21 +164,21 @@ module tb_sparevideo;
             for (frame_idx = 0; frame_idx < cfg_frames; frame_idx = frame_idx + 1) begin
                 integer frame_pixels;
                 frame_pixels = 0;
+                t_frame_start = $realtime;
 
                 for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
                     for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
                         if (cfg_mode == "text") begin
-                            scan_count = $fscanf(fd_in, "%x %x %x",
-                                                 scan_r, scan_g, scan_b);
-                            if (scan_count != 3) begin
+                            scan_count = $fscanf(fd_in, "%x",
+                                                 scan_pixel);
+                            if (scan_count != 1) begin
                                 $display("ERROR: Read failed at frame %0d row %0d col %0d",
                                          frame_idx, row_idx, col_idx);
                                 error_count = error_count + 1;
                             end else begin
                                 if (col_idx > 0)
                                     $fwrite(fd_out, " ");
-                                $fwrite(fd_out, "%02X %02X %02X",
-                                        scan_r[7:0], scan_g[7:0], scan_b[7:0]);
+                                $fwrite(fd_out, "%06X", scan_pixel[23:0]);
                                 frame_pixels = frame_pixels + 1;
                             end
                         end else begin
@@ -198,7 +200,10 @@ module tb_sparevideo;
                         $fwrite(fd_out, "\n");
                 end
 
-                $display("Frame %0d: %0d pixels OK", frame_idx, frame_pixels);
+                t_frame_end = $realtime;
+                $display("Frame %0d: %0d pixels OK (wall-clock %.3f s)",
+                         frame_idx, frame_pixels,
+                         (t_frame_end - t_frame_start) / 1.0e9);
             end
 
             $fclose(fd_in);
@@ -215,54 +220,58 @@ module tb_sparevideo;
             // ===============================================================
             // RTL SIMULATION: generate timing, feed DUT, capture output
             // ===============================================================
-            // All TB signal drives happen at negedge clk to avoid race
-            // conditions with the DUT's always_ff (which samples at posedge).
+            // TB drives signals at posedge clk using non-blocking assignments
+            // (NBA). The DUT's always_ff also triggers at posedge, but NBA
+            // scheduling ensures TB drives land in the NBA region after the
+            // DUT has sampled its inputs in the Active region.
             $display("--- RTL simulation mode ---");
 
             // Reset
-            @(negedge clk);
-            rst_n       = 0;
-            vid_i_data  = '0;
-            vid_i_valid = 0;
-            vid_i_hsync = 1;  // inactive (active-low)
-            vid_i_vsync = 1;
-            repeat (10) @(negedge clk);
-            rst_n = 1;
-            @(negedge clk);
+            @(posedge clk);
+            rst_n       <= 0;
+            vid_i_data  <= '0;
+            vid_i_valid <= 0;
+            vid_i_hsync <= 1;  // inactive (active-low)
+            vid_i_vsync <= 1;
+            repeat (10) @(posedge clk);
+            rst_n <= 1;
+            @(posedge clk);
 
             // Enable output capture (always block writes to fd_out_rtl)
             fd_out_rtl = fd_out;
             rtl_capturing = 1;
 
             for (frame_idx = 0; frame_idx < cfg_frames; frame_idx = frame_idx + 1) begin
+                t_frame_start = $realtime;
+
                 // --- Vsync pulse ---
-                vid_i_vsync = 0;
-                repeat (V_SYNC_PULSE * (cfg_width + H_BLANK)) @(negedge clk);
-                vid_i_vsync = 1;
+                vid_i_vsync <= 0;
+                repeat (V_SYNC_PULSE * (cfg_width + H_BLANK)) @(posedge clk);
+                vid_i_vsync <= 1;
 
                 // --- V back porch ---
-                repeat (V_BACK_PORCH * (cfg_width + H_BLANK)) @(negedge clk);
+                repeat (V_BACK_PORCH * (cfg_width + H_BLANK)) @(posedge clk);
 
                 // --- Active lines ---
                 for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
                     // Hsync pulse
-                    vid_i_hsync = 0;
-                    repeat (H_SYNC_PULSE) @(negedge clk);
-                    vid_i_hsync = 1;
+                    vid_i_hsync <= 0;
+                    repeat (H_SYNC_PULSE) @(posedge clk);
+                    vid_i_hsync <= 1;
 
                     // H back porch
-                    repeat (H_BACK_PORCH) @(negedge clk);
+                    repeat (H_BACK_PORCH) @(posedge clk);
 
                     // Active pixels — read from file and drive to DUT
                     for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
                         if (cfg_mode == "text") begin
-                            scan_count = $fscanf(fd_in, "%x %x %x",
-                                                 scan_r, scan_g, scan_b);
-                            if (scan_count != 3) begin
+                            scan_count = $fscanf(fd_in, "%x",
+                                                 scan_pixel);
+                            if (scan_count != 1) begin
                                 $display("ERROR: Read failed at frame %0d row %0d col %0d",
                                          frame_idx, row_idx, col_idx);
                                 error_count = error_count + 1;
-                                scan_r = 0; scan_g = 0; scan_b = 0;
+                                scan_pixel = 0;
                             end
                         end else begin
                             scan_r = $fgetc(fd_in);
@@ -276,26 +285,33 @@ module tb_sparevideo;
                             end
                         end
 
-                        vid_i_data  = {scan_r[7:0], scan_g[7:0], scan_b[7:0]};
-                        vid_i_valid = 1;
-                        @(negedge clk);
+                        if (cfg_mode == "text") begin
+                            vid_i_data  <= scan_pixel[23:0];
+                        end else begin
+                            vid_i_data  <= {scan_r[7:0], scan_g[7:0], scan_b[7:0]};
+                        end
+                        vid_i_valid <= 1;
+                        @(posedge clk);
                     end
 
-                    vid_i_valid = 0;
-                    vid_i_data  = '0;
+                    vid_i_valid <= 0;
+                    vid_i_data  <= '0;
 
                     // H front porch
-                    repeat (H_FRONT_PORCH) @(negedge clk);
+                    repeat (H_FRONT_PORCH) @(posedge clk);
                 end
 
                 // --- V front porch ---
-                repeat (V_FRONT_PORCH * (cfg_width + H_BLANK)) @(negedge clk);
+                repeat (V_FRONT_PORCH * (cfg_width + H_BLANK)) @(posedge clk);
 
-                $display("Frame %0d: input complete", frame_idx);
+                t_frame_end = $realtime;
+                $display("Frame %0d: input complete (wall-clock %.3f s)",
+                         frame_idx,
+                         (t_frame_end - t_frame_start) / 1.0e9);
             end
 
             // Flush: wait extra clocks for pipeline drain
-            repeat (10) @(negedge clk);
+            repeat (10) @(posedge clk);
             rtl_capturing = 0;
 
             $fclose(fd_in);
@@ -338,8 +354,8 @@ module tb_sparevideo;
             if (cfg_mode == "text") begin
                 if (rtl_out_col > 0)
                     $fwrite(fd_out_rtl, " ");
-                $fwrite(fd_out_rtl, "%02X %02X %02X",
-                        vid_o_data[23:16], vid_o_data[15:8], vid_o_data[7:0]);
+                $fwrite(fd_out_rtl, "%06X",
+                        vid_o_data[23:0]);
                 rtl_out_col = rtl_out_col + 1;
                 if (rtl_out_col == cfg_width) begin
                     $fwrite(fd_out_rtl, "\n");

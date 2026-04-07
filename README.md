@@ -16,16 +16,19 @@ hw/ip/vga/rtl/
   pattern_gen.sv       Test pattern generator (retained, not used in top)
 hw/lint/
   verilator_waiver.vlt Verilator lint waivers
-dv/sim/
+dv/sv/
   tb_sparevideo.sv     Unified testbench (RTL sim + SW dry-run)
-  Makefile             Simulation targets
+dv/sim/
+  Makefile             Simulation targets (compiled .vvp lives here)
 dv/data/               Generated input/output files (gitignored)
 py/
   harness.py           Pipeline harness CLI (prepare / verify / render)
-  frame_io.py          Read/write text and binary frame files
-  video_source.py      Load video from MP4/PNG/synthetic sources
-  render.py            Render input/output comparison image grid
-  viz.py               Converts raw binary frame dumps to PNG
+  frames/
+    frame_io.py        Read/write text and binary frame files
+    video_source.py    Load video from MP4/PNG/synthetic sources
+  viz/
+    render.py          Render input/output comparison image grid
+py/tests/
   test_frame_io.py     Unit tests for frame I/O round-trips
 ```
 
@@ -79,8 +82,9 @@ Each step can also be run individually (e.g. re-run `make sim` after an RTL chan
 ```bash
 # Other targets
 make lint           # Verilator lint
-make sim-dry-run    # Bypass RTL — file loopback, zero sim time
+make sw-dry-run    # Bypass RTL — file loopback, zero sim time
 make sim-waves      # RTL simulation + open GTKWave
+make test-py        # Run Python unit tests
 ```
 
 ## Options
@@ -101,13 +105,21 @@ make sim-waves      # RTL simulation + open GTKWave
 
 ### File Formats
 
-**Text mode** (`.dat`): Raw hex bytes, space-separated, one row per line. No header.
+**Text mode** (`.txt`): Space-separated 6-digit hex pixels (RRGGBB), one row per line. No header.
 ```
-FF 00 00 FF 00 00 00 FF 00 00 FF 00
-FF 00 00 FF 00 00 00 FF 00 00 FF 00
+FF0000 FF0000 00FF00 00FF00
+FF0000 FF0000 00FF00 00FF00
 ```
 
 **Binary mode** (`.bin`): 12-byte header (width, height, frames as LE uint32) + raw RGB bytes (3 bytes/pixel, row-major).
+
+## Running Python Tests
+
+```bash
+make test-py
+```
+
+Re-run after changes to Python files (frames/frame_io.py, harness.py, etc.).
 
 ## Design Interface
 

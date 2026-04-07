@@ -1,5 +1,5 @@
 RTL_SRCS = ../../hw/top/sparesoc_top.sv
-TB_SRC   = tb_sparevideo.sv
+TB_SRC   = ../sv/tb_sparevideo.sv
 
 # Simulation defaults
 WIDTH   ?= 320
@@ -9,7 +9,9 @@ MODE    ?= text
 INFILE  ?= ../data/input.txt
 OUTFILE ?= ../data/output.txt
 
-.PHONY: sim sim-waves sim-dry-run clean
+.PHONY: compile sim sim-waves sw-dry-run clean
+
+compile: tb_sparevideo.vvp
 
 sim: tb_sparevideo.vvp
 	vvp $< +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
@@ -22,7 +24,7 @@ sim-waves: tb_sparevideo.vvp
 		+FRAMES=$(FRAMES) +MODE=$(MODE) +DUMP_VCD
 	gtkwave tb_sparevideo.vcd &
 
-sim-dry-run: tb_sparevideo.vvp
+sw-dry-run: tb_sparevideo.vvp
 	vvp $< +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
 		+WIDTH=$(WIDTH) +HEIGHT=$(HEIGHT) \
 		+FRAMES=$(FRAMES) +MODE=$(MODE) +sw_dry_run

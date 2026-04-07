@@ -36,7 +36,7 @@ make render
 
 # Other targets
 make lint           # Verilator lint
-make sim-dry-run    # Bypass RTL (file loopback, zero sim time)
+make sw-dry-run    # Bypass RTL (file loopback, zero sim time)
 make sim-waves      # RTL simulation + GTKWave
 make setup          # One-time setup (install deps)
 ```
@@ -46,15 +46,15 @@ make setup          # One-time setup (install deps)
 - `hw/top/sparesoc_top.sv` — Top-level (video passthrough pipeline, 1-clock delay)
 - `hw/ip/vga/rtl/` — VGA controller and pattern generator RTL (retained, not used in top)
 - `hw/lint/` — Verilator waiver file
-- `dv/sim/tb_sparevideo.sv` — Unified testbench (RTL sim + SW dry-run)
-- `dv/sim/Makefile` — Simulation Makefile
+- `dv/sv/tb_sparevideo.sv` — Unified testbench (RTL sim + SW dry-run)
+- `dv/sim/Makefile` — Simulation Makefile (compiled .vvp lives in dv/sim/)
 - `dv/data/` — Generated input/output files and renders (gitignored)
 - `py/harness.py` — Pipeline harness CLI (prepare / verify / render)
-- `py/frame_io.py` — Read/write text and binary frame files
-- `py/video_source.py` — Load video from MP4/PNG/synthetic, resize, extract frames
-- `py/render.py` — Render input/output frames as comparison image grid
-- `py/test_frame_io.py` — Unit tests for frame I/O round-trips
-- `py/viz.py` — Converts raw binary frame dumps (.bin) to PNG
+- `py/frames/frame_io.py` — Read/write text and binary frame files
+- `py/frames/video_source.py` — Load video from MP4/PNG/synthetic, resize, extract frames
+- `py/viz/render.py` — Render input/output frames as comparison image grid
+- `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
+- `py/tests/test_vga.py` — Cocotb VGA timing tests (requires VGA IP)
 - FuseSoC core files: `sparevideo_top.core`, `hw/ip/vga/vga.core`
 
 ## RTL Conventions
@@ -69,7 +69,7 @@ make setup          # One-time setup (install deps)
 
 The single testbench (`dv/sim/tb_sparevideo.sv`) supports two modes:
 
-**RTL simulation** (default): Generates VGA-like timing (hsync, vsync, blanking), reads input frames from file, drives pixels to the DUT during active region, captures DUT output via a concurrent always block (negedge sampling), writes output to file.
+**RTL simulation** (default): Generates VGA-like timing (hsync, vsync, blanking), reads input frames from file, drives pixels to the DUT during active region, captures DUT output via a concurrent always block (negedge sampling), writes output to file. Wall-clock elapsed time is printed per frame.
 
 **SW dry-run** (`+sw_dry_run`): Bypasses RTL entirely. File loopback at zero sim time — reads input, writes output directly. Useful for testing the Python harness flow without waiting for RTL sim.
 
@@ -77,12 +77,12 @@ Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=tex
 
 TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 
-**Important**: TB drives all signals at `@(negedge clk)` to avoid race conditions with the DUT's `always_ff` (which samples at posedge). Do not use `@(posedge clk)` for signal driving in the RTL sim path — this causes non-deterministic data corruption in Icarus.
+**Important**: TB drives signals at `@(posedge clk)` using non-blocking assignments (`<=`). NBA scheduling ensures TB drives land after the DUT's `always_ff` has sampled its inputs in the Active region. The output capture always block samples at `@(negedge clk)` to avoid races with the DUT output.
 
 ## Pipeline Harness
 
 - Python prepares input, SV simulates, Python verifies and renders.
-- Text mode (`.txt`) uses space-separated hex bytes, one row per line. No headers.
+- Text mode (`.txt`) uses space-separated 6-digit hex pixels (RRGGBB), one row per line. No headers.
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
 - Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box).
@@ -101,7 +101,7 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 - Always run `make lint` after any RTL change to catch Verilator warnings early.
 - After RTL changes, run `make sim` to verify the passthrough pipeline.
 - Use `make run-pipeline` for full end-to-end testing (prepare → sim → verify → render).
-- Use `make sim-dry-run` to quickly test the Python/SV file I/O flow without RTL simulation.
+- Use `make sw-dry-run` to quickly test the Python/SV file I/O flow without RTL simulation.
 
 ### RTL changes
 

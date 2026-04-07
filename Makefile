@@ -20,7 +20,7 @@ else
   PIPE_OUTFILE = $(DATA_DIR)/output.txt
 endif
 
-.PHONY: help lint run-pipeline prepare sim sim-dry-run verify render sim-waves setup clean
+.PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves test-py setup clean
 
 help:
 	@echo "Usage: make <target>"
@@ -40,8 +40,10 @@ help:
 	@echo "  an RTL change without re-preparing input."
 	@echo ""
 	@echo "  Additional targets:"
-	@echo "    sim-dry-run  Bypass RTL (file loopback, zero sim time)"
+	@echo "    compile      Compile RTL + testbench only (no simulation)"
+	@echo "    sw-dry-run  Bypass RTL (file loopback, zero sim time)"
 	@echo "    sim-waves    RTL simulation + open GTKWave"
+	@echo "    test-py      Run Python unit tests"
 	@echo ""
 	@echo "  Options:"
 	@echo "    SOURCE=synthetic:color_bars  Input source (synthetic:<pattern>, path/to/video.mp4)"
@@ -52,7 +54,7 @@ help:
 
 # ---- Main pipeline flow ----
 
-run-pipeline: prepare sim verify render
+run-pipeline: prepare compile sim verify render
 	@echo "Pipeline complete!"
 
 prepare:
@@ -61,7 +63,7 @@ prepare:
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
 
-sim:
+sim: compile
 	$(MAKE) -C dv/sim sim \
 		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
 		MODE=$(MODE) \
@@ -80,13 +82,19 @@ render:
 		--mode $(MODE) \
 		--render-output $(CURDIR)/$(DATA_DIR)/renders/comparison.png
 
+compile:
+	$(MAKE) -C dv/sim compile
+
 # ---- Additional targets ----
 
 lint:
 	$(FUSESOC) $(CORES_ROOT) run --target=lint opensoc:video:sparesoc_top
 
-sim-dry-run:
-	$(MAKE) -C dv/sim sim-dry-run \
+test-py:
+	$(VENV_PY) $(CURDIR)/py/tests/test_frame_io.py
+
+sw-dry-run:
+	$(MAKE) -C dv/sim sw-dry-run \
 		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
 		MODE=$(MODE) \
 		INFILE=$(CURDIR)/$(PIPE_INFILE) \
