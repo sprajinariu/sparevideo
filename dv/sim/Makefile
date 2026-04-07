@@ -1,4 +1,7 @@
-RTL_SRCS = ../../hw/top/sparesoc_top.sv
+RTL_SRCS = ../../hw/top/sparesoc_top.sv \
+           ../../hw/ip/vga/rtl/vga_controller.sv \
+           ../../third_party/verilog-axis/rtl/axis_register.v \
+           ../../third_party/verilog-axis/rtl/axis_async_fifo.v
 TB_SRC   = ../sv/tb_sparevideo.sv
 
 # Simulation defaults

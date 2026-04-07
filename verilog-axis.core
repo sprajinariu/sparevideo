@@ -1,0 +1,18 @@
+CAPI=2:
+name: "sparevideo:third_party:verilog-axis"
+description: "Vendored alexforencich/verilog-axis (MIT) — AXI4-Stream IP library"
+
+filesets:
+  files_rtl:
+    files:
+      - third_party/verilog-axis/rtl/arbiter.v
+      - third_party/verilog-axis/rtl/priority_encoder.v
+      - third_party/verilog-axis/rtl/sync_reset.v
+      - third_party/verilog-axis/rtl/axis_register.v
+      - third_party/verilog-axis/rtl/axis_async_fifo.v
+    file_type: verilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

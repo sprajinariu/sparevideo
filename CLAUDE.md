@@ -8,7 +8,7 @@ Do not include `Co-Authored-By` trailers in commit messages.
 
 ## Project Overview
 
-sparevideo is a video processing pipeline project. The top-level design (`sparesoc_top`) accepts RGB video input with hsync/vsync and passes it through a registered pipeline stage. The VGA controller and pattern generator IPs are retained under `hw/ip/vga/` but are not instantiated in the current design — timing generation is handled by the testbench.
+sparevideo is a video processing pipeline project. The top-level design (`sparesoc_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a 4-stage `axis_register` slice chain (placeholder for real processing), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output.
 
 All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no interfaces/modports, no classes) for Icarus Verilog 12 compatibility.
 
@@ -43,9 +43,10 @@ make setup          # One-time setup (install deps)
 
 ## Project Structure
 
-- `hw/top/sparesoc_top.sv` — Top-level (video passthrough pipeline, 1-clock delay)
-- `hw/ip/vga/rtl/` — VGA controller and pattern generator RTL (retained, not used in top)
-- `hw/lint/` — Verilator waiver file
+- `hw/top/sparesoc_top.sv` — Top-level (AXI4-Stream → CDC → 4-stage proc → CDC → vga_controller)
+- `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
+- `hw/lint/` — Verilator waiver files (project + third-party)
+- `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library
 - `dv/sv/tb_sparevideo.sv` — Unified testbench (RTL sim + SW dry-run)
 - `dv/sim/Makefile` — Simulation Makefile (compiled .vvp lives in dv/sim/)
 - `dv/data/` — Generated input/output files and renders (gitignored)
@@ -55,7 +56,7 @@ make setup          # One-time setup (install deps)
 - `py/viz/render.py` — Render input/output frames as comparison image grid
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
 - `py/tests/test_vga.py` — Cocotb VGA timing tests (requires VGA IP)
-- FuseSoC core files: `sparevideo_top.core`, `hw/ip/vga/vga.core`
+- FuseSoC core files: `sparevideo_top.core`, `hw/ip/vga/vga.core`, `verilog-axis.core`
 
 ## RTL Conventions
 
@@ -93,6 +94,7 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 - Keep makefiles up-to-date
 - Keep requirements.txt up-to-date
 - Clean up large files (e.g. VCDs, simulation outputs, binaries), don't upload them to git
+- After implementing a plan, move it to plans/old/ and put a date timestamp on it to have a history on what has been implemented.
 
 ## General guidelines
 
@@ -113,6 +115,16 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 
 - The SV testbench uses `$display`/`if` checks — no SVA. Do not introduce `assert` statements (Icarus 12 does not support them).
 - Avoid nested automatic tasks with output parameters in Icarus — they silently malfunction. Inline the logic instead.
+
+### Debugging a failing simulation
+
+Claude can't view GTKWave, but VCD is plain text and fully debuggable from the terminal. Workflow:
+
+1. **Diff the output files first.** `head -1 dv/data/input.txt` vs `head -1 dv/data/output.txt`, or `xxd | head` for binary mode. An off-by-one, a stuck channel, or a wrong polarity is usually obvious from a few pixels.
+2. **Reason from the RTL.** Re-read the relevant `always_ff` and check what's combinational vs registered, especially across module boundaries (`pixel_ready` is combinational, `vga_r` is registered → one-cycle skew at capture time).
+3. **Scoped VCD dump.** If steps 1–2 don't localize it, narrow `$dumpvars` to the smallest interesting scope (e.g. `$dumpvars(0, tb_sparevideo.u_dut.u_vga)`) so the VCD stays small, then `make sim-waves`.
+4. **Read the VCD as text.** VCD is a header (signal declarations with short IDs) followed by `#<time>` markers and value changes. `grep` for a specific signal ID, or write a tiny Python script (use `.venv`) to parse and print a focused table of `(time, signalA, signalB, ...)` around the window of interest. This turns "thousands of cycles" into a 20-row table.
+5. **Last resort: open GTKWave locally.** `make sim-waves` opens it for the human; Claude won't see it but can still iterate based on what the user reports.
 
 ### Python environment
 
