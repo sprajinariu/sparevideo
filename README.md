@@ -4,18 +4,22 @@ Video processing pipeline with file-based verification harness.
 
 ## Overview
 
-A video passthrough pipeline written in SystemVerilog, verified via Icarus Verilog with a file-based Python harness. The top-level design (`sparesoc_top`) accepts RGB video input with hsync/vsync sync signals and passes it through a registered pipeline stage (1-clock delay). The testbench generates VGA-like timing and handles file I/O.
+A video passthrough pipeline written in SystemVerilog, verified via Icarus Verilog with a file-based Python harness. The top-level design (`sparesoc_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a 4-stage `axis_register` slice chain (placeholder for real processing), crosses back, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The testbench drives AXI4-Stream input and captures the VGA output.
 
 ## Project Structure
 
 ```
 hw/top/
-  sparesoc_top.sv      Top-level (video passthrough pipeline)
+  sparesoc_top.sv      Top-level (AXI4-Stream → CDC → 4-stage proc → CDC → VGA)
 hw/ip/vga/rtl/
-  vga_controller.sv    VGA controller (retained, not used in top)
-  pattern_gen.sv       Test pattern generator (retained, not used in top)
+  vga_controller.sv    VGA controller (instantiated in sparesoc_top)
+  pattern_gen.sv       Test pattern generator (retained, unused)
 hw/lint/
-  verilator_waiver.vlt Verilator lint waivers
+  verilator_waiver.vlt        Project lint waivers
+  third_party_waiver.vlt      Lint waivers for vendored third-party RTL
+third_party/verilog-axis/
+  rtl/                 Vendored alexforencich/verilog-axis (MIT)
+  LICENSE README.md COMMIT
 dv/sv/
   tb_sparevideo.sv     Unified testbench (RTL sim + SW dry-run)
 dv/sim/

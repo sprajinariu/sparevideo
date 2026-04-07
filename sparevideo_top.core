@@ -1,16 +1,20 @@
 CAPI=2:
 name: "opensoc:video:sparesoc_top"
-description: "Sparesoc top-level — video passthrough pipeline"
+description: "Sparesoc top-level — AXI4-Stream video pipeline"
 
 filesets:
   files_rtl:
     files:
       - hw/top/sparesoc_top.sv
     file_type: systemVerilogSource
+    depend:
+      - opensoc:ip:vga
+      - sparevideo:third_party:verilog-axis
 
   files_lint:
     files:
       - hw/lint/verilator_waiver.vlt: {file_type: vlt}
+      - hw/lint/third_party_waiver.vlt: {file_type: vlt}
 
 targets:
   default:

@@ -1,2 +1,8 @@
 `verilator_config
-// Waivers for sparevideo VGA RTL
+// Waivers for sparevideo RTL
+// Empty pin connections in sparesoc_top intentionally tie off unused
+// outputs of vendored verilog-axis modules.
+lint_off -rule PINCONNECTEMPTY -file "*sparesoc_top.sv"
+// vga_controller and pattern_gen lack `timescale; harmless mismatch
+// against vendored verilog-axis files that do have one.
+lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"

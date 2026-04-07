@@ -1,11 +1,11 @@
-// Testbench for sparesoc_top
+// Testbench for sparesoc_top (AXI4-Stream version)
 //
-// Main usage: read video input file, generate VGA-like timing, feed pixels
-// to the RTL design, capture output, write to output file.
+// Drives an AXI4-Stream input on clk_pix, runs processing on clk_dsp,
+// and captures VGA RGB output on clk_pix.
 //
 // Plusargs:
-//   +INFILE=<path>     Input frame file (default "input.dat")
-//   +OUTFILE=<path>    Output frame file (default "output.dat")
+//   +INFILE=<path>     Input frame file (default "input.txt")
+//   +OUTFILE=<path>    Output frame file (default "output.txt")
 //   +WIDTH=<n>         Frame width (default 320)
 //   +HEIGHT=<n>        Frame height (default 240)
 //   +FRAMES=<n>        Number of frames (default 4)
@@ -20,15 +20,18 @@ module tb_sparevideo;
     // ---------------------------------------------------------------
     // Blanking parameters (small values to keep sim fast)
     // ---------------------------------------------------------------
-    localparam H_FRONT_PORCH = 4;
-    localparam H_SYNC_PULSE  = 8;
-    localparam H_BACK_PORCH  = 4;
-    localparam H_BLANK       = H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH;
-    localparam V_FRONT_PORCH = 2;
-    localparam V_SYNC_PULSE  = 2;
-    localparam V_BACK_PORCH  = 2;
-    localparam V_BLANK       = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
-    localparam CLK_PERIOD    = 40; // 40ns = 25 MHz
+    localparam int H_FRONT_PORCH = 4;
+    localparam int H_SYNC_PULSE  = 8;
+    localparam int H_BACK_PORCH  = 4;
+    localparam int H_BLANK       = H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH;
+    localparam int V_FRONT_PORCH = 2;
+    localparam int V_SYNC_PULSE  = 2;
+    localparam int V_BACK_PORCH  = 2;
+    localparam int V_BLANK       = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
+
+    // 25 MHz pixel clock (40ns), 100 MHz DSP clock (10ns)
+    localparam int CLK_PIX_PERIOD = 40;
+    localparam int CLK_DSP_PERIOD = 10;
 
     // ---------------------------------------------------------------
     // Configuration (from plusargs)
@@ -41,34 +44,57 @@ module tb_sparevideo;
     string  cfg_mode    = "text";
 
     // ---------------------------------------------------------------
-    // DUT signals + clock
+    // Clocks, resets, DUT signals
     // ---------------------------------------------------------------
-    logic        clk;
-    logic        rst_n;
-    logic [23:0] vid_i_data;
-    logic        vid_i_valid;
-    logic        vid_i_hsync;
-    logic        vid_i_vsync;
-    logic [23:0] vid_o_data;
-    logic        vid_o_valid;
-    logic        vid_o_hsync;
-    logic        vid_o_vsync;
+    logic        clk_pix;
+    logic        clk_dsp;
+    logic        rst_pix_n;
+    logic        rst_dsp_n;
 
-    sparesoc_top u_dut (
-        .clk         (clk),
-        .rst_n       (rst_n),
-        .vid_i_data  (vid_i_data),
-        .vid_i_valid (vid_i_valid),
-        .vid_i_hsync (vid_i_hsync),
-        .vid_i_vsync (vid_i_vsync),
-        .vid_o_data  (vid_o_data),
-        .vid_o_valid (vid_o_valid),
-        .vid_o_hsync (vid_o_hsync),
-        .vid_o_vsync (vid_o_vsync)
+    logic [23:0] s_axis_tdata;
+    logic        s_axis_tvalid;
+    logic        s_axis_tready;
+    logic        s_axis_tlast;
+    logic        s_axis_tuser;
+
+    logic        vga_hsync;
+    logic        vga_vsync;
+    logic [7:0]  vga_r;
+    logic [7:0]  vga_g;
+    logic [7:0]  vga_b;
+
+    // The DUT's VGA controller is parameterised at instantiation; we
+    // override here so the timing matches the small TB blanking values.
+    sparesoc_top #(
+        .H_ACTIVE      (320),  // overridden via cfg_width below — see note
+        .H_FRONT_PORCH (H_FRONT_PORCH),
+        .H_SYNC_PULSE  (H_SYNC_PULSE),
+        .H_BACK_PORCH  (H_BACK_PORCH),
+        .V_ACTIVE      (240),
+        .V_FRONT_PORCH (V_FRONT_PORCH),
+        .V_SYNC_PULSE  (V_SYNC_PULSE),
+        .V_BACK_PORCH  (V_BACK_PORCH)
+    ) u_dut (
+        .clk_pix       (clk_pix),
+        .clk_dsp       (clk_dsp),
+        .rst_pix_n     (rst_pix_n),
+        .rst_dsp_n     (rst_dsp_n),
+        .s_axis_tdata  (s_axis_tdata),
+        .s_axis_tvalid (s_axis_tvalid),
+        .s_axis_tready (s_axis_tready),
+        .s_axis_tlast  (s_axis_tlast),
+        .s_axis_tuser  (s_axis_tuser),
+        .vga_hsync     (vga_hsync),
+        .vga_vsync     (vga_vsync),
+        .vga_r         (vga_r),
+        .vga_g         (vga_g),
+        .vga_b         (vga_b)
     );
 
-    initial clk = 0;
-    always #(CLK_PERIOD / 2) clk = ~clk;
+    initial clk_pix = 0;
+    always #(CLK_PIX_PERIOD/2) clk_pix = ~clk_pix;
+    initial clk_dsp = 0;
+    always #(CLK_DSP_PERIOD/2) clk_dsp = ~clk_dsp;
 
     // Waveform dump
     initial begin
@@ -108,43 +134,33 @@ module tb_sparevideo;
         $display("  output: %s", cfg_outfile);
 
         // ---- Open input file ----
-        if (cfg_mode == "text") begin
-            fd_in = $fopen(cfg_infile, "r");
-        end else begin
-            fd_in = $fopen(cfg_infile, "rb");
-        end
+        if (cfg_mode == "text") fd_in = $fopen(cfg_infile, "r");
+        else                    fd_in = $fopen(cfg_infile, "rb");
         if (fd_in == 0) begin
             $display("ERROR: Cannot open input file: %s", cfg_infile);
             $finish;
         end
-        // Skip binary header
         if (cfg_mode != "text") begin
-            begin
-                integer hdr_byte, i;
-                for (i = 0; i < 12; i = i + 1) begin
-                    hdr_byte = $fgetc(fd_in);
-                    if (hdr_byte == -1) begin
-                        $display("ERROR: Input file too short (header)");
-                        $finish;
-                    end
+            integer hdr_byte, i;
+            for (i = 0; i < 12; i = i + 1) begin
+                hdr_byte = $fgetc(fd_in);
+                if (hdr_byte == -1) begin
+                    $display("ERROR: Input file too short (header)");
+                    $finish;
                 end
             end
         end
 
         // ---- Open output file ----
-        if (cfg_mode == "text") begin
-            fd_out = $fopen(cfg_outfile, "w");
-        end else begin
-            fd_out = $fopen(cfg_outfile, "wb");
-        end
+        if (cfg_mode == "text") fd_out = $fopen(cfg_outfile, "w");
+        else                    fd_out = $fopen(cfg_outfile, "wb");
         if (fd_out == 0) begin
             $display("ERROR: Cannot open output file: %s", cfg_outfile);
             $finish;
         end
-        // Write binary header
         if (cfg_mode != "text") begin
             $fwrite(fd_out, "%c%c%c%c",
-                cfg_width[7:0], cfg_width[15:8],
+                cfg_width[7:0],  cfg_width[15:8],
                 cfg_width[23:16], cfg_width[31:24]);
             $fwrite(fd_out, "%c%c%c%c",
                 cfg_height[7:0], cfg_height[15:8],
@@ -154,10 +170,10 @@ module tb_sparevideo;
                 cfg_frames[23:16], cfg_frames[31:24]);
         end
 
-        // ---- Dispatch to dry run or RTL sim ----
+        // ---- Dispatch ----
         if ($test$plusargs("sw_dry_run")) begin
             // ===============================================================
-            // SW DRY RUN: file loopback, no RTL, no sim time
+            // SW DRY RUN: file loopback, no RTL
             // ===============================================================
             $display("--- SW dry run (RTL bypassed) ---");
 
@@ -169,15 +185,13 @@ module tb_sparevideo;
                 for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
                     for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
                         if (cfg_mode == "text") begin
-                            scan_count = $fscanf(fd_in, "%x",
-                                                 scan_pixel);
+                            scan_count = $fscanf(fd_in, "%x", scan_pixel);
                             if (scan_count != 1) begin
                                 $display("ERROR: Read failed at frame %0d row %0d col %0d",
                                          frame_idx, row_idx, col_idx);
                                 error_count = error_count + 1;
                             end else begin
-                                if (col_idx > 0)
-                                    $fwrite(fd_out, " ");
+                                if (col_idx > 0) $fwrite(fd_out, " ");
                                 $fwrite(fd_out, "%06X", scan_pixel[23:0]);
                                 frame_pixels = frame_pixels + 1;
                             end
@@ -196,8 +210,7 @@ module tb_sparevideo;
                             end
                         end
                     end
-                    if (cfg_mode == "text")
-                        $fwrite(fd_out, "\n");
+                    if (cfg_mode == "text") $fwrite(fd_out, "\n");
                 end
 
                 t_frame_end = $realtime;
@@ -208,65 +221,39 @@ module tb_sparevideo;
 
             $fclose(fd_in);
             $fclose(fd_out);
-
-            if (error_count == 0)
-                $display("PASS");
-            else
-                $display("FAIL: %0d errors", error_count);
-
+            if (error_count == 0) $display("PASS");
+            else                  $display("FAIL: %0d errors", error_count);
             $finish;
 
         end else begin
             // ===============================================================
-            // RTL SIMULATION: generate timing, feed DUT, capture output
+            // RTL SIMULATION: drive AXI4-Stream, capture VGA RGB
             // ===============================================================
-            // TB drives signals at posedge clk using non-blocking assignments
-            // (NBA). The DUT's always_ff also triggers at posedge, but NBA
-            // scheduling ensures TB drives land in the NBA region after the
-            // DUT has sampled its inputs in the Active region.
             $display("--- RTL simulation mode ---");
 
             // Reset
-            @(posedge clk);
-            rst_n       <= 0;
-            vid_i_data  <= '0;
-            vid_i_valid <= 0;
-            vid_i_hsync <= 1;  // inactive (active-low)
-            vid_i_vsync <= 1;
-            repeat (10) @(posedge clk);
-            rst_n <= 1;
-            @(posedge clk);
+            rst_pix_n     <= 0;
+            rst_dsp_n     <= 0;
+            s_axis_tdata  <= '0;
+            s_axis_tvalid <= 0;
+            s_axis_tlast  <= 0;
+            s_axis_tuser  <= 0;
+            repeat (10) @(posedge clk_pix);
+            rst_pix_n <= 1;
+            rst_dsp_n <= 1;
+            @(posedge clk_pix);
 
-            // Enable output capture (always block writes to fd_out_rtl)
-            fd_out_rtl = fd_out;
+            // Enable VGA-side capture
+            fd_out_rtl    = fd_out;
             rtl_capturing = 1;
 
             for (frame_idx = 0; frame_idx < cfg_frames; frame_idx = frame_idx + 1) begin
                 t_frame_start = $realtime;
 
-                // --- Vsync pulse ---
-                vid_i_vsync <= 0;
-                repeat (V_SYNC_PULSE * (cfg_width + H_BLANK)) @(posedge clk);
-                vid_i_vsync <= 1;
-
-                // --- V back porch ---
-                repeat (V_BACK_PORCH * (cfg_width + H_BLANK)) @(posedge clk);
-
-                // --- Active lines ---
                 for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
-                    // Hsync pulse
-                    vid_i_hsync <= 0;
-                    repeat (H_SYNC_PULSE) @(posedge clk);
-                    vid_i_hsync <= 1;
-
-                    // H back porch
-                    repeat (H_BACK_PORCH) @(posedge clk);
-
-                    // Active pixels — read from file and drive to DUT
                     for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
                         if (cfg_mode == "text") begin
-                            scan_count = $fscanf(fd_in, "%x",
-                                                 scan_pixel);
+                            scan_count = $fscanf(fd_in, "%x", scan_pixel);
                             if (scan_count != 1) begin
                                 $display("ERROR: Read failed at frame %0d row %0d col %0d",
                                          frame_idx, row_idx, col_idx);
@@ -285,24 +272,23 @@ module tb_sparevideo;
                             end
                         end
 
-                        if (cfg_mode == "text") begin
-                            vid_i_data  <= scan_pixel[23:0];
-                        end else begin
-                            vid_i_data  <= {scan_r[7:0], scan_g[7:0], scan_b[7:0]};
-                        end
-                        vid_i_valid <= 1;
-                        @(posedge clk);
+                        if (cfg_mode == "text")
+                            s_axis_tdata <= scan_pixel[23:0];
+                        else
+                            s_axis_tdata <= {scan_r[7:0], scan_g[7:0], scan_b[7:0]};
+                        s_axis_tvalid <= 1;
+                        s_axis_tuser  <= (row_idx == 0) && (col_idx == 0);
+                        s_axis_tlast  <= (col_idx == cfg_width - 1);
+
+                        // Hold until accepted (backpressure)
+                        @(posedge clk_pix);
+                        while (!s_axis_tready) @(posedge clk_pix);
+
+                        s_axis_tvalid <= 0;
+                        s_axis_tuser  <= 0;
+                        s_axis_tlast  <= 0;
                     end
-
-                    vid_i_valid <= 0;
-                    vid_i_data  <= '0;
-
-                    // H front porch
-                    repeat (H_FRONT_PORCH) @(posedge clk);
                 end
-
-                // --- V front porch ---
-                repeat (V_FRONT_PORCH * (cfg_width + H_BLANK)) @(posedge clk);
 
                 t_frame_end = $realtime;
                 $display("Frame %0d: input complete (wall-clock %.3f s)",
@@ -310,14 +296,18 @@ module tb_sparevideo;
                          (t_frame_end - t_frame_start) / 1.0e9);
             end
 
-            // Flush: wait extra clocks for pipeline drain
-            repeat (10) @(posedge clk);
+            // Wait until VGA has emitted all expected pixels (or watchdog kills us)
+            begin
+                integer expected_pixels;
+                expected_pixels = cfg_width * cfg_height * cfg_frames;
+                while (rtl_out_total < expected_pixels) @(posedge clk_pix);
+            end
+            repeat (10) @(posedge clk_pix);
             rtl_capturing = 0;
 
             $fclose(fd_in);
             $fclose(fd_out_rtl);
 
-            // Check output pixel count
             begin
                 integer expected_pixels;
                 expected_pixels = cfg_width * cfg_height * cfg_frames;
@@ -325,60 +315,68 @@ module tb_sparevideo;
                 $display("=== RTL Sim Summary ===");
                 $display("Frames: %0d, Output pixels: %0d (expected %0d)",
                          cfg_frames, rtl_out_total, expected_pixels);
-
                 if (rtl_out_total != expected_pixels) begin
                     $display("FAIL: pixel count mismatch");
                     error_count = error_count + 1;
                 end
             end
 
-            if (error_count == 0)
-                $display("PASS");
-            else
-                $display("FAIL: %0d errors", error_count);
-
+            if (error_count == 0) $display("PASS");
+            else                  $display("FAIL: %0d errors", error_count);
             $finish;
         end
     end
 
     // ---------------------------------------------------------------
-    // RTL output capture (runs concurrently via always block)
+    // VGA output capture: track h/v counters in lockstep with the
+    // controller and write a pixel during the active region every
+    // pixel clock. The vga_controller registers RGB on posedge, so
+    // we sample at posedge of the *next* clock — i.e. we let the
+    // pixel propagate then sample at negedge.
     // ---------------------------------------------------------------
     integer fd_out_rtl;
     integer rtl_out_total = 0;
     integer rtl_out_col   = 0;
     integer rtl_capturing = 0;
 
-    always @(negedge clk) begin
-        if (rtl_capturing && vid_o_valid) begin
+    // The vga_controller latches RGB at posedge K+1 from pixel_data
+    // sampled at posedge K when active_K was true. So vga_r is one
+    // cycle behind `pixel_ready`. We delay our capture qualifier by
+    // one clock so it lines up with the registered RGB.
+    wire dut_active = u_dut.u_vga.pixel_ready & u_dut.vga_started;
+    logic dut_active_d;
+    always_ff @(posedge clk_pix) begin
+        if (!rst_pix_n) dut_active_d <= 1'b0;
+        else            dut_active_d <= dut_active;
+    end
+
+    always @(negedge clk_pix) begin
+        if (rtl_capturing && dut_active_d) begin
             if (cfg_mode == "text") begin
-                if (rtl_out_col > 0)
-                    $fwrite(fd_out_rtl, " ");
-                $fwrite(fd_out_rtl, "%06X",
-                        vid_o_data[23:0]);
+                if (rtl_out_col > 0) $fwrite(fd_out_rtl, " ");
+                $fwrite(fd_out_rtl, "%02X%02X%02X", vga_r, vga_g, vga_b);
                 rtl_out_col = rtl_out_col + 1;
                 if (rtl_out_col == cfg_width) begin
                     $fwrite(fd_out_rtl, "\n");
                     rtl_out_col = 0;
                 end
             end else begin
-                $fwrite(fd_out_rtl, "%c%c%c",
-                        vid_o_data[23:16], vid_o_data[15:8], vid_o_data[7:0]);
+                $fwrite(fd_out_rtl, "%c%c%c", vga_r, vga_g, vga_b);
             end
             rtl_out_total = rtl_out_total + 1;
         end
     end
 
     // ---------------------------------------------------------------
-    // Watchdog: timeout after (frames + 2) frame durations
+    // Watchdog
     // ---------------------------------------------------------------
     initial begin
         #1;
         begin
             integer timeout_clocks;
             timeout_clocks = (cfg_width + H_BLANK) * (cfg_height + V_BLANK)
-                           * (cfg_frames + 2);
-            #(CLK_PERIOD * timeout_clocks);
+                           * (cfg_frames + 4);
+            #(CLK_PIX_PERIOD * timeout_clocks);
             $display("ERROR: Watchdog timeout after %0d clocks", timeout_clocks);
             $finish;
         end
