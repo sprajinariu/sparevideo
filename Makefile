@@ -4,14 +4,19 @@ VENV_PY    := $(CURDIR)/.venv/bin/python3
 HARNESS    := $(VENV_PY) $(CURDIR)/py/harness.py
 DATA_DIR   := dv/data
 
-# Simulation configuration
-SOURCE     ?= synthetic:color_bars
-WIDTH      ?= 320
-HEIGHT     ?= 240
-FRAMES     ?= 4
-MODE       ?= text
+# Built-in defaults — lowest precedence.
+SIMULATOR ?= verilator
+SOURCE    ?= synthetic:color_bars
+WIDTH     ?= 320
+HEIGHT    ?= 240
+FRAMES    ?= 4
+MODE      ?= text
 
-# Derived file paths
+# Load options saved by the last 'make prepare'.
+# Overrides the ?= defaults above; command-line variables still win over this.
+-include $(DATA_DIR)/config.mk
+
+# Derived file paths — evaluated after config.mk is loaded so MODE is final.
 ifeq ($(MODE),binary)
   PIPE_INFILE  = $(DATA_DIR)/input.bin
   PIPE_OUTFILE = $(DATA_DIR)/output.bin
@@ -20,55 +25,69 @@ else
   PIPE_OUTFILE = $(DATA_DIR)/output.txt
 endif
 
-.PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves test-py setup clean
+SIM_VARS = SIMULATOR=$(SIMULATOR) \
+           WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
+           MODE=$(MODE) \
+           INFILE=$(CURDIR)/$(PIPE_INFILE) \
+           OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
+
+.PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
+        test-py setup clean
 
 help:
-	@echo "Usage: make <target>"
+	@echo "Usage: make <target> [OPTIONS]"
 	@echo ""
-	@echo "  run-pipeline   Run full pipeline (see below)"
+	@echo "  run-pipeline   Run full pipeline (prepare → compile → sim → verify → render)"
 	@echo "  lint           Run Verilator lint on all RTL"
 	@echo "  setup          One-time setup (install deps)"
 	@echo "  clean          Remove build artifacts"
 	@echo ""
-	@echo "  run-pipeline runs these steps in order:"
-	@echo "    1. prepare   Generate input frames from SOURCE"
-	@echo "    2. sim       Run RTL simulation (feed input → DUT → capture output)"
-	@echo "    3. verify    Check output matches input (passthrough)"
-	@echo "    4. render    Save input vs output comparison PNG"
-	@echo ""
-	@echo "  Each step can also be run individually, e.g. to re-run sim after"
-	@echo "  an RTL change without re-preparing input."
+	@echo "  Pipeline steps (also runnable individually after 'make prepare'):"
+	@echo "    prepare      Generate input frames — saves WIDTH/HEIGHT/FRAMES/MODE to dv/data/config.mk"
+	@echo "    compile      Compile RTL + testbench (SIMULATOR)"
+	@echo "    sim          Run RTL simulation"
+	@echo "    verify       Check output matches input (passthrough)"
+	@echo "    render       Save input vs output comparison PNG"
 	@echo ""
 	@echo "  Additional targets:"
-	@echo "    compile      Compile RTL + testbench only (no simulation)"
-	@echo "    sw-dry-run  Bypass RTL (file loopback, zero sim time)"
-	@echo "    sim-waves    RTL simulation + open GTKWave"
+	@echo "    sim-waves    RTL sim + open GTKWave"
+	@echo "    sw-dry-run   Bypass RTL (file loopback, zero sim time)"
 	@echo "    test-py      Run Python unit tests"
 	@echo ""
-	@echo "  Options:"
-	@echo "    SOURCE=synthetic:color_bars  Input source (synthetic:<pattern>, path/to/video.mp4)"
-	@echo "    WIDTH=320                    Frame width"
-	@echo "    HEIGHT=240                   Frame height"
-	@echo "    FRAMES=4                     Number of frames"
-	@echo "    MODE=text|binary             File format (default: text)"
+	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
+	@echo "    SIMULATOR=verilator        Simulator: verilator (default) or icarus"
+	@echo "    SOURCE=synthetic:color_bars  Input source (prepare only)"
+	@echo "    WIDTH=320                  Frame width"
+	@echo "    HEIGHT=240                 Frame height"
+	@echo "    FRAMES=4                   Number of frames"
+	@echo "    MODE=text|binary           File format"
 
 # ---- Main pipeline flow ----
 
 run-pipeline: prepare compile sim verify render
 	@echo "Pipeline complete!"
 
+# prepare writes dv/data/config.mk so that subsequent steps (sim, verify, render)
+# automatically pick up the same WIDTH/HEIGHT/FRAMES/MODE without re-specifying them.
 prepare:
 	@mkdir -p $(DATA_DIR)/renders
+	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\n' \
+		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
 
+compile:
+	$(MAKE) -C dv/sim compile $(SIM_VARS)
+
 sim: compile
-	$(MAKE) -C dv/sim sim \
-		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
-		MODE=$(MODE) \
-		INFILE=$(CURDIR)/$(PIPE_INFILE) \
-		OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
+	$(MAKE) -C dv/sim sim $(SIM_VARS)
+
+sim-waves:
+	$(MAKE) -C dv/sim sim-waves $(SIM_VARS)
+
+sw-dry-run:
+	$(MAKE) -C dv/sim sw-dry-run $(SIM_VARS)
 
 verify:
 	cd py && $(HARNESS) verify \
@@ -82,10 +101,7 @@ render:
 		--mode $(MODE) \
 		--render-output $(CURDIR)/$(DATA_DIR)/renders/comparison.png
 
-compile:
-	$(MAKE) -C dv/sim compile
-
-# ---- Additional targets ----
+# ---- Other targets ----
 
 lint:
 	$(FUSESOC) $(CORES_ROOT) run --target=lint opensoc:video:sparesoc_top
@@ -93,27 +109,13 @@ lint:
 test-py:
 	$(VENV_PY) $(CURDIR)/py/tests/test_frame_io.py
 
-sw-dry-run:
-	$(MAKE) -C dv/sim sw-dry-run \
-		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
-		MODE=$(MODE) \
-		INFILE=$(CURDIR)/$(PIPE_INFILE) \
-		OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
-
-sim-waves:
-	$(MAKE) -C dv/sim sim-waves \
-		WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
-		MODE=$(MODE) \
-		INFILE=$(CURDIR)/$(PIPE_INFILE) \
-		OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
-
 setup:
-	sudo apt install -y iverilog
+	sudo apt install -y iverilog verilator
 	python3 -m venv .venv
 	.venv/bin/pip install -r requirements.txt
 
 clean:
 	rm -rf build
 	$(MAKE) -C dv/sim clean
-	rm -f $(DATA_DIR)/*.txt $(DATA_DIR)/*.dat $(DATA_DIR)/*.bin
+	rm -f $(DATA_DIR)/*.txt $(DATA_DIR)/*.dat $(DATA_DIR)/*.bin $(DATA_DIR)/config.mk
 	rm -rf $(DATA_DIR)/renders

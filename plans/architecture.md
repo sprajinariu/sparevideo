@@ -88,7 +88,23 @@ Scaler:
         This is done by inverting pixel i with 320-i for each line.
     - scales from 320x240 to 1:1 or 2:1 (640x480).
 
-BRAM 
+Dithering:
+    - temporal (between same pixels of different frames)
+    - spatial  (between pixels of the same frames)
+
+Color correction:
+    Color corrections are done individually per pixel, after all blending and/or image resampling operations. The intended purpose is to:
+    - compensate for display specific characteristics (e.g. gamma, white point, sRGB)
+    - apply user-controlled parameters (e.g. brightness, contrast, saturation)
+    The GammaCor operation is a programmable look-up table for each color channel.
+    The tables do not have an entry for each of the 1024 possible input codes (0, 1, 2, ..., 
+    1023), but only for codes dividable by 32 (0, 32, 64, ..., 1024). Codes in-between are 
+    computed as a linear interpolation from the two nearest neighbors.
+
+
+BRAM:
+- single buffer: same buffer written and read.
+- tripple buffer: Write, Read and Ready
 
 ? rgb_to_ycrcb:
     -   transfom from RGB to YCrCb color space, for output display?

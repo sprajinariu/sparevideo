@@ -50,17 +50,23 @@ jobs:
       - name: Lint
         run: make lint
 
-      - name: Compile RTL + testbench
+      - name: Compile — Verilator (default)
         run: make compile
+
+      - name: Compile — Icarus
+        run: make compile SIMULATOR=icarus
 
       - name: Dry-run (file loopback, zero sim time)
         run: make sw-dry-run
 
-      - name: Pipeline — text mode, color_bars (default)
+      - name: Pipeline — text mode, color_bars (Verilator)
         run: make run-pipeline
 
-      - name: Pipeline — text mode, gradient
+      - name: Pipeline — text mode, gradient (Verilator)
         run: make run-pipeline SOURCE="synthetic:gradient"
 
-      - name: Pipeline — binary mode
+      - name: Pipeline — binary mode (Verilator)
         run: make run-pipeline MODE=binary
+
+      - name: Pipeline — text mode, color_bars (Icarus)
+        run: make run-pipeline SIMULATOR=icarus

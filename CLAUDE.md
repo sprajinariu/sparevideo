@@ -24,22 +24,24 @@ source .venv/bin/activate
 ## Build Commands
 
 ```bash
-# Full pipeline: prepare → sim → verify → render
+# Full pipeline: prepare → compile → sim → verify → render
 make run-pipeline
-make run-pipeline SOURCE="synthetic:gradient" MODE=binary
+make run-pipeline SOURCE="synthetic:gradient" MODE=binary SIMULATOR=verilator
 
-# Individual pipeline steps (e.g. re-run sim after RTL change)
-make prepare
-make sim
-make verify
-make render
+# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE to dv/data/config.mk.
+# Subsequent steps load it automatically — no need to repeat options.
+make prepare SOURCE="synthetic:gradient" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
+make sim                     # uses saved options
+make sim SIMULATOR=icarus    # command-line always overrides saved options
 
 # Other targets
-make lint           # Verilator lint
-make sw-dry-run    # Bypass RTL (file loopback, zero sim time)
-make sim-waves      # RTL simulation + GTKWave
-make setup          # One-time setup (install deps)
+make lint                    # Verilator lint
+make sw-dry-run              # Bypass RTL (file loopback, zero sim time)
+make sim-waves               # RTL sim + GTKWave
+make setup                   # One-time setup (install deps)
 ```
+
+> **Note:** Verilator simulation previously had a race condition — `tuser` was sampled as 0 on the posedge of `clk_pix` due to INITIALDLY (NBA-in-initial-block treated as blocking). Fixed by introducing `drv_*` intermediary signals written with blocking `=` in the initial block, and an `always_ff @(negedge clk_pix)` as the sole driver of `s_axis_*`. Driving on negedge ensures DUT inputs are stable at the posedge sampling point.
 
 ## Project Structure
 
@@ -47,7 +49,8 @@ make setup          # One-time setup (install deps)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library
-- `dv/sv/tb_sparevideo.sv` — Unified testbench (RTL sim + SW dry-run)
+- `dv/sv/tb_sparevideo.sv` — Unified testbench (RTL sim + SW dry-run, `ifdef VERILATOR` for DPI-C wall-clock)
+- `dv/sv/tb_utils.c` — DPI-C helper: `get_wall_ms()` via `clock_gettime` (used by Verilator path)
 - `dv/sim/Makefile` — Simulation Makefile (compiled .vvp lives in dv/sim/)
 - `dv/data/` — Generated input/output files and renders (gitignored)
 - `py/harness.py` — Pipeline harness CLI (prepare / verify / render)
