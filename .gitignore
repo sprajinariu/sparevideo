@@ -4,6 +4,7 @@
 sim_build/
 results.xml
 dv/cocotb/output/
+dv/sim/obj_dir/
 
 # Pipeline harness data
 dv/data/*.txt

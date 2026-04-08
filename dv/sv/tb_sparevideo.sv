@@ -10,12 +10,16 @@
 //   +HEIGHT=<n>        Frame height (default 240)
 //   +FRAMES=<n>        Number of frames (default 4)
 //   +MODE=text|binary  File format (default "text")
-//   +sw_dry_run        Bypass RTL — direct file loopback (no clock)
+//   +sw_dry_run=1      Bypass RTL — direct file loopback (no clock)
 //   +DUMP_VCD          Dump waveforms to VCD
 
 `timescale 1ns / 1ps
 
 module tb_sparevideo;
+
+`ifdef VERILATOR
+    import "DPI-C" function longint get_wall_ms();
+`endif
 
     // ---------------------------------------------------------------
     // Blanking parameters (small values to keep sim fast)
@@ -46,27 +50,45 @@ module tb_sparevideo;
     // ---------------------------------------------------------------
     // Clocks, resets, DUT signals
     // ---------------------------------------------------------------
-    logic        clk_pix;
-    logic        clk_dsp;
-    logic        rst_pix_n;
-    logic        rst_dsp_n;
+    logic clk_pix;
+    logic clk_dsp;
+    logic rst_pix_n;
+    logic rst_dsp_n;
 
+    // AXI driver intermediaries — written by the initial block with blocking =.
+    // Keeping these separate from s_axis_* ensures no NBA/blocking mix in the
+    // same process, which causes INITIALDLY races in Verilator --timing mode.
+    logic [23:0] drv_tdata  = '0;
+    logic        drv_tvalid = 1'b0;
+    logic        drv_tlast  = 1'b0;
+    logic        drv_tuser  = 1'b0;
+
+    // AXI-stream DUT inputs — driven ONLY by this always_ff (no initial-block
+    // NBAs on these signals).  Registering on negedge means the DUT's posedge
+    // always_ff sees a stable, settled value with no scheduling ambiguity.
     logic [23:0] s_axis_tdata;
     logic        s_axis_tvalid;
     logic        s_axis_tready;
     logic        s_axis_tlast;
     logic        s_axis_tuser;
 
-    logic        vga_hsync;
-    logic        vga_vsync;
-    logic [7:0]  vga_r;
-    logic [7:0]  vga_g;
-    logic [7:0]  vga_b;
+    always_ff @(negedge clk_pix) begin
+        s_axis_tdata  <= drv_tdata;
+        s_axis_tvalid <= drv_tvalid;
+        s_axis_tlast  <= drv_tlast;
+        s_axis_tuser  <= drv_tuser;
+    end
+
+    logic       vga_hsync;
+    logic       vga_vsync;
+    logic [7:0] vga_r;
+    logic [7:0] vga_g;
+    logic [7:0] vga_b;
 
     // The DUT's VGA controller is parameterised at instantiation; we
     // override here so the timing matches the small TB blanking values.
     sparesoc_top #(
-        .H_ACTIVE      (320),  // overridden via cfg_width below — see note
+        .H_ACTIVE      (320),
         .H_FRONT_PORCH (H_FRONT_PORCH),
         .H_SYNC_PULSE  (H_SYNC_PULSE),
         .H_BACK_PORCH  (H_BACK_PORCH),
@@ -118,15 +140,20 @@ module tb_sparevideo;
         integer scan_r, scan_g, scan_b;
         integer scan_count;
         integer scan_pixel;
-        realtime t_frame_start, t_frame_end;
+        integer pixel_ok;
+        integer frame_pixels;
+        integer sw_dry_run;
+        longint t_frame_start_ms, t_frame_end_ms;
 
         // Parse plusargs
-        if ($value$plusargs("WIDTH=%d", cfg_width)) ;
-        if ($value$plusargs("HEIGHT=%d", cfg_height)) ;
-        if ($value$plusargs("FRAMES=%d", cfg_frames)) ;
-        if ($value$plusargs("INFILE=%s", cfg_infile)) ;
-        if ($value$plusargs("OUTFILE=%s", cfg_outfile)) ;
-        if ($value$plusargs("MODE=%s", cfg_mode)) ;
+        if ($value$plusargs("WIDTH=%d",    cfg_width))   ;
+        if ($value$plusargs("HEIGHT=%d",   cfg_height))  ;
+        if ($value$plusargs("FRAMES=%d",   cfg_frames))  ;
+        if ($value$plusargs("INFILE=%s",   cfg_infile))  ;
+        if ($value$plusargs("OUTFILE=%s",  cfg_outfile)) ;
+        if ($value$plusargs("MODE=%s",     cfg_mode))    ;
+        sw_dry_run = 0;
+        if ($value$plusargs("sw_dry_run=%d", sw_dry_run)) ;
 
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
@@ -170,132 +197,120 @@ module tb_sparevideo;
                 cfg_frames[23:16], cfg_frames[31:24]);
         end
 
-        // ---- Dispatch ----
-        if ($test$plusargs("sw_dry_run")) begin
-            // ===============================================================
-            // SW DRY RUN: file loopback, no RTL
-            // ===============================================================
+        // ---- Mode-specific setup ----
+        if (sw_dry_run) begin
             $display("--- SW dry run (RTL bypassed) ---");
-
-            for (frame_idx = 0; frame_idx < cfg_frames; frame_idx = frame_idx + 1) begin
-                integer frame_pixels;
-                frame_pixels = 0;
-                t_frame_start = $realtime;
-
-                for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
-                    for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
-                        if (cfg_mode == "text") begin
-                            scan_count = $fscanf(fd_in, "%x", scan_pixel);
-                            if (scan_count != 1) begin
-                                $display("ERROR: Read failed at frame %0d row %0d col %0d",
-                                         frame_idx, row_idx, col_idx);
-                                error_count = error_count + 1;
-                            end else begin
-                                if (col_idx > 0) $fwrite(fd_out, " ");
-                                $fwrite(fd_out, "%06X", scan_pixel[23:0]);
-                                frame_pixels = frame_pixels + 1;
-                            end
-                        end else begin
-                            scan_r = $fgetc(fd_in);
-                            scan_g = $fgetc(fd_in);
-                            scan_b = $fgetc(fd_in);
-                            if (scan_r == -1 || scan_g == -1 || scan_b == -1) begin
-                                $display("ERROR: EOF at frame %0d row %0d col %0d",
-                                         frame_idx, row_idx, col_idx);
-                                error_count = error_count + 1;
-                            end else begin
-                                $fwrite(fd_out, "%c%c%c",
-                                        scan_r[7:0], scan_g[7:0], scan_b[7:0]);
-                                frame_pixels = frame_pixels + 1;
-                            end
-                        end
-                    end
-                    if (cfg_mode == "text") $fwrite(fd_out, "\n");
-                end
-
-                t_frame_end = $realtime;
-                $display("Frame %0d: %0d pixels OK (wall-clock %.3f s)",
-                         frame_idx, frame_pixels,
-                         (t_frame_end - t_frame_start) / 1.0e9);
-            end
-
-            $fclose(fd_in);
-            $fclose(fd_out);
-            if (error_count == 0) $display("PASS");
-            else                  $display("FAIL: %0d errors", error_count);
-            $finish;
-
         end else begin
-            // ===============================================================
-            // RTL SIMULATION: drive AXI4-Stream, capture VGA RGB
-            // ===============================================================
             $display("--- RTL simulation mode ---");
-
-            // Reset
-            rst_pix_n     <= 0;
-            rst_dsp_n     <= 0;
-            s_axis_tdata  <= '0;
-            s_axis_tvalid <= 0;
-            s_axis_tlast  <= 0;
-            s_axis_tuser  <= 0;
+            // Reset (drv_* start at 0 from their declarations)
+            rst_pix_n <= 0;
+            rst_dsp_n <= 0;
             repeat (10) @(posedge clk_pix);
             rst_pix_n <= 1;
             rst_dsp_n <= 1;
             @(posedge clk_pix);
-
             // Enable VGA-side capture
             fd_out_rtl    = fd_out;
             rtl_capturing = 1;
+        end
 
-            for (frame_idx = 0; frame_idx < cfg_frames; frame_idx = frame_idx + 1) begin
-                t_frame_start = $realtime;
+        // ---- Main frame loop ----
+        for (frame_idx = 0; frame_idx < cfg_frames; frame_idx = frame_idx + 1) begin
+            frame_pixels = 0;
+`ifdef VERILATOR
+            t_frame_start_ms = get_wall_ms();
+`else
+            t_frame_start_ms = 0;
+`endif
 
-                for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
-                    for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
-                        if (cfg_mode == "text") begin
-                            scan_count = $fscanf(fd_in, "%x", scan_pixel);
-                            if (scan_count != 1) begin
-                                $display("ERROR: Read failed at frame %0d row %0d col %0d",
-                                         frame_idx, row_idx, col_idx);
-                                error_count = error_count + 1;
-                                scan_pixel = 0;
-                            end
-                        end else begin
-                            scan_r = $fgetc(fd_in);
-                            scan_g = $fgetc(fd_in);
-                            scan_b = $fgetc(fd_in);
-                            if (scan_r == -1 || scan_g == -1 || scan_b == -1) begin
-                                $display("ERROR: EOF at frame %0d row %0d col %0d",
-                                         frame_idx, row_idx, col_idx);
-                                error_count = error_count + 1;
-                                scan_r = 0; scan_g = 0; scan_b = 0;
-                            end
+            for (row_idx = 0; row_idx < cfg_height; row_idx = row_idx + 1) begin
+                for (col_idx = 0; col_idx < cfg_width; col_idx = col_idx + 1) begin
+
+                    // ---- Read next pixel from file ----
+                    pixel_ok = 1;
+                    if (cfg_mode == "text") begin
+                        scan_count = $fscanf(fd_in, "%x", scan_pixel);
+                        if (scan_count != 1) begin
+                            $display("ERROR: Read failed at frame %0d row %0d col %0d",
+                                     frame_idx, row_idx, col_idx);
+                            error_count = error_count + 1;
+                            scan_pixel  = 0;
+                            pixel_ok    = 0;
                         end
+                    end else begin
+                        scan_r = $fgetc(fd_in);
+                        scan_g = $fgetc(fd_in);
+                        scan_b = $fgetc(fd_in);
+                        if (scan_r == -1 || scan_g == -1 || scan_b == -1) begin
+                            $display("ERROR: EOF at frame %0d row %0d col %0d",
+                                     frame_idx, row_idx, col_idx);
+                            error_count = error_count + 1;
+                            scan_r = 0; scan_g = 0; scan_b = 0;
+                            pixel_ok = 0;
+                        end
+                    end
 
+                    // ---- Per-pixel action ----
+                    if (sw_dry_run) begin
+                        // Loopback: write pixel straight to output file
+                        if (pixel_ok) begin
+                            if (cfg_mode == "text") begin
+                                if (col_idx > 0) $fwrite(fd_out, " ");
+                                $fwrite(fd_out, "%06X", scan_pixel[23:0]);
+                            end else begin
+                                $fwrite(fd_out, "%c%c%c",
+                                        scan_r[7:0], scan_g[7:0], scan_b[7:0]);
+                            end
+                            frame_pixels = frame_pixels + 1;
+                        end
+                    end else begin
+                        // RTL: drive pixel into the DUT via AXI4-Stream
                         if (cfg_mode == "text")
-                            s_axis_tdata <= scan_pixel[23:0];
+                            drv_tdata = scan_pixel[23:0];
                         else
-                            s_axis_tdata <= {scan_r[7:0], scan_g[7:0], scan_b[7:0]};
-                        s_axis_tvalid <= 1;
-                        s_axis_tuser  <= (row_idx == 0) && (col_idx == 0);
-                        s_axis_tlast  <= (col_idx == cfg_width - 1);
+                            drv_tdata = {scan_r[7:0], scan_g[7:0], scan_b[7:0]};
+                        drv_tvalid = 1;
+                        drv_tuser  = (row_idx == 0) && (col_idx == 0);
+                        drv_tlast  = (col_idx == cfg_width - 1);
 
                         // Hold until accepted (backpressure)
                         @(posedge clk_pix);
                         while (!s_axis_tready) @(posedge clk_pix);
 
-                        s_axis_tvalid <= 0;
-                        s_axis_tuser  <= 0;
-                        s_axis_tlast  <= 0;
+                        drv_tvalid = 0;
+                        drv_tuser  = 0;
+                        drv_tlast  = 0;
                     end
-                end
 
-                t_frame_end = $realtime;
+                end // col
+                if (sw_dry_run && cfg_mode == "text") $fwrite(fd_out, "\n");
+            end // row
+
+`ifdef VERILATOR
+            t_frame_end_ms = get_wall_ms();
+            if (sw_dry_run)
+                $display("Frame %0d: %0d pixels OK (wall-clock %.3f s)",
+                         frame_idx, frame_pixels,
+                         (t_frame_end_ms - t_frame_start_ms) / 1000.0);
+            else
                 $display("Frame %0d: input complete (wall-clock %.3f s)",
                          frame_idx,
-                         (t_frame_end - t_frame_start) / 1.0e9);
-            end
+                         (t_frame_end_ms - t_frame_start_ms) / 1000.0);
+`else
+            if (sw_dry_run)
+                $display("Frame %0d: %0d pixels OK (wall-clock N/A on Icarus)",
+                         frame_idx, frame_pixels);
+            else
+                $display("Frame %0d: input complete (wall-clock N/A on Icarus)",
+                         frame_idx);
+`endif
+        end // frame
 
+        // ---- Mode-specific teardown ----
+        if (sw_dry_run) begin
+            $fclose(fd_in);
+            $fclose(fd_out);
+        end else begin
             // Wait until VGA has emitted all expected pixels (or watchdog kills us)
             begin
                 integer expected_pixels;
@@ -320,11 +335,11 @@ module tb_sparevideo;
                     error_count = error_count + 1;
                 end
             end
-
-            if (error_count == 0) $display("PASS");
-            else                  $display("FAIL: %0d errors", error_count);
-            $finish;
         end
+
+        if (error_count == 0) $display("PASS");
+        else                  $display("FAIL: %0d errors", error_count);
+        $finish;
     end
 
     // ---------------------------------------------------------------
