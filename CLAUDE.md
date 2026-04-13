@@ -8,7 +8,7 @@ Do not include `Co-Authored-By` trailers in commit messages.
 
 ## Project Overview
 
-sparevideo is a video processing pipeline project. The top-level design (`sparesoc_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a 4-stage `axis_register` slice chain (placeholder for real processing), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output.
+sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a 4-stage `axis_register` slice chain (placeholder for real processing), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output.
 
 All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no interfaces/modports, no classes) for Icarus Verilog 12 compatibility.
 
@@ -32,10 +32,10 @@ make run-pipeline SOURCE="synthetic:gradient" MODE=binary SIMULATOR=verilator
 # Subsequent steps load it automatically — no need to repeat options.
 make prepare SOURCE="synthetic:gradient" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
 make sim                     # uses saved options
-make sim SIMULATOR=icarus    # command-line always overrides saved options
 
 # Other targets
 make lint                    # Verilator lint
+make test-ip                 # Per-block unit testbenches (Verilator)
 make sw-dry-run              # Bypass RTL (file loopback, zero sim time)
 make sim-waves               # RTL sim + GTKWave
 make setup                   # One-time setup (install deps)
@@ -45,7 +45,8 @@ make setup                   # One-time setup (install deps)
 
 ## Project Structure
 
-- `hw/top/sparesoc_top.sv` — Top-level (AXI4-Stream → CDC → 4-stage proc → CDC → vga_controller)
+- `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors
+- `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → 4-stage proc → CDC → vga_controller)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library
@@ -65,9 +66,9 @@ make setup                   # One-time setup (install deps)
 
 - All RTL in SystemVerilog, `.sv` extension
 - Use `logic` (not `reg`/`wire`), `always_ff`, `always_comb`
-- Avoid part-selects inside `always_comb` blocks (Icarus 12 limitation) — use intermediate `assign` signals
 - Active-low reset (`rst_n`), active-low sync signals (`hsync`, `vsync`)
 - 8-bit per channel RGB (24-bit color)
+- **All configuration parameters and shared types go in `hw/top/sparevideo_pkg.sv`.** Module parameter defaults reference the package. Do not hardcode constants that belong in the package elsewhere.
 
 ## Testbench
 
@@ -112,12 +113,11 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 
 - All RTL is in `hw/ip/vga/rtl/` and `hw/top/`. Keep modules small and focused.
 - Never use `reg`/`wire` — always `logic`. Never use `always` — always `always_ff` or `always_comb`.
-- Do not put bit-selects (e.g. `pixel_x[9:2]`) inside `always_comb` blocks — Icarus 12 rejects them. Use intermediate `assign` signals instead.
 
 ### Testbench / verification
 
-- The SV testbench uses `$display`/`if` checks — no SVA. Do not introduce `assert` statements (Icarus 12 does not support them).
-- Avoid nested automatic tasks with output parameters in Icarus — they silently malfunction. Inline the logic instead.
+- The SV testbench uses `$display`/`if` checks — no SVA. `assert` is fine for Verilator but is not used by convention in this repo.
+- Simulator: **Verilator only** for all required checks. Icarus commands exist in the Makefile but are not maintained and will likely fail.
 
 ### Debugging a failing simulation
 
@@ -128,6 +128,37 @@ Claude can't view GTKWave, but VCD is plain text and fully debuggable from the t
 3. **Scoped VCD dump.** If steps 1–2 don't localize it, narrow `$dumpvars` to the smallest interesting scope (e.g. `$dumpvars(0, tb_sparevideo.u_dut.u_vga)`) so the VCD stays small, then `make sim-waves`.
 4. **Read the VCD as text.** VCD is a header (signal declarations with short IDs) followed by `#<time>` markers and value changes. `grep` for a specific signal ID, or write a tiny Python script (use `.venv`) to parse and print a focused table of `(time, signalA, signalB, ...)` around the window of interest. This turns "thousands of cycles" into a 20-row table.
 5. **Last resort: open GTKWave locally.** `make sim-waves` opens it for the human; Claude won't see it but can still iterate based on what the user reports.
+
+### AXI4-Stream pipeline stall — known pitfalls
+
+When adding a backpressure (`tready`)-capable pipeline stage, three things must all be held simultaneously during a stall; missing any one corrupts data silently:
+
+**1. Sideband pipeline registers must be gated.**
+Add `pipe_stall = tvalid_pipe[PIPE_STAGES-1] && !both_ready`. Gate every pipeline `always_ff` with `else if (!pipe_stall)` so the registers don't overwrite valid data when the downstream isn't ready.
+
+**2. Combinational signals fed from the live input must be re-sourced from held registers.**
+In `axis_motion_detect`, `rgb2ycrcb` takes `s_axis_tdata` as input (1-cycle latency). The upstream source is free to change `tdata` immediately after acceptance (AXI spec). If the source presents the next pixel before the stall clears, `y_cur` reflects the wrong pixel by the next cycle. Fix: MUX the rgb2ycrcb input — use `tdata_pipe[PIPE_STAGES-1]` (held) when `pipe_stall=1`, and `s_axis_tdata` when `pipe_stall=0`.
+
+**3. RAM read address must be held during stall.**
+`pix_addr_reg` advances (and may wrap to 0) as soon as the last pixel of a frame is accepted, even if the pipeline is still stalled on that pixel. The combinational `mem_rd_addr = pix_addr` then reads a different address, changing `mem_rd_data`. Fix: register `pix_addr_hold` with enable `!pipe_stall`; drive `mem_rd_addr` from `pix_addr_hold` when stalled.
+
+**4. Memory write-back must be gated on the actual handshake.**
+`mem_wr_en` must be `tvalid_pipe[PIPE_STAGES-1] && both_ready` — not just `tvalid_pipe[PIPE_STAGES-1]`. Without the gate, the RAM write fires every cycle a pixel is stalled at the output, duplicating writes (idempotent but incorrect for any non-idempotent future write path).
+
+**5. Unit-test consumer stalls explicitly.**
+The default TB wires `vid_tready = 1'b1`. Add a test frame that periodically deasserts ready (e.g. 10 cycles off / 3 cycles on) and verifies the mask output matches expectations. Without this, all four bugs above go undetected.
+
+### Input/output rate mismatch — blanking
+
+The VGA controller inserts horizontal and vertical blanking after each active region; during blanking it does not consume pixels from the output FIFO. If the AXI4-Stream input drives pixels continuously at 1 pixel/clk with no blanking gaps, the output FIFO fills faster than the VGA drains it and will eventually overflow.
+
+Fix: the top-level TB input driver must mirror VGA timing — insert `H_BLANK` idle cycles (tvalid=0) after each active row and `V_BLANK × H_TOTAL` idle cycles after the last row of each frame. This keeps the long-term input rate equal to the VGA consumption rate.
+
+The SVAs `assert_fifo_in_not_full` and `assert_fifo_out_not_full` (in `sparevideo_top.sv`) catch this at simulation time before the overflow becomes a silent data-loss bug.
+
+### axis_async_fifo depth signals
+
+`s_status_depth` (write-clock domain) and `m_status_depth` (read-clock domain) do NOT include the internal output-pipeline FIFO (~16 entries with default `RAM_PIPELINE=2`). The reported depth can therefore be 0 while up to 16 entries are in-flight on the read side. Keep this in mind when using depth for flow-control thresholds.
 
 ### Python environment
 

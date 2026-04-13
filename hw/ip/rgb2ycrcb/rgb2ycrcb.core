@@ -1,0 +1,14 @@
+CAPI=2:
+name: "sparevideo:ip:rgb2ycrcb"
+description: "RGB888 to YCrCb color-space converter (Rec.601, 8-bit fixed-point)"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/rgb2ycrcb.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

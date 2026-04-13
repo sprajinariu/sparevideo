@@ -1,15 +1,18 @@
 CAPI=2:
-name: "opensoc:video:sparesoc_top"
-description: "Sparesoc top-level — AXI4-Stream video pipeline"
+name: "sparevideo:video:sparevideo_top"
+description: "sparevideo top-level — AXI4-Stream video pipeline"
 
 filesets:
   files_rtl:
     files:
-      - hw/top/sparesoc_top.sv
+      - hw/top/sparevideo_pkg.sv
+      - hw/top/ram.sv
+      - hw/top/sparevideo_top.sv
     file_type: systemVerilogSource
     depend:
       - opensoc:ip:vga
       - sparevideo:third_party:verilog-axis
+      - sparevideo:ip:motion
 
   files_lint:
     files:
@@ -20,13 +23,13 @@ targets:
   default:
     filesets:
       - files_rtl
-    toplevel: sparesoc_top
+    toplevel: sparevideo_top
 
   lint:
     filesets:
       - files_rtl
       - files_lint
-    toplevel: sparesoc_top
+    toplevel: sparevideo_top
     default_tool: verilator
     tools:
       verilator:

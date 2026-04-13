@@ -1,4 +1,4 @@
-// Testbench for sparesoc_top (AXI4-Stream version)
+// Testbench for sparevideo_top (AXI4-Stream version)
 //
 // Drives an AXI4-Stream input on clk_pix, runs processing on clk_dsp,
 // and captures VGA RGB output on clk_pix.
@@ -10,6 +10,8 @@
 //   +HEIGHT=<n>        Frame height (default 240)
 //   +FRAMES=<n>        Number of frames (default 4)
 //   +MODE=text|binary  File format (default "text")
+//   +THRESH=<n>        Motion threshold (informational; MOTION_THRESH is a
+//                      compile-time parameter — recompile to change it)
 //   +sw_dry_run=1      Bypass RTL — direct file loopback (no clock)
 //   +DUMP_VCD          Dump waveforms to VCD
 
@@ -87,7 +89,7 @@ module tb_sparevideo;
 
     // The DUT's VGA controller is parameterised at instantiation; we
     // override here so the timing matches the small TB blanking values.
-    sparesoc_top #(
+    sparevideo_top #(
         .H_ACTIVE      (320),
         .H_FRONT_PORCH (H_FRONT_PORCH),
         .H_SYNC_PULSE  (H_SYNC_PULSE),
@@ -154,6 +156,14 @@ module tb_sparevideo;
         if ($value$plusargs("MODE=%s",     cfg_mode))    ;
         sw_dry_run = 0;
         if ($value$plusargs("sw_dry_run=%d", sw_dry_run)) ;
+
+        begin : log_thresh
+            integer thresh_arg;
+            thresh_arg = 16;
+            if ($value$plusargs("THRESH=%d", thresh_arg))
+                $display("TB note: +THRESH=%0d seen (informational; MOTION_THRESH is compile-time)",
+                         thresh_arg);
+        end
 
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
@@ -284,7 +294,26 @@ module tb_sparevideo;
 
                 end // col
                 if (sw_dry_run && cfg_mode == "text") $fwrite(fd_out, "\n");
+
+                // Horizontal blanking gap after each active row (RTL only).
+                // Matches the H_BLANK period the VGA controller inserts, so the
+                // input rate equals the output rate and the output FIFO never overflows.
+                if (!sw_dry_run) begin
+                    drv_tvalid = 0;
+                    repeat (H_BLANK) @(posedge clk_pix);
+                end
             end // row
+
+            // Vertical blanking gap after each frame (RTL only).
+            // V_BLANK full lines (each H_ACTIVE + H_BLANK cycles wide).
+            if (!sw_dry_run) begin
+                begin : v_blank_gap
+                    integer vb;
+                    drv_tvalid = 0;
+                    for (vb = 0; vb < V_BLANK * (cfg_width + H_BLANK); vb = vb + 1)
+                        @(posedge clk_pix);
+                end
+            end
 
 `ifdef VERILATOR
             t_frame_end_ms = get_wall_ms();

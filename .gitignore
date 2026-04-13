@@ -4,7 +4,7 @@
 sim_build/
 results.xml
 dv/cocotb/output/
-dv/sim/obj_dir/
+dv/sim/obj_*/*
 
 # Pipeline harness data
 dv/data/*.txt
@@ -223,3 +223,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+dv/sim/obj_tb_rgb2ycrcb/Vtb_rgb2ycrcb__ALL.o
