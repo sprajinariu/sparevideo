@@ -4,21 +4,19 @@ Video processing pipeline with motion detection and bounding-box overlay, verifi
 
 ## Overview
 
-A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs a **motion detection + bounding-box overlay pipeline**, crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync.
+A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **motion detection + bounding-box overlay pipeline**, crosses back to the pixel clock, and drives a VGA controller.
 
-**Motion detection pipeline** (DSP clock domain):
+Architecture details, module interfaces, and design decisions are documented in [`docs/specs/`](docs/specs/):
 
-```
-s_axis → axis_motion_detect ──┬── video ──→ axis_overlay_bbox → m_axis
-              ↕ RAM port A    └── mask  ──→ axis_bbox_reduce ───↗ (bbox)
-              ram (Y8 prev-frame buffer)
-```
-
-- `axis_motion_detect`: computes a 1-bit motion mask by comparing the current frame's luma (Y8) against the previous frame stored in a shared RAM; passes RGB video through with matched latency.
-- `axis_bbox_reduce`: reduces the mask stream to `{min_x, max_x, min_y, max_y}`, latched once per frame at EOF.
-- `axis_overlay_bbox`: draws a 1-pixel-thick green rectangle on the RGB video stream using the previously latched bbox (1-frame overlay latency).
-
-Frame 0 always produces a full-frame border (the RAM is zero-initialized, so every pixel reads as "motion"). Frames 1..N-1 are correct.
+| Document | Module |
+|----------|--------|
+| [`sparevideo-top-arch.md`](docs/specs/sparevideo-top-arch.md) | Top-level pipeline, clock domains, FIFO sizing, SVAs |
+| [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
+| [`axis_bbox_reduce-arch.md`](docs/specs/axis_bbox_reduce-arch.md) | Mask → bounding-box reduction |
+| [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | Rectangle overlay on RGB video |
+| [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
+| [`ram-arch.md`](docs/specs/ram-arch.md) | Dual-port byte RAM, region descriptor model |
+| [`vga_controller-arch.md`](docs/specs/vga_controller-arch.md) | VGA timing generator |
 
 ## Project Structure
 
@@ -181,41 +179,6 @@ FF0000 FF0000 00FF00 00FF00
 ```
 
 **Binary mode** (`.bin`): 12-byte header (width, height, frames as LE uint32) + raw RGB bytes (3 bytes/pixel, row-major).
-
-## Design Interface
-
-```systemverilog
-module sparevideo_top #(
-    parameter int H_ACTIVE      = 320,
-    parameter int H_FRONT_PORCH = 4,
-    parameter int H_SYNC_PULSE  = 8,
-    parameter int H_BACK_PORCH  = 4,
-    parameter int V_ACTIVE      = 240,
-    parameter int V_FRONT_PORCH = 2,
-    parameter int V_SYNC_PULSE  = 2,
-    parameter int V_BACK_PORCH  = 2,
-    parameter int MOTION_THRESH = 16   // luma-diff threshold for motion detection
-) (
-    input  logic        clk_pix,        // 25 MHz pixel clock (input + VGA output domain)
-    input  logic        clk_dsp,        // 100 MHz DSP clock (motion pipeline domain)
-    input  logic        rst_pix_n,      // active-low synchronous reset, clk_pix domain
-    input  logic        rst_dsp_n,      // active-low synchronous reset, clk_dsp domain
-
-    // AXI4-Stream video input (clk_pix domain)
-    input  logic [23:0] s_axis_tdata,   // {R[7:0], G[7:0], B[7:0]}
-    input  logic        s_axis_tvalid,
-    output logic        s_axis_tready,
-    input  logic        s_axis_tlast,   // end-of-line
-    input  logic        s_axis_tuser,   // start-of-frame
-
-    // VGA output (clk_pix domain)
-    output logic        vga_hsync,
-    output logic        vga_vsync,
-    output logic [7:0]  vga_r,
-    output logic [7:0]  vga_g,
-    output logic [7:0]  vga_b
-);
-```
 
 ## License
 

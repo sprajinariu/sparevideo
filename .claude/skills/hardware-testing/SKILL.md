@@ -113,6 +113,7 @@ endmodule
 
 ### Rules
 
+- Your job is to discover implementation issues.
 - Use `!==` (4-state inequality) not `!=` — catches `X` and `Z` propagation.
 - Test boundary conditions: zero, max value, overflow, sign extension edge cases.
 - Each test case is one `check()` call with a descriptive name.
