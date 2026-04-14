@@ -174,7 +174,7 @@ make test-py                 # Run Python unit tests
 | `synthetic:moving_box_h` | Red box, horizontal left → right |
 | `synthetic:moving_box_v` | Green box, vertical top → bottom |
 | `synthetic:moving_box_reverse` | Blue box, diagonal bottom-right → top-left |
-| `synthetic:dark_moving_box` | Dark box on bright background (tests departure-ghost filtering) |
+| `synthetic:dark_moving_box` | Dark box on bright background (tests polarity-agnostic mask) |
 | `synthetic:two_boxes` | Red + cyan boxes moving in opposing directions |
 
 Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking.
@@ -187,7 +187,7 @@ The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (defa
 make run-pipeline SIMARGS="+THRESH=32"
 ```
 
-A pixel is classified as motion when `|Y_cur - Y_prev| > THRESH` **and** `Y_cur > THRESH`. The second condition filters departure-ghost pixels (where the object was in the previous frame but is now dark background), keeping the bounding box tight around the object's current position.
+A pixel is classified as motion when `|Y_cur - Y_prev| > THRESH`. The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
 
 ### File Formats
 

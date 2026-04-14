@@ -89,7 +89,8 @@ def compare_frames(input_frames, output_frames, tolerance=0):
         tolerance: Max number of differing pixels per frame that still counts
             as a pass. 0 = exact match (default). Use a non-zero value to
             accommodate the bounding-box overlay added by the motion pipeline
-            (frame 0 always has a full-frame border; motion frames have a bbox).
+            (the first 2 frames are suppressed; subsequent motion frames
+            have a bbox slightly larger than the object).
 
     Returns:
         List of dicts with keys: frame_idx, match, max_diff, mean_diff,

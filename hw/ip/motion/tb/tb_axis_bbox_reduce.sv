@@ -230,6 +230,31 @@ module tb_axis_bbox_reduce;
         repeat (2) @(posedge clk);
 
         // ==================================================================
+        // Prime DUT4: drive 2 dummy all-zero 4×4 frames so PrimeFrames
+        // counter saturates. bbox_empty must be forced to 1 during priming.
+        // (DUT8 is unaffected — 4×4 streams never produce an 8×8 EOF.)
+        // ==================================================================
+        $display("--- Prime DUT4: 2 dummy frames (expect bbox_empty=1) ---");
+        for (i = 0; i < NP; i = i + 1) mask4[i] = 1'b0;
+        for (i = 0; i < 2; i = i + 1) begin
+            drive_frame4();
+            begin
+                logic to;
+                wait_bbox_valid4(to);
+                if (to) begin
+                    $display("FAIL prime4[%0d]: bbox_valid never asserted", i);
+                    num_errors = num_errors + 1;
+                end
+                if (!bbox_empty) begin
+                    $display("FAIL prime4[%0d]: bbox_empty=%0b, expected 1", i, bbox_empty);
+                    num_errors = num_errors + 1;
+                end
+            end
+            repeat (4) @(posedge clk);
+        end
+        $display("DUT4 priming complete");
+
+        // ==================================================================
         // T1 — known active region
         //   row 0: 0 0 0 0
         //   row 1: 0 1 1 0
@@ -309,6 +334,32 @@ module tb_axis_bbox_reduce;
         drive_frame4();
         check4("T7", 1'b0, H-1, H-1, 0, V-1);
         repeat (4) @(posedge clk);
+
+        // ==================================================================
+        // Prime DUT8: drive 2 dummy all-zero 8×8 frames so PrimeFrames
+        // counter saturates in DUT8. DUT4 also sees these pixels and may
+        // fire spurious bbox_valid strobes (already primed, mask=0 →
+        // bbox_empty=1); T9 resets DUT4 scratch via SOF so no impact.
+        // ==================================================================
+        $display("--- Prime DUT8: 2 dummy frames (expect bbox8_empty=1) ---");
+        for (i = 0; i < NP8; i = i + 1) mask8[i] = 1'b0;
+        for (i = 0; i < 2; i = i + 1) begin
+            drive_frame8();
+            begin
+                logic to;
+                wait_bbox_valid8(to);
+                if (to) begin
+                    $display("FAIL prime8[%0d]: bbox8_valid never asserted", i);
+                    num_errors = num_errors + 1;
+                end
+                if (!bbox8_empty) begin
+                    $display("FAIL prime8[%0d]: bbox8_empty=%0b, expected 1", i, bbox8_empty);
+                    num_errors = num_errors + 1;
+                end
+            end
+            repeat (4) @(posedge clk);
+        end
+        $display("DUT8 priming complete");
 
         // ==================================================================
         // T8 — 8×8 frame, scattered pattern

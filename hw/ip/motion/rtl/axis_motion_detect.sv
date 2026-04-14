@@ -10,11 +10,11 @@
 //   Cycle C+1: y_cur registered (rgb2ycrcb output), mem_rd_data arrives from RAM
 //              → compare & emit
 //
-// Mask logic: a pixel is flagged as motion when abs(Y_cur - Y_prev) > THRESH
-// AND Y_cur > THRESH. The second condition filters out "departure ghost" pixels
-// (where the object was in the previous frame but is now background), so the
-// mask tracks only the object's current position rather than the union of old
-// and new positions.
+// Mask logic: a pixel is flagged as motion when abs(Y_cur - Y_prev) > THRESH.
+// No brightness-polarity filter is applied — both arrival and departure pixels
+// are flagged. This makes the mask polarity-agnostic (works for bright-on-dark,
+// dark-on-bright, and colour scenes). The bbox will be slightly larger than the
+// object by approximately one frame of displacement in each axis.
 //
 // The Y8 frame buffer is external — this module exposes a 1R1W memory port
 // and connects to the shared `ram` port A at the top level.
@@ -189,7 +189,7 @@ module axis_motion_detect #(
 
     assign diff     = (y_cur > mem_rd_data_i) ? (y_cur - mem_rd_data_i)
                                                : (mem_rd_data_i - y_cur);
-    assign mask_bit = (diff > THRESH[7:0]) && (y_cur > THRESH[7:0]);
+    assign mask_bit = (diff > THRESH[7:0]);
 
     // ---- Memory write-back: store current Y for next frame ----
     // Gate on both_ready so the write fires exactly once per pixel,

@@ -116,5 +116,6 @@ None from `sparevideo_pkg`.
 - **No hysteresis or minimum-size filter**: a single isolated motion pixel produces a 1×1 bbox. The overlay will draw a 1×1 green dot, which may flicker on noisy inputs.
 - **Single-object**: only one bbox is maintained. Multiple disjoint motion regions are merged into the axis-aligned bounding box of their union (e.g. `synthetic:two_boxes` produces one large bbox encompassing both objects).
 - **1-frame bbox latency**: the box drawn on frame N is from frame N−1 motion.
-- **Bbox tightness depends on upstream mask**: the departure-ghost filter in `axis_motion_detect` (`Y_cur > THRESH`) ensures the mask only flags the object's current position. Without this filter, the bbox would span both the old and new positions — roughly double the object size in the direction of motion.
+- **Bbox oversizing**: the upstream mask is polarity-agnostic (`diff > THRESH` only), flagging both arrival and departure pixels. The bbox is slightly larger than the object by approximately the per-frame displacement. This is a deliberate trade-off for scene-type independence.
+- **RAM priming**: the first 2 frames after reset are suppressed (`bbox_empty` forced high) via an internal `PrimeFrames` counter, preventing false full-frame bboxes caused by the zeroed Y-prev RAM.
 - **`bbox_valid_o` unused at top level**: `sparevideo_top` ties this signal off. It is available for future debug or CDC logic.

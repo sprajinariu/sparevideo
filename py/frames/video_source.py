@@ -214,11 +214,9 @@ def _gen_moving_box_reverse(width, height, num_frames):
 def _gen_dark_moving_box(width, height, num_frames):
     """A dark box moving diagonally on a bright background.
 
-    Tests that the mask logic handles dark-on-bright scenes, not just
-    bright-on-dark.  The current mask requires Y_cur > THRESH, so a
-    dark hole on a white field should NOT produce a bbox around the hole
-    (departure-ghost filtering).  Instead the bbox should track the bright
-    pixels that appear where the hole used to be.
+    Tests that the polarity-agnostic mask (diff > THRESH only) correctly
+    detects motion for dark-on-bright scenes, not just bright-on-dark.
+    The bbox should track the object's motion region (arrival + departure).
     """
     box_w, box_h = width // 4, height // 4
     frames = []

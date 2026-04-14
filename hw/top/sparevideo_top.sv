@@ -26,7 +26,8 @@ module sparevideo_top #(
     parameter int V_SYNC_PULSE  = sparevideo_pkg::V_SYNC_PULSE,
     parameter int V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
     // Motion detect threshold — override at instantiation or compile time.
-    // Pixels with abs(Y_cur - Y_prev) > MOTION_THRESH are flagged as motion.
+    // Pixels with abs(Y_cur - Y_prev) > MOTION_THRESH are flagged as motion
+    // (polarity-agnostic — both arrival and departure pixels are flagged).
     parameter int MOTION_THRESH = 16
 ) (
     // ---- Clocks & resets -------------------------------------------

@@ -105,7 +105,7 @@ None from `sparevideo_pkg`.
 
 ## 8. Known Limitations
 
-- **1-frame bbox latency**: the bbox inputs reflect the previous frame's motion, so the rectangle drawn on frame N encloses the motion region from frame N−1. The upstream departure-ghost filter in `axis_motion_detect` ensures the bbox tightly wraps the object's position (not the union of old and new positions), so the 1-frame positional lag is the only source of visual offset.
+- **1-frame bbox latency**: the bbox inputs reflect the previous frame's motion, so the rectangle drawn on frame N encloses the motion region from frame N−1. The upstream mask is polarity-agnostic (flags both arrival and departure pixels), so the bbox is slightly larger than the object by approximately the per-frame displacement, plus the 1-frame positional lag.
 - **1-pixel-thick rectangle only**: no fill, no anti-aliasing, no corner rounding.
 - **Single rectangle**: only one bbox can be drawn per frame.
 - **No alpha blending**: the overlay is opaque — `BBOX_COLOR` fully replaces the underlying pixel on the edge.

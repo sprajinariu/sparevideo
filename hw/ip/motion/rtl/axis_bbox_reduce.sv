@@ -27,6 +27,11 @@
 //   EOF latch delay: the last pixel of the frame updates the scratch in the
 //   same cycle that is_eof is asserted. Register is_eof and use it 1 cycle
 //   later. Back-to-back frames are safe since this is pipelined
+//
+//   RAM priming: the Y-prev RAM is zeroed at reset, so the first frame's
+//   motion mask is meaningless (every pixel looks like motion). The bbox
+//   output is forced empty for the first PrimeFrames (2) EOF events,
+//   giving the RAM time to fill with valid reference data.
 
 module axis_bbox_reduce #(
     parameter int H_ACTIVE = 320,
@@ -135,6 +140,25 @@ module axis_bbox_reduce #(
         end
     end
 
+    // ---- Frame counter: suppress bbox for first PRIME_FRAMES frames ----
+    // The Y-prev RAM is zeroed at reset, so the first frame's diff is
+    // meaningless (everything looks like motion). The bbox computed from
+    // that frame would cover the entire image. Suppress bbox_empty=0
+    // until PRIME_FRAMES EOF events have passed, giving the RAM time to
+    // fill with valid reference data.
+    localparam int PrimeFrames = 2;
+    logic [$clog2(PrimeFrames+1)-1:0] frame_cnt;
+    logic                              primed;
+
+    assign primed = (frame_cnt == ($bits(frame_cnt))'(PrimeFrames));
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i)
+            frame_cnt <= '0;
+        else if (is_eof_r && !primed)
+            frame_cnt <= frame_cnt + 1;
+    end
+
     // ---- Latch output one cycle after EOF ----
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
@@ -149,8 +173,10 @@ module axis_bbox_reduce #(
 
             if (is_eof_r) begin
                 bbox_valid_o <= 1'b1;
-                bbox_empty_o <= ~sc_any;
-                if (sc_any) begin
+                // Force empty until the RAM has been primed with valid
+                // reference data (first PrimeFrames frames).
+                bbox_empty_o <= ~sc_any | ~primed;
+                if (sc_any && primed) begin
                     bbox_min_x_o <= sc_min_x;
                     bbox_max_x_o <= sc_max_x;
                     bbox_min_y_o <= sc_min_y;
