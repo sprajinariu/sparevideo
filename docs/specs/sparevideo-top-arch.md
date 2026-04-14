@@ -55,7 +55,7 @@ sparevideo_top (top level)
 | `V_FRONT_PORCH` | pkg | Vertical front porch |
 | `V_SYNC_PULSE` | pkg | Vertical sync pulse height |
 | `V_BACK_PORCH` | pkg | Vertical back porch |
-| `MOTION_THRESH` | 16 | Luma-difference threshold for motion (≈6.25% intensity) |
+| `MOTION_THRESH` | 16 | Luma-difference threshold for motion (≈6.25% intensity); also the minimum current-luma floor for departure-ghost filtering |
 
 All defaults reference `sparevideo_pkg`.
 
@@ -74,7 +74,7 @@ s_axis ──► u_fifo_in ──► dsp_in ──► u_motion_detect ─── 
 ```
 
 1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
-2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the previous frame's Y8 from `u_ram` port A, computes `|Y_cur − Y_prev|`, emits a 1-bit motion mask and the original RGB video with matched latency. Writes `Y_cur` back to RAM on acceptance.
+2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the previous frame's Y8 from `u_ram` port A, computes `|Y_cur − Y_prev|`, and emits a 1-bit motion mask plus the original RGB video with matched latency. The mask condition is `(diff > THRESH) && (Y_cur > THRESH)` — the second term filters departure-ghost pixels (where the object was in the previous frame but is now dark background), producing a tight bbox around the object's current position rather than spanning both old and new positions. Writes `Y_cur` back to RAM on acceptance.
 3. **u_ram**: dual-port byte RAM (port A for motion detect, port B reserved). Zero-initialized so frame 0 reads all-motion.
 4. **u_bbox_reduce**: accumulates `{min_x, max_x, min_y, max_y}` over motion pixels; latches at EOF. Drives `msk_tready` tied 1 (always ready).
 5. **u_overlay_bbox**: for each pixel, checks if `(col, row)` is on the bbox rectangle edge; substitutes `BBOX_COLOR` (bright green) when on the edge and `bbox_empty=0`. Pure pass-through otherwise.

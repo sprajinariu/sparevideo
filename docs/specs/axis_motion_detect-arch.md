@@ -23,7 +23,7 @@ axis_motion_detect (u_motion_detect)
 |-----------|---------|-------------|
 | `H_ACTIVE` | 320 | Active pixels per line |
 | `V_ACTIVE` | 240 | Active lines per frame |
-| `THRESH` | 16 | Unsigned luma-difference threshold (motion if `|Y_cur−Y_prev| > THRESH`) |
+| `THRESH` | 16 | Unsigned luma-difference threshold; also serves as the minimum current-luma floor (see §4) |
 | `RGN_BASE` | 0 | Base byte-address of the Y_PREV region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the Y_PREV region (sanity-checked at elaboration) |
 
@@ -64,12 +64,23 @@ axis_motion_detect (u_motion_detect)
 Y_cur  = rgb2ycrcb(R, G, B).y         // 1-cycle pipeline inside rgb2ycrcb
 Y_prev = mem_rd_data_i                 // RAM read, 1-cycle latency after mem_rd_addr_o
 diff   = abs(Y_cur − Y_prev)
-mask   = (diff > THRESH)
+mask   = (diff > THRESH) && (Y_cur > THRESH)
 
 mem_wr_addr_o = RGN_BASE + pix_addr    // write Y_cur back at same address
 mem_wr_data_o = Y_cur
 mem_wr_en_o   = tvalid && tready       // only on actual acceptance
 ```
+
+### Departure-ghost filtering
+
+The mask condition includes a **current-luma floor** (`Y_cur > THRESH`) in addition to the frame-difference check. Without this guard, the mask would flag both the object's current position (arrival zone — where pixels turned bright) and its previous position (departure zone — where pixels turned dark). When `axis_bbox_reduce` accumulates over both zones, the resulting bounding box spans roughly double the object's size in the direction of motion.
+
+The `Y_cur > THRESH` term filters out departure-zone pixels (which have low current luma — they are now background). This ensures the bbox tightly tracks only the object's current position.
+
+**Behavior by scene type:**
+- **Bright object on dark background** (e.g. `synthetic:moving_box`): arrival pixels have high `Y_cur` (pass); departure pixels have low `Y_cur` (filtered). Bbox tracks the object's current position.
+- **Dark object on bright background** (e.g. `synthetic:dark_moving_box`): neither arrival nor departure pixels at the object location have high `Y_cur`. The mask fires on the exposed bright background where the dark hole moved away from. The bbox tracks where the object *was* — a known limitation of the arrival-only filter in this scene class.
+- **Textured/mid-tone scenes**: pixels crossing the threshold in either direction are filtered to only those with significant current luma, preventing asymmetric ghost artifacts.
 
 ### Pixel address counter
 
@@ -137,3 +148,4 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 - **Fixed THRESH**: compile-time parameter. Runtime control requires promoting to an input port and a `sparevideo_csr` AXI-Lite register.
 - **`Cr`/`Cb` unused**: `rgb2ycrcb` outputs `cb_o` and `cr_o`; only `y_o` is used. Lint waivers suppress `PINCONNECTEMPTY`/`UNUSEDSIGNAL`.
 - **Single-buffered**: no double-buffering. Mid-frame RAM corruption by port B clients accessing the Y_PREV region during an active frame will produce incorrect mask bits. See the host-responsibility rule in [ram-arch.md](ram-arch.md).
+- **Dark-on-bright limitation**: the `Y_cur > THRESH` departure-ghost filter means the mask only fires on pixels with significant current luma. A dark object on a bright background will not produce a mask around the object itself — instead the mask fires on the newly-exposed bright area where the object moved away from. This is acceptable for the streaming model but means the bbox tracks the "hole left behind" rather than the object.

@@ -4,7 +4,9 @@ Supported sources:
   - Path to MP4/AVI video file (requires opencv)
   - Path to directory of PNG/JPG images
   - "synthetic:<pattern>" where pattern is one of:
-      color_bars, gradient, checkerboard, moving_box
+      color_bars, gradient, checkerboard, moving_box,
+      moving_box_h, moving_box_v, moving_box_reverse,
+      dark_moving_box, two_boxes
 """
 
 import sys
@@ -104,6 +106,11 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "gradient": _gen_gradient,
         "checkerboard": _gen_checkerboard,
         "moving_box": _gen_moving_box,
+        "moving_box_h": _gen_moving_box_h,
+        "moving_box_v": _gen_moving_box_v,
+        "moving_box_reverse": _gen_moving_box_reverse,
+        "dark_moving_box": _gen_dark_moving_box,
+        "two_boxes": _gen_two_boxes,
     }
     if pattern not in generators:
         raise ValueError(
@@ -158,6 +165,92 @@ def _gen_moving_box(width, height, num_frames):
         cx = int(t * (width - box_w))
         cy = int(t * (height - box_h))
         frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        frames.append(frame)
+    return frames
+
+
+def _gen_moving_box_h(width, height, num_frames):
+    """A red box moving horizontally (left to right)."""
+    box_w, box_h = width // 6, height // 6
+    cy = (height - box_h) // 2
+    frames = []
+    for i in range(num_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        t = i / max(num_frames - 1, 1)
+        cx = int(t * (width - box_w))
+        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        frames.append(frame)
+    return frames
+
+
+def _gen_moving_box_v(width, height, num_frames):
+    """A green box moving vertically (top to bottom)."""
+    box_w, box_h = width // 6, height // 6
+    cx = (width - box_w) // 2
+    frames = []
+    for i in range(num_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        t = i / max(num_frames - 1, 1)
+        cy = int(t * (height - box_h))
+        frame[cy : cy + box_h, cx : cx + box_w] = (0, 255, 0)
+        frames.append(frame)
+    return frames
+
+
+def _gen_moving_box_reverse(width, height, num_frames):
+    """A blue box moving diagonally from bottom-right to top-left."""
+    box_w, box_h = width // 4, height // 4
+    frames = []
+    for i in range(num_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        t = i / max(num_frames - 1, 1)
+        cx = int((1 - t) * (width - box_w))
+        cy = int((1 - t) * (height - box_h))
+        frame[cy : cy + box_h, cx : cx + box_w] = (0, 0, 255)
+        frames.append(frame)
+    return frames
+
+
+def _gen_dark_moving_box(width, height, num_frames):
+    """A dark box moving diagonally on a bright background.
+
+    Tests that the mask logic handles dark-on-bright scenes, not just
+    bright-on-dark.  The current mask requires Y_cur > THRESH, so a
+    dark hole on a white field should NOT produce a bbox around the hole
+    (departure-ghost filtering).  Instead the bbox should track the bright
+    pixels that appear where the hole used to be.
+    """
+    box_w, box_h = width // 4, height // 4
+    frames = []
+    for i in range(num_frames):
+        frame = np.full((height, width, 3), 200, dtype=np.uint8)
+        t = i / max(num_frames - 1, 1)
+        cx = int(t * (width - box_w))
+        cy = int(t * (height - box_h))
+        frame[cy : cy + box_h, cx : cx + box_w] = (20, 20, 20)
+        frames.append(frame)
+    return frames
+
+
+def _gen_two_boxes(width, height, num_frames):
+    """Two boxes moving in opposite directions (red horizontal, cyan vertical).
+
+    Tests that the single-bbox reducer produces a bounding box that
+    encompasses both objects when both are in motion.
+    """
+    bw, bh = width // 8, height // 8
+    frames = []
+    for i in range(num_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        t = i / max(num_frames - 1, 1)
+        # Red box: left to right, upper third
+        rx = int(t * (width - bw))
+        ry = height // 6
+        frame[ry : ry + bh, rx : rx + bw] = (255, 0, 0)
+        # Cyan box: right to left, lower third
+        cx = int((1 - t) * (width - bw))
+        cy = height * 2 // 3
+        frame[cy : cy + bh, cx : cx + bw] = (0, 255, 255)
         frames.append(frame)
     return frames
 

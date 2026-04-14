@@ -45,9 +45,16 @@ A table for every port on the top-level module:
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
+| Clocks and resets |
 | `clk_i` | input | 1 | System clock, rising edge |
 | `rst_ni` | input | 1 | Async active-low reset |
-| `instr_req_o` | output | 1 | OBI instruction fetch request |
+| AXI stream input |
+| `s_axis_tdata_i` | input | 1 | Mask pixel (1 = motion) |
+| `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
+| `s_axis_tready_o` | output | 1 | Always 1 — this module never back-pressures |
+| `s_axis_tlast_i` | input | 1 | End-of-line |
+| `s_axis_tuser_i` | input | 1 | Start-of-frame |
+
 
 Repeat for every submodule's interface that is non-obvious.
 

@@ -156,12 +156,28 @@ make test-py                 # Run Python unit tests
 | Option | Default | Description |
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
-| `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). Available: `synthetic:color_bars`, `synthetic:gradient`, `synthetic:checkerboard`, `synthetic:moving_box`, MP4/AVI files (OpenCV), PNG directory |
+| `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `2*(W+H)` | Max differing pixels per frame in `verify`. Default accommodates the frame-0 bounding-box border. Use a higher value (e.g. `10000`) for motion-heavy sources. |
+
+### Synthetic Sources
+
+| Pattern | Description |
+|---------|-------------|
+| `synthetic:color_bars` | 8 vertical color bars (static — no motion) |
+| `synthetic:gradient` | Red horizontal + green vertical gradient (static) |
+| `synthetic:checkerboard` | 16×16 pixel checkerboard (static) |
+| `synthetic:moving_box` | Red box, diagonal top-left → bottom-right |
+| `synthetic:moving_box_h` | Red box, horizontal left → right |
+| `synthetic:moving_box_v` | Green box, vertical top → bottom |
+| `synthetic:moving_box_reverse` | Blue box, diagonal bottom-right → top-left |
+| `synthetic:dark_moving_box` | Dark box on bright background (tests departure-ghost filtering) |
+| `synthetic:two_boxes` | Red + cyan boxes moving in opposing directions |
+
+Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking.
 
 ### THRESH (motion detection threshold)
 
@@ -171,7 +187,7 @@ The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (defa
 make run-pipeline SIMARGS="+THRESH=32"
 ```
 
-Pixels where `|Y_cur - Y_prev| > THRESH` are classified as motion.
+A pixel is classified as motion when `|Y_cur - Y_prev| > THRESH` **and** `Y_cur > THRESH`. The second condition filters departure-ghost pixels (where the object was in the previous frame but is now dark background), keeping the bounding box tight around the object's current position.
 
 ### File Formats
 
