@@ -1,13 +1,10 @@
 ### Add Control-flows
 Introduce Control Flows: 
 - passthrough - no processing
-- grayscale - for debug, to visualize the RGB to Y conversion
-  Y values passed through RAM should be outputed on VGA.
-  This way we can test RGB->Y conversion and general RAM access.
 - motion detection
 
 Place muxes in the design to selectively enable certain blocks.
-If a block is intended to be 
+If a block output is left unconnected, make sure it's backpressure input from the consumer side is tied to 1, so that it doesn't affect earlier pipeline stages.
 Implement the control flow selection as a top level side-band signal for now, driven by the TB. To be extended as control registers in the future.
 Add control-flows as makefile option.
 

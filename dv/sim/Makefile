@@ -19,12 +19,14 @@ WIDTH     ?= 320
 HEIGHT    ?= 240
 FRAMES    ?= 4
 MODE      ?= text
+CTRL_FLOW ?= motion
 INFILE    ?= ../data/input.txt
 OUTFILE   ?= ../data/output.txt
 
 SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
            +WIDTH=$(WIDTH) +HEIGHT=$(HEIGHT) \
-           +FRAMES=$(FRAMES) +MODE=$(MODE)
+           +FRAMES=$(FRAMES) +MODE=$(MODE) \
+           +CTRL_FLOW=$(CTRL_FLOW)
 
 .PHONY: compile sim sim-waves sw-dry-run clean \
        test-ip test-ip-rgb2ycrcb test-ip-motion-detect test-ip-bbox-reduce test-ip-overlay-bbox

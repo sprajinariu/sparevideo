@@ -11,11 +11,16 @@ WIDTH     ?= 320
 HEIGHT    ?= 240
 FRAMES    ?= 4
 MODE      ?= text
-# Default tolerance: accommodate the frame-0 bounding-box border that the
-# motion-detect pipeline overlays on every run (border pixel count ≈ 2*(W+H)).
-# Override with TOLERANCE=0 for exact-match checks or a higher value for
-# motion-heavy sources (e.g. TOLERANCE=10000 for synthetic:moving_box).
-TOLERANCE ?= $(shell echo "$$((2*($(WIDTH)+$(HEIGHT))))")
+CTRL_FLOW ?= motion
+# Default tolerance depends on control flow:
+#   passthrough: 0 (exact match expected)
+#   motion:      2*(W+H) — accommodates the frame-0 bounding-box border
+# Override with a higher value for motion-heavy sources (e.g. TOLERANCE=10000).
+ifeq ($(CTRL_FLOW),passthrough)
+  TOLERANCE ?= 0
+else
+  TOLERANCE ?= $(shell echo "$$((2*($(WIDTH)+$(HEIGHT))))")
+endif
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -32,7 +37,7 @@ endif
 
 SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
-           MODE=$(MODE) \
+           MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
@@ -71,6 +76,7 @@ help:
 	@echo "    HEIGHT=240                 Frame height"
 	@echo "    FRAMES=4                   Number of frames"
 	@echo "    MODE=text|binary           File format"
+	@echo "    CTRL_FLOW=motion|passthrough  Control flow (default motion)"
 	@echo "    TOLERANCE=<n>              Max diff pixels/frame for verify (default 2*(W+H))"
 
 # ---- Main pipeline flow ----
@@ -82,8 +88,8 @@ run-pipeline: prepare compile sim verify render
 # automatically pick up the same WIDTH/HEIGHT/FRAMES/MODE without re-specifying them.
 prepare:
 	@mkdir -p $(DATA_DIR)/renders
-	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\n' \
-		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' > $(DATA_DIR)/config.mk
+	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\n' \
+		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)

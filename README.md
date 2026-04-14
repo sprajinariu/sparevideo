@@ -4,7 +4,7 @@ Video processing pipeline with motion detection and bounding-box overlay, verifi
 
 ## Overview
 
-A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **motion detection + bounding-box overlay pipeline**, crosses back to the pixel clock, and drives a VGA controller.
+A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough or motion detection + bounding-box overlay), crosses back to the pixel clock, and drives a VGA controller. A top-level `ctrl_flow_i` sideband signal selects the active path.
 
 Architecture details, module interfaces, and design decisions are documented in [`docs/specs/`](docs/specs/):
 
@@ -22,8 +22,8 @@ Architecture details, module interfaces, and design decisions are documented in 
 
 ```
 hw/top/
-  sparevideo_top.sv    Top-level (AXI4-Stream → CDC → motion pipeline → CDC → VGA)
-  sparevideo_pkg.sv    Package: shared parameters and types
+  sparevideo_top.sv    Top-level (AXI4-Stream → CDC → control-flow mux → CDC → VGA)
+  sparevideo_pkg.sv    Package: shared parameters, types, control flow constants
   ram.sv               Generic true-dual-port byte RAM (behavioral, sim-only)
 hw/ip/rgb2ycrcb/rtl/
   rgb2ycrcb.sv         RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point, 2-cycle pipeline)
@@ -97,6 +97,10 @@ make run-pipeline
 make run-pipeline SOURCE="synthetic:moving_box" FRAMES=8 TOLERANCE=10000
 make run-pipeline SOURCE=path/to/video.mp4 MODE=binary
 
+# Control flow selection
+make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
+make run-pipeline CTRL_FLOW=motion TOLERANCE=10000    # motion detect + bbox overlay
+
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
 
@@ -133,6 +137,7 @@ make render
 | `HEIGHT` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `FRAMES` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
+| `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
 | `SOURCE` | ✓ | `prepare` only |
@@ -156,6 +161,7 @@ make test-py                 # Run Python unit tests
 | Option | Default | Description |
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
+| `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing) or `motion` (motion detect + bbox overlay) |
 | `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |

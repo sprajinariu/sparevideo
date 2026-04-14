@@ -49,6 +49,9 @@ module tb_sparevideo;
     string  cfg_outfile = "output.txt";
     string  cfg_mode    = "text";
 
+    // Control flow (driven by plusarg, quasi-static)
+    logic ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
+
     // ---------------------------------------------------------------
     // Clocks, resets, DUT signals
     // ---------------------------------------------------------------
@@ -108,6 +111,7 @@ module tb_sparevideo;
         .s_axis_tready_o (s_axis_tready),
         .s_axis_tlast_i  (s_axis_tlast),
         .s_axis_tuser_i  (s_axis_tuser),
+        .ctrl_flow_i     (ctrl_flow),
         .vga_hsync_o     (vga_hsync),
         .vga_vsync_o     (vga_vsync),
         .vga_r_o         (vga_r),
@@ -157,6 +161,19 @@ module tb_sparevideo;
         sw_dry_run = 0;
         if ($value$plusargs("sw_dry_run=%d", sw_dry_run)) ;
 
+        begin : parse_ctrl_flow
+            string ctrl_flow_str;
+            ctrl_flow_str = "";
+            if ($value$plusargs("CTRL_FLOW=%s", ctrl_flow_str)) begin
+                if (ctrl_flow_str == "passthrough")
+                    ctrl_flow = sparevideo_pkg::CTRL_PASSTHROUGH;
+                else if (ctrl_flow_str == "motion")
+                    ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
+                else
+                    $warning("Unknown CTRL_FLOW '%s', using default (motion)", ctrl_flow_str);
+            end
+        end
+
         begin : log_thresh
             integer thresh_arg;
             thresh_arg = 16;
@@ -167,6 +184,7 @@ module tb_sparevideo;
 
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
+        $display("  ctrl_flow: %s", ctrl_flow ? "motion" : "passthrough");
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 

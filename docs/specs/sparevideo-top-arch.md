@@ -2,7 +2,13 @@
 
 ## 1. Purpose and Scope
 
-`sparevideo_top` is the top-level video processing pipeline. It accepts an AXI4-Stream RGB888 video input on a 25 MHz pixel clock (`clk_pix`), crosses the stream into a 100 MHz DSP clock domain, runs a motion-detection and bounding-box overlay pipeline, crosses back to the pixel clock, and drives a VGA controller to produce analogue RGB + hsync/vsync output.
+`sparevideo_top` is the top-level video processing pipeline. It accepts an AXI4-Stream RGB888 video input on a 25 MHz pixel clock (`clk_pix`), crosses the stream into a 100 MHz DSP clock domain, runs a **control-flow-selectable** processing pipeline, crosses back to the pixel clock, and drives a VGA controller to produce analogue RGB + hsync/vsync output.
+
+A top-level `ctrl_flow_i` sideband signal selects the active processing path:
+- **Passthrough** (`ctrl_flow_i = 0`): input pixels pass directly to the output FIFO with no processing.
+- **Motion detect** (`ctrl_flow_i = 1`, default): motion-detection and bounding-box overlay pipeline.
+
+When the motion pipeline is bypassed, its input `tvalid` is gated to 0 and its output `tready` is tied to 1 to prevent stalling.
 
 The module does **not** include: camera input (MIPI CSI-2), AXI-Lite register access, multi-clock `clk_pix` sources, or any processing beyond luma-difference motion detection and single-object bounding-box overlay.
 
@@ -37,6 +43,7 @@ sparevideo_top (top level)
 | `s_axis_tready_o` | output | 1 | AXI4-Stream sink ready (back-pressures producer) |
 | `s_axis_tlast_i` | input | 1 | End-of-line marker (last pixel of each row) |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame marker (first pixel of frame) |
+| `ctrl_flow_i` | input | 1 | Control flow select: 0 = passthrough, 1 = motion detect |
 | `vga_hsync_o` | output | 1 | Horizontal sync, active-low |
 | `vga_vsync_o` | output | 1 | Vertical sync, active-low |
 | `vga_r_o` | output | 8 | Red channel (0 during blanking) |
@@ -57,21 +64,27 @@ sparevideo_top (top level)
 | `V_BACK_PORCH` | pkg | Vertical back porch |
 | `MOTION_THRESH` | 16 | Luma-difference threshold for motion (≈6.25% intensity) |
 
-All defaults reference `sparevideo_pkg`.
+`ctrl_flow_i` is a quasi-static sideband signal (set before simulation, not changed mid-frame). It is driven by the testbench via the `+CTRL_FLOW=passthrough|motion` plusarg. All defaults reference `sparevideo_pkg`.
 
 ---
 
 ## 4. Datapath Description
 
 ```
-clk_pix domain                   clk_dsp domain                        clk_pix domain
-─────────────────                ─────────────────────────────────      ─────────────────
-s_axis ──► u_fifo_in ──► dsp_in ──► u_motion_detect ─── vid ──► u_overlay_bbox ──► ovl ──► u_fifo_out ──► pix_out ──► u_vga ──► VGA pins
-                                         │                                ▲
+clk_pix domain                   clk_dsp domain                                           clk_pix domain
+─────────────────                ──────────────────────────────────────────────────         ─────────────────
+                                  ┌─► u_motion_detect ─ vid ─► u_overlay_bbox ─► ovl ─┐
+s_axis ──► u_fifo_in ──► dsp_in ─┤                                                    ├─[mux]─► u_fifo_out ──► pix_out ──► u_vga ──► VGA pins
+                                  └──────────── (passthrough bypass) ──────────────────┘   ▲
+                                         │                                ▲            ctrl_flow_i
                                          └───── msk ──► u_bbox_reduce ───┘ (bbox sideband)
                                          │
                                     u_ram (port A, read/write per pixel)
 ```
+
+The control-flow mux selects between:
+- **Passthrough** (`ctrl_flow_i = 0`): `dsp_in` feeds directly into `u_fifo_out`. Motion pipeline input `tvalid` is gated to 0; output `tready` is tied to 1.
+- **Motion detect** (`ctrl_flow_i = 1`): `ovl` (overlay output) feeds into `u_fifo_out`. This is the default path.
 
 1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
 2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the previous frame's Y8 from `u_ram` port A, computes `|Y_cur − Y_prev|`, and emits a 1-bit motion mask plus the original RGB video with matched latency. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes `Y_cur` back to RAM on acceptance.
