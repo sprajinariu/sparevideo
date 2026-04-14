@@ -40,14 +40,14 @@ module tb_rgb2ycrcb;
     logic [7:0] dut_y, dut_cb, dut_cr;
 
     rgb2ycrcb u_dut (
-        .clk   (clk),
-        .rst_n (rst_n),
-        .r     (dut_r),
-        .g     (dut_g),
-        .b     (dut_b),
-        .y     (dut_y),
-        .cb    (dut_cb),
-        .cr    (dut_cr)
+        .clk_i   (clk),
+        .rst_n_i (rst_n),
+        .r_i     (dut_r),
+        .g_i     (dut_g),
+        .b_i     (dut_b),
+        .y_o     (dut_y),
+        .cb_o    (dut_cb),
+        .cr_o    (dut_cr)
     );
 
     integer num_errors = 0;

@@ -25,7 +25,7 @@ module tb_axis_bbox_reduce;
 
     logic s_tdata, s_tvalid, s_tready, s_tlast, s_tuser;
 
-    always_ff @(negedge clk) begin
+    always_ff @(posedge clk) begin
         s_tdata  <= drv_tdata;
         s_tvalid <= drv_tvalid;
         s_tlast  <= drv_tlast;
@@ -38,19 +38,19 @@ module tb_axis_bbox_reduce;
     logic                 bbox_valid, bbox_empty;
 
     axis_bbox_reduce #(.H_ACTIVE(H), .V_ACTIVE(V)) u_dut (
-        .clk   (clk),
-        .rst_n (rst_n),
-        .s_axis_tdata  (s_tdata),
-        .s_axis_tvalid (s_tvalid),
-        .s_axis_tready (s_tready),
-        .s_axis_tlast  (s_tlast),
-        .s_axis_tuser  (s_tuser),
-        .bbox_min_x (bbox_min_x),
-        .bbox_max_x (bbox_max_x),
-        .bbox_min_y (bbox_min_y),
-        .bbox_max_y (bbox_max_y),
-        .bbox_valid (bbox_valid),
-        .bbox_empty (bbox_empty)
+        .clk_i           (clk),
+        .rst_n_i         (rst_n),
+        .s_axis_tdata_i  (s_tdata),
+        .s_axis_tvalid_i (s_tvalid),
+        .s_axis_tready_o (s_tready),
+        .s_axis_tlast_i  (s_tlast),
+        .s_axis_tuser_i  (s_tuser),
+        .bbox_min_x_o    (bbox_min_x),
+        .bbox_max_x_o    (bbox_max_x),
+        .bbox_min_y_o    (bbox_min_y),
+        .bbox_max_y_o    (bbox_max_y),
+        .bbox_valid_o    (bbox_valid),
+        .bbox_empty_o    (bbox_empty)
     );
 
     integer num_errors = 0;

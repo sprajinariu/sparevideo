@@ -9,16 +9,16 @@
 // adapted to 8-bit coefficients with retuned offsets.
 
 module rgb2ycrcb (
-    input  logic       clk,
-    input  logic       rst_n,
+    input  logic       clk_i,
+    input  logic       rst_n_i,
 
-    input  logic [7:0] r,
-    input  logic [7:0] g,
-    input  logic [7:0] b,
+    input  logic [7:0] r_i,
+    input  logic [7:0] g_i,
+    input  logic [7:0] b_i,
 
-    output logic [7:0] y,
-    output logic [7:0] cb,
-    output logic [7:0] cr
+    output logic [7:0] y_o,
+    output logic [7:0] cb_o,
+    output logic [7:0] cr_o
 );
 
     // Combinational MAC sums — >>8 is just wiring, no logic needed.
@@ -26,20 +26,20 @@ module rgb2ycrcb (
     logic [16:0] cb_sum_c;
     logic [16:0] cr_sum_c;
 
-    assign y_sum_c  = 17'(77 * r) + 17'(150 * g) + 17'(29 * b);
-    assign cb_sum_c = 17'(32768) - 17'(43 * r) - 17'(85 * g) + 17'(128 * b);
-    assign cr_sum_c = 17'(32768) + 17'(128 * r) - 17'(107 * g) - 17'(21 * b);
+    assign y_sum_c  = 17'(77 * r_i) + 17'(150 * g_i) + 17'(29 * b_i);
+    assign cb_sum_c = 17'(32768) - 17'(43 * r_i) - 17'(85 * g_i) + 17'(128 * b_i);
+    assign cr_sum_c = 17'(32768) + 17'(128 * r_i) - 17'(107 * g_i) - 17'(21 * b_i);
 
     // Register the top byte — 1-cycle latency.
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            y  <= '0;
-            cb <= '0;
-            cr <= '0;
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i) begin
+            y_o  <= '0;
+            cb_o <= '0;
+            cr_o <= '0;
         end else begin
-            y  <= y_sum_c[15:8];
-            cb <= cb_sum_c[15:8];
-            cr <= cr_sum_c[15:8];
+            y_o  <= y_sum_c[15:8];
+            cb_o <= cb_sum_c[15:8];
+            cr_o <= cr_sum_c[15:8];
         end
     end
 

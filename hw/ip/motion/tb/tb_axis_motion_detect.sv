@@ -6,7 +6,7 @@
 //   Frame 2 — identical pixels again, but consumer deasserts ready for long stretches
 //             → verifies pipeline stall logic holds data without dropping pixels
 //
-// Conventions: drv_* intermediaries, negedge register, $display/$fatal.
+// Conventions: drv_* intermediaries, posedge register, $display/$fatal.
 
 `timescale 1ns / 1ps
 
@@ -34,7 +34,7 @@ module tb_axis_motion_detect;
     logic        s_tlast;
     logic        s_tuser;
 
-    always_ff @(negedge clk) begin
+    always_ff @(posedge clk) begin
         s_tdata  <= drv_tdata;
         s_tvalid <= drv_tvalid;
         s_tlast  <= drv_tlast;
@@ -99,17 +99,17 @@ module tb_axis_motion_detect;
     logic              a_wr_en;
 
     ram #(.DEPTH(RAM_DEPTH)) u_ram (
-        .clk       (clk),
-        .a_rd_addr (a_rd_addr),
-        .a_rd_data (a_rd_data),
-        .a_wr_addr (a_wr_addr),
-        .a_wr_data (a_wr_data),
-        .a_wr_en   (a_wr_en),
-        .b_rd_addr ('0),
-        .b_rd_data (),
-        .b_wr_addr ('0),
-        .b_wr_data ('0),
-        .b_wr_en   (1'b0)
+        .clk_i       (clk),
+        .a_rd_addr_i (a_rd_addr),
+        .a_rd_data_o (a_rd_data),
+        .a_wr_addr_i (a_wr_addr),
+        .a_wr_data_i (a_wr_data),
+        .a_wr_en_i   (a_wr_en),
+        .b_rd_addr_i ('0),
+        .b_rd_data_o (),
+        .b_wr_addr_i ('0),
+        .b_wr_data_i ('0),
+        .b_wr_en_i   (1'b0)
     );
 
     // ---- DUT ----
@@ -120,28 +120,28 @@ module tb_axis_motion_detect;
         .RGN_BASE (0),
         .RGN_SIZE (NUM_PIX)
     ) u_dut (
-        .clk   (clk),
-        .rst_n (rst_n),
-        .s_axis_tdata  (s_tdata),
-        .s_axis_tvalid (s_tvalid),
-        .s_axis_tready (s_tready),
-        .s_axis_tlast  (s_tlast),
-        .s_axis_tuser  (s_tuser),
-        .m_axis_vid_tdata  (vid_tdata),
-        .m_axis_vid_tvalid (vid_tvalid),
-        .m_axis_vid_tready (vid_tready),
-        .m_axis_vid_tlast  (vid_tlast),
-        .m_axis_vid_tuser  (vid_tuser),
-        .m_axis_msk_tdata  (msk_tdata),
-        .m_axis_msk_tvalid (msk_tvalid),
-        .m_axis_msk_tready (msk_tready),
-        .m_axis_msk_tlast  (msk_tlast),
-        .m_axis_msk_tuser  (msk_tuser),
-        .mem_rd_addr (a_rd_addr),
-        .mem_rd_data (a_rd_data),
-        .mem_wr_addr (a_wr_addr),
-        .mem_wr_data (a_wr_data),
-        .mem_wr_en   (a_wr_en)
+        .clk_i                (clk),
+        .rst_n_i              (rst_n),
+        .s_axis_tdata_i       (s_tdata),
+        .s_axis_tvalid_i      (s_tvalid),
+        .s_axis_tready_o      (s_tready),
+        .s_axis_tlast_i       (s_tlast),
+        .s_axis_tuser_i       (s_tuser),
+        .m_axis_vid_tdata_o   (vid_tdata),
+        .m_axis_vid_tvalid_o  (vid_tvalid),
+        .m_axis_vid_tready_i  (vid_tready),
+        .m_axis_vid_tlast_o   (vid_tlast),
+        .m_axis_vid_tuser_o   (vid_tuser),
+        .m_axis_msk_tdata_o   (msk_tdata),
+        .m_axis_msk_tvalid_o  (msk_tvalid),
+        .m_axis_msk_tready_i  (msk_tready),
+        .m_axis_msk_tlast_o   (msk_tlast),
+        .m_axis_msk_tuser_o   (msk_tuser),
+        .mem_rd_addr_o        (a_rd_addr),
+        .mem_rd_data_i        (a_rd_data),
+        .mem_wr_addr_o        (a_wr_addr),
+        .mem_wr_data_o        (a_wr_data),
+        .mem_wr_en_o          (a_wr_en)
     );
 
     // ---- Test pixel data ----

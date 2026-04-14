@@ -14,21 +14,21 @@ module ram #(
     parameter int DEPTH  = 76800,   // total bytes
     parameter int ADDR_W = $clog2(DEPTH)
 ) (
-    input  logic            clk,
+    input  logic            clk_i,
 
     // Port A
-    input  logic [ADDR_W-1:0] a_rd_addr,
-    output logic [7:0]        a_rd_data,
-    input  logic [ADDR_W-1:0] a_wr_addr,
-    input  logic [7:0]        a_wr_data,
-    input  logic              a_wr_en,
+    input  logic [ADDR_W-1:0] a_rd_addr_i,
+    output logic [7:0]        a_rd_data_o,
+    input  logic [ADDR_W-1:0] a_wr_addr_i,
+    input  logic [7:0]        a_wr_data_i,
+    input  logic              a_wr_en_i,
 
     // Port B
-    input  logic [ADDR_W-1:0] b_rd_addr,
-    output logic [7:0]        b_rd_data,
-    input  logic [ADDR_W-1:0] b_wr_addr,
-    input  logic [7:0]        b_wr_data,
-    input  logic              b_wr_en
+    input  logic [ADDR_W-1:0] b_rd_addr_i,
+    output logic [7:0]        b_rd_data_o,
+    input  logic [ADDR_W-1:0] b_wr_addr_i,
+    input  logic [7:0]        b_wr_data_i,
+    input  logic              b_wr_en_i
 );
 
     logic [7:0] mem [0:DEPTH-1];
@@ -41,17 +41,17 @@ module ram #(
     end
 
     // Port A — read-first
-    always_ff @(posedge clk) begin
-        a_rd_data <= mem[a_rd_addr];
-        if (a_wr_en)
-            mem[a_wr_addr] <= a_wr_data;
+    always_ff @(posedge clk_i) begin
+        a_rd_data_o <= mem[a_rd_addr_i];
+        if (a_wr_en_i)
+            mem[a_wr_addr_i] <= a_wr_data_i;
     end
 
     // Port B — read-first
-    always_ff @(posedge clk) begin
-        b_rd_data <= mem[b_rd_addr];
-        if (b_wr_en)
-            mem[b_wr_addr] <= b_wr_data;
+    always_ff @(posedge clk_i) begin
+        b_rd_data_o <= mem[b_rd_addr_i];
+        if (b_wr_en_i)
+            mem[b_wr_addr_i] <= b_wr_data_i;
     end
 
 endmodule

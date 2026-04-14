@@ -15,47 +15,47 @@ module axis_overlay_bbox #(
     parameter int V_ACTIVE   = 240,
     parameter logic [23:0] BBOX_COLOR = 24'h00_FF_00
 ) (
-    input  logic        clk,
-    input  logic        rst_n,
+    input  logic        clk_i,
+    input  logic        rst_n_i,
 
     // AXI4-Stream input — video (RGB888)
-    input  logic [23:0] s_axis_tdata,
-    input  logic        s_axis_tvalid,
-    output logic        s_axis_tready,
-    input  logic        s_axis_tlast,
-    input  logic        s_axis_tuser,
+    input  logic [23:0] s_axis_tdata_i,
+    input  logic        s_axis_tvalid_i,
+    output logic        s_axis_tready_o,
+    input  logic        s_axis_tlast_i,
+    input  logic        s_axis_tuser_i,
 
     // AXI4-Stream output — video (RGB888)
-    output logic [23:0] m_axis_tdata,
-    output logic        m_axis_tvalid,
-    input  logic        m_axis_tready,
-    output logic        m_axis_tlast,
-    output logic        m_axis_tuser,
+    output logic [23:0] m_axis_tdata_o,
+    output logic        m_axis_tvalid_o,
+    input  logic        m_axis_tready_i,
+    output logic        m_axis_tlast_o,
+    output logic        m_axis_tuser_o,
 
     // Sideband input — bbox from axis_bbox_reduce
-    input  logic [$clog2(H_ACTIVE)-1:0] bbox_min_x,
-    input  logic [$clog2(H_ACTIVE)-1:0] bbox_max_x,
-    input  logic [$clog2(V_ACTIVE)-1:0] bbox_min_y,
-    input  logic [$clog2(V_ACTIVE)-1:0] bbox_max_y,
-    input  logic                        bbox_empty
+    input  logic [$clog2(H_ACTIVE)-1:0] bbox_min_x_i,
+    input  logic [$clog2(H_ACTIVE)-1:0] bbox_max_x_i,
+    input  logic [$clog2(V_ACTIVE)-1:0] bbox_min_y_i,
+    input  logic [$clog2(V_ACTIVE)-1:0] bbox_max_y_i,
+    input  logic                        bbox_empty_i
 );
 
     // Pass through backpressure
-    assign s_axis_tready = m_axis_tready;
+    assign s_axis_tready_o = m_axis_tready_i;
 
     // ---- Column/row counters ----
     logic [$clog2(H_ACTIVE)-1:0] col;
     logic [$clog2(V_ACTIVE)-1:0] row;
 
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i) begin
             col <= '0;
             row <= '0;
-        end else if (s_axis_tvalid && s_axis_tready) begin
-            if (s_axis_tuser) begin
+        end else if (s_axis_tvalid_i && s_axis_tready_o) begin
+            if (s_axis_tuser_i) begin
                 col <= '0;
                 row <= '0;
-            end else if (s_axis_tlast) begin
+            end else if (s_axis_tlast_i) begin
                 col <= '0;
                 row <= row + 1;
             end else begin
@@ -73,19 +73,19 @@ module axis_overlay_bbox #(
     logic on_top_or_bottom;
     logic in_x_range;
 
-    assign on_left_or_right = (col == bbox_min_x) || (col == bbox_max_x);
-    assign in_y_range       = (row >= bbox_min_y) && (row <= bbox_max_y);
-    assign on_top_or_bottom = (row == bbox_min_y) || (row == bbox_max_y);
-    assign in_x_range       = (col >= bbox_min_x) && (col <= bbox_max_x);
+    assign on_left_or_right = (col == bbox_min_x_i) || (col == bbox_max_x_i);
+    assign in_y_range       = (row >= bbox_min_y_i) && (row <= bbox_max_y_i);
+    assign on_top_or_bottom = (row == bbox_min_y_i) || (row == bbox_max_y_i);
+    assign in_x_range       = (col >= bbox_min_x_i) && (col <= bbox_max_x_i);
 
-    assign on_rect = !bbox_empty &&
+    assign on_rect = !bbox_empty_i &&
                      ((on_left_or_right && in_y_range) ||
                       (on_top_or_bottom && in_x_range));
 
     // ---- Output mux ----
-    assign m_axis_tdata  = on_rect ? BBOX_COLOR : s_axis_tdata;
-    assign m_axis_tvalid = s_axis_tvalid;
-    assign m_axis_tlast  = s_axis_tlast;
-    assign m_axis_tuser  = s_axis_tuser;
+    assign m_axis_tdata_o  = on_rect ? BBOX_COLOR : s_axis_tdata_i;
+    assign m_axis_tvalid_o = s_axis_tvalid_i;
+    assign m_axis_tlast_o  = s_axis_tlast_i;
+    assign m_axis_tuser_o  = s_axis_tuser_i;
 
 endmodule

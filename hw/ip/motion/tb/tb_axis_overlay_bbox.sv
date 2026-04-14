@@ -28,7 +28,7 @@ module tb_axis_overlay_bbox;
     logic [23:0] s_tdata;
     logic        s_tvalid, s_tready, s_tlast, s_tuser;
 
-    always_ff @(negedge clk) begin
+    always_ff @(posedge clk) begin
         s_tdata  <= drv_tdata;
         s_tvalid <= drv_tvalid;
         s_tlast  <= drv_tlast;
@@ -46,23 +46,23 @@ module tb_axis_overlay_bbox;
         .V_ACTIVE   (V),
         .BBOX_COLOR (BBOX_COLOR)
     ) u_dut (
-        .clk   (clk),
-        .rst_n (rst_n),
-        .s_axis_tdata  (s_tdata),
-        .s_axis_tvalid (s_tvalid),
-        .s_axis_tready (s_tready),
-        .s_axis_tlast  (s_tlast),
-        .s_axis_tuser  (s_tuser),
-        .m_axis_tdata  (m_tdata),
-        .m_axis_tvalid (m_tvalid),
-        .m_axis_tready (m_tready),
-        .m_axis_tlast  (m_tlast),
-        .m_axis_tuser  (m_tuser),
-        .bbox_min_x (2'(1)),
-        .bbox_max_x (2'(2)),
-        .bbox_min_y (2'(1)),
-        .bbox_max_y (2'(2)),
-        .bbox_empty (1'b0)
+        .clk_i           (clk),
+        .rst_n_i         (rst_n),
+        .s_axis_tdata_i  (s_tdata),
+        .s_axis_tvalid_i (s_tvalid),
+        .s_axis_tready_o (s_tready),
+        .s_axis_tlast_i  (s_tlast),
+        .s_axis_tuser_i  (s_tuser),
+        .m_axis_tdata_o  (m_tdata),
+        .m_axis_tvalid_o (m_tvalid),
+        .m_axis_tready_i (m_tready),
+        .m_axis_tlast_o  (m_tlast),
+        .m_axis_tuser_o  (m_tuser),
+        .bbox_min_x_i (2'(1)),
+        .bbox_max_x_i (2'(2)),
+        .bbox_min_y_i (2'(1)),
+        .bbox_max_y_i (2'(2)),
+        .bbox_empty_i (1'b0)
     );
 
     integer num_errors = 0;

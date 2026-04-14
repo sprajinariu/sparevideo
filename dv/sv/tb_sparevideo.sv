@@ -99,20 +99,20 @@ module tb_sparevideo;
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH)
     ) u_dut (
-        .clk_pix       (clk_pix),
-        .clk_dsp       (clk_dsp),
-        .rst_pix_n     (rst_pix_n),
-        .rst_dsp_n     (rst_dsp_n),
-        .s_axis_tdata  (s_axis_tdata),
-        .s_axis_tvalid (s_axis_tvalid),
-        .s_axis_tready (s_axis_tready),
-        .s_axis_tlast  (s_axis_tlast),
-        .s_axis_tuser  (s_axis_tuser),
-        .vga_hsync     (vga_hsync),
-        .vga_vsync     (vga_vsync),
-        .vga_r         (vga_r),
-        .vga_g         (vga_g),
-        .vga_b         (vga_b)
+        .clk_pix_i       (clk_pix),
+        .clk_dsp_i       (clk_dsp),
+        .rst_pix_n_i     (rst_pix_n),
+        .rst_dsp_n_i     (rst_dsp_n),
+        .s_axis_tdata_i  (s_axis_tdata),
+        .s_axis_tvalid_i (s_axis_tvalid),
+        .s_axis_tready_o (s_axis_tready),
+        .s_axis_tlast_i  (s_axis_tlast),
+        .s_axis_tuser_i  (s_axis_tuser),
+        .vga_hsync_o     (vga_hsync),
+        .vga_vsync_o     (vga_vsync),
+        .vga_r_o         (vga_r),
+        .vga_g_o         (vga_g),
+        .vga_b_o         (vga_b)
     );
 
     initial clk_pix = 0;
@@ -387,7 +387,7 @@ module tb_sparevideo;
     // sampled at posedge K when active_K was true. So vga_r is one
     // cycle behind `pixel_ready`. We delay our capture qualifier by
     // one clock so it lines up with the registered RGB.
-    wire dut_active = u_dut.u_vga.pixel_ready & u_dut.vga_started;
+    wire dut_active = u_dut.u_vga.pixel_ready_o & u_dut.vga_started;
     logic dut_active_d;
     always_ff @(posedge clk_pix) begin
         if (!rst_pix_n) dut_active_d <= 1'b0;

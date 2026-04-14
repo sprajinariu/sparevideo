@@ -92,6 +92,16 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
 - Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box).
 
+## Skills
+
+Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant skill at the start of a task:
+
+| Skill | When to use |
+|-------|-------------|
+| `rtl-writing` | Writing, editing, or reviewing any `.sv` RTL file — covers file template, signal naming, always block rules, lint |
+| `hardware-arch-doc` | Before implementing any new module — produces the arch doc that becomes the contract for the RTL |
+| `hardware-testing` | Writing unit testbenches (`hw/ip/*/tb/`) or integration tests (`dv/sv/`) — covers `drv_*` pattern, Makefile wiring, Layer 2 rules |
+
 ## TODO after each major change
 
 - Keep CLAUDE.md and README.md up-to-date

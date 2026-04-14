@@ -139,7 +139,11 @@ make render
 ```bash
 # Other targets
 make lint                    # Verilator lint
-make test-ip                 # Per-block IP unit testbenches
+make test-ip                 # All per-block IP unit testbenches (Verilator)
+make test-ip-rgb2ycrcb       # rgb2ycrcb color-space converter
+make test-ip-motion-detect   # axis_motion_detect (Y8 diff + backpressure)
+make test-ip-bbox-reduce     # axis_bbox_reduce (bounding box accumulator)
+make test-ip-overlay-bbox    # axis_overlay_bbox (bbox rect overlay)
 make sw-dry-run              # Bypass RTL — file loopback, zero sim time
 make sim-waves               # RTL sim + open GTKWave
 make compile                 # Compile only

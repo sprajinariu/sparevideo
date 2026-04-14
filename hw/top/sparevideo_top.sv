@@ -30,31 +30,31 @@ module sparevideo_top #(
     parameter int MOTION_THRESH = 16
 ) (
     // ---- Clocks & resets -------------------------------------------
-    input  logic        clk_pix,        // 25 MHz pixel clock (input + VGA output domain)
-    input  logic        clk_dsp,        // 100 MHz processing clock (CDC FIFOs cross to here)
-    input  logic        rst_pix_n,      // active-low synchronous reset, clk_pix domain
-    input  logic        rst_dsp_n,      // active-low synchronous reset, clk_dsp domain
+    input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
+    input  logic        clk_dsp_i,      // 100 MHz processing clock (CDC FIFOs cross to here)
+    input  logic        rst_pix_n_i,    // active-low synchronous reset, clk_pix domain
+    input  logic        rst_dsp_n_i,    // active-low synchronous reset, clk_dsp domain
 
     // ---- AXI4-Stream video input (clk_pix domain) ------------------
-    input  logic [23:0] s_axis_tdata,   // pixel payload, packed {R[7:0], G[7:0], B[7:0]}
-    input  logic        s_axis_tvalid,  // producer asserts when tdata is valid
-    output logic        s_axis_tready,  // sink ready; back-pressures producer when low
-    input  logic        s_axis_tlast,   // end-of-line marker (asserted on last pixel of each row)
-    input  logic        s_axis_tuser,   // start-of-frame marker (asserted on first pixel of frame)
+    input  logic [23:0] s_axis_tdata_i,   // pixel payload, packed {R[7:0], G[7:0], B[7:0]}
+    input  logic        s_axis_tvalid_i,  // producer asserts when tdata is valid
+    output logic        s_axis_tready_o,  // sink ready; back-pressures producer when low
+    input  logic        s_axis_tlast_i,   // end-of-line marker (asserted on last pixel of each row)
+    input  logic        s_axis_tuser_i,   // start-of-frame marker (asserted on first pixel of frame)
 
     // ---- VGA output (clk_pix domain) -------------------------------
-    output logic        vga_hsync,      // horizontal sync, active-low
-    output logic        vga_vsync,      // vertical sync, active-low
-    output logic [7:0]  vga_r,          // red channel (valid during active region, else 0)
-    output logic [7:0]  vga_g,          // green channel
-    output logic [7:0]  vga_b           // blue channel
+    output logic        vga_hsync_o,    // horizontal sync, active-low
+    output logic        vga_vsync_o,    // vertical sync, active-low
+    output logic [7:0]  vga_r_o,        // red channel (valid during active region, else 0)
+    output logic [7:0]  vga_g_o,        // green channel
+    output logic [7:0]  vga_b_o         // blue channel
 );
 
     // verilog-axis modules use active-high resets internally.
     logic rst_pix;
     logic rst_dsp;
-    assign rst_pix = ~rst_pix_n;
-    assign rst_dsp = ~rst_dsp_n;
+    assign rst_pix = ~rst_pix_n_i;
+    assign rst_dsp = ~rst_dsp_n_i;
 
     // FIFO overflow flags (write-clock domain; sticky until reset).
     // Checked by SVAs below.
@@ -85,18 +85,18 @@ module sparevideo_top #(
         .USER_WIDTH  (1),
         .FRAME_FIFO  (0)
     ) u_fifo_in (
-        .s_clk            (clk_pix),
+        .s_clk            (clk_pix_i),
         .s_rst            (rst_pix),
-        .s_axis_tdata     (s_axis_tdata),
+        .s_axis_tdata     (s_axis_tdata_i),
         .s_axis_tkeep     (3'b0),
-        .s_axis_tvalid    (s_axis_tvalid),
-        .s_axis_tready    (s_axis_tready),
-        .s_axis_tlast     (s_axis_tlast),
+        .s_axis_tvalid    (s_axis_tvalid_i),
+        .s_axis_tready    (s_axis_tready_o),
+        .s_axis_tlast     (s_axis_tlast_i),
         .s_axis_tid       (8'b0),
         .s_axis_tdest     (8'b0),
-        .s_axis_tuser     (s_axis_tuser),
+        .s_axis_tuser     (s_axis_tuser_i),
 
-        .m_clk            (clk_dsp),
+        .m_clk            (clk_dsp_i),
         .m_rst            (rst_dsp),
         .m_axis_tdata     (dsp_in_tdata),
         .m_axis_tkeep     (),
@@ -150,18 +150,18 @@ module sparevideo_top #(
     logic                  ram_a_wr_en;
 
     ram #(.DEPTH(RAM_DEPTH)) u_ram (
-        .clk       (clk_dsp),
-        .a_rd_addr (ram_a_rd_addr),
-        .a_rd_data (ram_a_rd_data),
-        .a_wr_addr (ram_a_wr_addr),
-        .a_wr_data (ram_a_wr_data),
-        .a_wr_en   (ram_a_wr_en),
+        .clk_i       (clk_dsp_i),
+        .a_rd_addr_i (ram_a_rd_addr),
+        .a_rd_data_o (ram_a_rd_data),
+        .a_wr_addr_i (ram_a_wr_addr),
+        .a_wr_data_i (ram_a_wr_data),
+        .a_wr_en_i   (ram_a_wr_en),
         // Port B: tied off — future host client lands here.
-        .b_rd_addr ('0),
-        .b_rd_data (),
-        .b_wr_addr ('0),
-        .b_wr_data ('0),
-        .b_wr_en   (1'b0)
+        .b_rd_addr_i ('0),
+        .b_rd_data_o (),
+        .b_wr_addr_i ('0),
+        .b_wr_data_i ('0),
+        .b_wr_en_i   (1'b0)
     );
 
     // -----------------------------------------------------------------
@@ -204,28 +204,32 @@ module sparevideo_top #(
         .RGN_BASE (RGN_Y_PREV_BASE),
         .RGN_SIZE (RGN_Y_PREV_SIZE)
     ) u_motion_detect (
-        .clk                (clk_dsp),
-        .rst_n              (rst_dsp_n),
-        .s_axis_tdata       (dsp_in_tdata),
-        .s_axis_tvalid      (dsp_in_tvalid),
-        .s_axis_tready      (dsp_in_tready),
-        .s_axis_tlast       (dsp_in_tlast),
-        .s_axis_tuser       (dsp_in_tuser),
-        .m_axis_vid_tdata   (vid_tdata),
-        .m_axis_vid_tvalid  (vid_tvalid),
-        .m_axis_vid_tready  (vid_tready),
-        .m_axis_vid_tlast   (vid_tlast),
-        .m_axis_vid_tuser   (vid_tuser),
-        .m_axis_msk_tdata   (msk_tdata),
-        .m_axis_msk_tvalid  (msk_tvalid),
-        .m_axis_msk_tready  (msk_tready),
-        .m_axis_msk_tlast   (msk_tlast),
-        .m_axis_msk_tuser   (msk_tuser),
-        .mem_rd_addr        (ram_a_rd_addr),
-        .mem_rd_data        (ram_a_rd_data),
-        .mem_wr_addr        (ram_a_wr_addr),
-        .mem_wr_data        (ram_a_wr_data),
-        .mem_wr_en          (ram_a_wr_en)
+        .clk_i                (clk_dsp_i),
+        .rst_n_i              (rst_dsp_n_i),
+        // AXI4-Stream input (RGB888)
+        .s_axis_tdata_i       (dsp_in_tdata),
+        .s_axis_tvalid_i      (dsp_in_tvalid),
+        .s_axis_tready_o      (dsp_in_tready),
+        .s_axis_tlast_i       (dsp_in_tlast),
+        .s_axis_tuser_i       (dsp_in_tuser),
+        // AXI4-Stream output — video passthrough (RGB888)
+        .m_axis_vid_tdata_o   (vid_tdata),
+        .m_axis_vid_tvalid_o  (vid_tvalid),
+        .m_axis_vid_tready_i  (vid_tready),
+        .m_axis_vid_tlast_o   (vid_tlast),
+        .m_axis_vid_tuser_o   (vid_tuser),
+        // AXI4-Stream output — mask (1 bit)
+        .m_axis_msk_tdata_o   (msk_tdata),
+        .m_axis_msk_tvalid_o  (msk_tvalid),
+        .m_axis_msk_tready_i  (msk_tready),
+        .m_axis_msk_tlast_o   (msk_tlast),
+        .m_axis_msk_tuser_o   (msk_tuser),
+        // Memory port (to shared RAM port A)
+        .mem_rd_addr_o        (ram_a_rd_addr),
+        .mem_rd_data_i        (ram_a_rd_data),
+        .mem_wr_addr_o        (ram_a_wr_addr),
+        .mem_wr_data_o        (ram_a_wr_data),
+        .mem_wr_en_o          (ram_a_wr_en)
     );
 
     // axis_bbox_reduce is always ready — its tready output drives msk_tready.
@@ -233,19 +237,21 @@ module sparevideo_top #(
         .H_ACTIVE (H_ACTIVE),
         .V_ACTIVE (V_ACTIVE)
     ) u_bbox_reduce (
-        .clk            (clk_dsp),
-        .rst_n          (rst_dsp_n),
-        .s_axis_tdata   (msk_tdata),
-        .s_axis_tvalid  (msk_tvalid),
-        .s_axis_tready  (msk_tready),  // driven to 1'b1 internally
-        .s_axis_tlast   (msk_tlast),
-        .s_axis_tuser   (msk_tuser),
-        .bbox_min_x     (bbox_min_x),
-        .bbox_max_x     (bbox_max_x),
-        .bbox_min_y     (bbox_min_y),
-        .bbox_max_y     (bbox_max_y),
-        .bbox_valid     (),             // strobe — unused at this level
-        .bbox_empty     (bbox_empty)
+        .clk_i           (clk_dsp_i),
+        .rst_n_i         (rst_dsp_n_i),
+        // AXI4-Stream input — mask (1 bit per pixel)
+        .s_axis_tdata_i  (msk_tdata),
+        .s_axis_tvalid_i (msk_tvalid),
+        .s_axis_tready_o (msk_tready),  // driven to 1'b1 internally
+        .s_axis_tlast_i  (msk_tlast),
+        .s_axis_tuser_i  (msk_tuser),
+        // Sideband output — latched bbox (stable for the full next frame)
+        .bbox_min_x_o    (bbox_min_x),
+        .bbox_max_x_o    (bbox_max_x),
+        .bbox_min_y_o    (bbox_min_y),
+        .bbox_max_y_o    (bbox_max_y),
+        .bbox_valid_o    (),             // frame-end strobe — unused at this level
+        .bbox_empty_o    (bbox_empty)
     );
 
     axis_overlay_bbox #(
@@ -253,23 +259,26 @@ module sparevideo_top #(
         .V_ACTIVE   (V_ACTIVE),
         .BBOX_COLOR (BBOX_COLOR)
     ) u_overlay_bbox (
-        .clk            (clk_dsp),
-        .rst_n          (rst_dsp_n),
-        .s_axis_tdata   (vid_tdata),
-        .s_axis_tvalid  (vid_tvalid),
-        .s_axis_tready  (vid_tready),
-        .s_axis_tlast   (vid_tlast),
-        .s_axis_tuser   (vid_tuser),
-        .m_axis_tdata   (ovl_tdata),
-        .m_axis_tvalid  (ovl_tvalid),
-        .m_axis_tready  (ovl_tready),
-        .m_axis_tlast   (ovl_tlast),
-        .m_axis_tuser   (ovl_tuser),
-        .bbox_min_x     (bbox_min_x),
-        .bbox_max_x     (bbox_max_x),
-        .bbox_min_y     (bbox_min_y),
-        .bbox_max_y     (bbox_max_y),
-        .bbox_empty     (bbox_empty)
+        .clk_i           (clk_dsp_i),
+        .rst_n_i         (rst_dsp_n_i),
+        // AXI4-Stream input — video passthrough from axis_motion_detect (RGB888)
+        .s_axis_tdata_i  (vid_tdata),
+        .s_axis_tvalid_i (vid_tvalid),
+        .s_axis_tready_o (vid_tready),
+        .s_axis_tlast_i  (vid_tlast),
+        .s_axis_tuser_i  (vid_tuser),
+        // AXI4-Stream output — video with bbox rectangle overlaid (RGB888)
+        .m_axis_tdata_o  (ovl_tdata),
+        .m_axis_tvalid_o (ovl_tvalid),
+        .m_axis_tready_i (ovl_tready),
+        .m_axis_tlast_o  (ovl_tlast),
+        .m_axis_tuser_o  (ovl_tuser),
+        // Sideband input — bbox from axis_bbox_reduce (latched, stable for full frame)
+        .bbox_min_x_i    (bbox_min_x),
+        .bbox_max_x_i    (bbox_max_x),
+        .bbox_min_y_i    (bbox_min_y),
+        .bbox_max_y_i    (bbox_max_y),
+        .bbox_empty_i    (bbox_empty)
     );
 
     // -----------------------------------------------------------------
@@ -294,7 +303,7 @@ module sparevideo_top #(
         .USER_WIDTH  (1),
         .FRAME_FIFO  (0)
     ) u_fifo_out (
-        .s_clk            (clk_dsp),
+        .s_clk            (clk_dsp_i),
         .s_rst            (rst_dsp),
         .s_axis_tdata     (ovl_tdata),
         .s_axis_tkeep     (3'b0),
@@ -305,7 +314,7 @@ module sparevideo_top #(
         .s_axis_tdest     (8'b0),
         .s_axis_tuser     (ovl_tuser),
 
-        .m_clk            (clk_pix),
+        .m_clk            (clk_pix_i),
         .m_rst            (rst_pix),
         .m_axis_tdata     (pix_out_tdata),
         .m_axis_tkeep     (),
@@ -344,15 +353,15 @@ module sparevideo_top #(
     logic vga_started;
     logic vga_pixel_ready;
 
-    always_ff @(posedge clk_pix) begin
-        if (!rst_pix_n) begin
+    always_ff @(posedge clk_pix_i) begin
+        if (!rst_pix_n_i) begin
             vga_started <= 1'b0;
         end else if (!vga_started && pix_out_tvalid && pix_out_tuser) begin
             vga_started <= 1'b1;
         end
     end
 
-    assign vga_rst_n      = rst_pix_n & vga_started;
+    assign vga_rst_n      = rst_pix_n_i & vga_started;
     assign pix_out_tready = vga_pixel_ready & vga_started;
 
     vga_controller #(
@@ -365,33 +374,25 @@ module sparevideo_top #(
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH)
     ) u_vga (
-        .clk         (clk_pix),
-        .rst_n       (vga_rst_n),
-        .pixel_data  (pix_out_tdata),
-        .pixel_valid (pix_out_tvalid),
-        .pixel_ready (vga_pixel_ready),
-        .frame_start (),
-        .line_start  (),
-        .vga_hsync   (vga_hsync),
-        .vga_vsync   (vga_vsync),
-        .vga_r       (vga_r),
-        .vga_g       (vga_g),
-        .vga_b       (vga_b)
+        .clk_i         (clk_pix_i),   // pixel clock
+        .rst_n_i       (vga_rst_n),   // active-low synchronous reset; held until first SOF
+        // Streaming pixel input (from output async FIFO, clk_pix domain)
+        .pixel_data_i  (pix_out_tdata),   // {R[7:0], G[7:0], B[7:0]}
+        .pixel_valid_i (pix_out_tvalid),  // upstream has pixel data
+        .pixel_ready_o (vga_pixel_ready), // controller accepting pixels (active area only)
+        // Synchronization outputs to upstream
+        .frame_start_o (),   // pulse at first active pixel of frame — unused here
+        .line_start_o  (),   // pulse at first active pixel of each line — unused here
+        // VGA output
+        .vga_hsync_o   (vga_hsync_o),  // horizontal sync (active-low)
+        .vga_vsync_o   (vga_vsync_o),  // vertical sync (active-low)
+        .vga_r_o       (vga_r_o),      // red channel (0 during blanking)
+        .vga_g_o       (vga_g_o),      // green channel (0 during blanking)
+        .vga_b_o       (vga_b_o)       // blue channel (0 during blanking)
     );
 
     // -----------------------------------------------------------------
     // SVA checkers (Verilator only)
-    //
-    // 1) The DSP-side pipeline must never back-pressure the input
-    //    stream: whenever the producer asserts s_axis_tvalid, the input
-    //    FIFO must already be ready to accept the beat.
-    // 2) Once the VGA controller has started consuming pixels (i.e.
-    //    vga_started == 1), the output FIFO must present a valid pixel
-    //    every cycle the controller is in its active region. An
-    //    underrun anywhere in the active window causes screen tearing.
-    //    The assertion is auto-disabled near end-of-simulation via
-    //    `sva_drain_mode`, which the testbench raises once it has
-    //    finished pushing the last frame.
     // -----------------------------------------------------------------
 `ifdef VERILATOR
     // Test-side hook: the TB drives `tb_sva_drain` high once it has
@@ -402,42 +403,39 @@ module sparevideo_top #(
 
     // (1) Input must not be back-pressured.
     assert_no_input_backpressure: assert property (
-        @(posedge clk_pix) disable iff (!rst_pix_n)
-            s_axis_tvalid |-> s_axis_tready
+        @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
+            s_axis_tvalid_i |-> s_axis_tready_o
     ) else $error("sparevideo_top: input s_axis was back-pressured (DSP pipeline stalled)");
 
     // (2) Once started, no underruns inside the VGA active region.
     assert_no_output_underrun: assert property (
-        @(posedge clk_pix) disable iff (!rst_pix_n || sva_drain_mode)
+        @(posedge clk_pix_i) disable iff (!rst_pix_n_i || sva_drain_mode)
             (vga_started && vga_pixel_ready) |-> pix_out_tvalid
     ) else $error("sparevideo_top: output FIFO underrun during active region (screen tearing)");
 
     // (3) Input FIFO depth must never reach full capacity.
-    // s_status_depth is in the write-clock (clk_pix) domain and counts
-    // entries currently in the FIFO.  Reaching IN_FIFO_DEPTH means the next
-    // push would overflow.  Catching it one step early gives a clearer signal.
     assert_fifo_in_not_full: assert property (
-        @(posedge clk_pix) disable iff (!rst_pix_n)
+        @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
             fifo_in_depth < ($bits(fifo_in_depth))'(IN_FIFO_DEPTH)
     ) else $error("sparevideo_top: input FIFO full (depth=%0d/%0d) — overflow imminent",
                   fifo_in_depth, IN_FIFO_DEPTH);
 
     // (4) Output FIFO depth must never reach full capacity (clk_dsp domain).
     assert_fifo_out_not_full: assert property (
-        @(posedge clk_dsp) disable iff (!rst_dsp_n)
+        @(posedge clk_dsp_i) disable iff (!rst_dsp_n_i)
             fifo_out_depth < ($bits(fifo_out_depth))'(OUT_FIFO_DEPTH)
     ) else $error("sparevideo_top: output FIFO full (depth=%0d/%0d) — overflow imminent",
                   fifo_out_depth, OUT_FIFO_DEPTH);
 
     // (5) Input FIFO must never overflow (sticky flag in clk_pix domain).
     assert_fifo_in_no_overflow: assert property (
-        @(posedge clk_pix) disable iff (!rst_pix_n)
+        @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
             !fifo_in_overflow
     ) else $error("sparevideo_top: input FIFO overflow — pixels lost at CDC crossing");
 
     // (6) Output FIFO must never overflow (sticky flag in clk_dsp domain).
     assert_fifo_out_no_overflow: assert property (
-        @(posedge clk_dsp) disable iff (!rst_dsp_n)
+        @(posedge clk_dsp_i) disable iff (!rst_dsp_n_i)
             !fifo_out_overflow
     ) else $error("sparevideo_top: output FIFO overflow — DSP output rate exceeds VGA drain rate");
 `endif
