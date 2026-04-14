@@ -1,10 +1,12 @@
 // Unit testbench for axis_motion_detect.
 //
-// Tests:
-//   Frame 0 — RAM zero-init, non-black input → all mask bits 1 (motion on every pixel)
-//   Frame 1 — identical pixels → diff 0 → all mask bits 0
-//   Frame 2 — identical pixels again, but consumer deasserts ready for long stretches
-//             → verifies pipeline stall logic holds data without dropping pixels
+// Tests (in order):
+//   Frame 0 — RAM zero-init → golden mask per pixel, RGB passthrough check
+//   Frame 1 — identical pixels → diff=0 → all mask=0, RAM Y8 verified via port B
+//   Frame 2 — mixed-motion: pixels crafted for diff=THRESH-1, THRESH, THRESH+1
+//              → verifies threshold boundary (RTL uses strict >)
+//   Frame 3 — same mixed-motion under consumer stall → verifies stall correctness
+//   Frame 4 — identical to frame 3 → verify RAM updated from frame 3 pixels
 //
 // Conventions: drv_* intermediaries, posedge register, $display/$fatal.
 
@@ -12,12 +14,13 @@
 
 module tb_axis_motion_detect;
 
-    localparam int H = 4;
-    localparam int V = 2;
+    localparam int H      = 4;
+    localparam int V      = 2;
     localparam int THRESH = 16;
     localparam int NUM_PIX = H * V;
     localparam int CLK_PERIOD = 10;
 
+    // ---- Clock / reset ----
     logic clk = 0;
     always #(CLK_PERIOD/2) clk = ~clk;
     logic rst_n;
@@ -29,10 +32,7 @@ module tb_axis_motion_detect;
     logic        drv_tuser  = 1'b0;
 
     logic [23:0] s_tdata;
-    logic        s_tvalid;
-    logic        s_tready;
-    logic        s_tlast;
-    logic        s_tuser;
+    logic        s_tvalid, s_tready, s_tlast, s_tuser;
 
     always_ff @(posedge clk) begin
         s_tdata  <= drv_tdata;
@@ -43,27 +43,18 @@ module tb_axis_motion_detect;
 
     // ---- DUT outputs ----
     logic [23:0] vid_tdata;
-    logic        vid_tvalid;
-    logic        vid_tlast;
-    logic        vid_tuser;
-
+    logic        vid_tvalid, vid_tlast, vid_tuser;
     logic        msk_tdata;
-    logic        msk_tvalid;
-    logic        msk_tlast;
-    logic        msk_tuser;
+    logic        msk_tvalid, msk_tlast, msk_tuser;
 
-    // Ready signals — driven by the test (not hardwired).
+    // Consumer ready — driven from test
     logic drv_vid_rdy = 1'b1;
     logic drv_msk_rdy = 1'b1;
-    logic vid_tready;
-    logic msk_tready;
+    logic vid_tready, msk_tready;
     assign vid_tready = drv_vid_rdy;
     assign msk_tready = drv_msk_rdy;
 
     // ---- Stall-pattern generator ----
-    // When stall_active=1 the consumer deasserts ready for STALL_LEN cycles,
-    // then reasserts for OPEN_LEN cycles, repeating indefinitely.
-    // Controlled from the initial block via blocking assignment.
     localparam int STALL_LEN = 10;
     localparam int OPEN_LEN  = 3;
 
@@ -90,13 +81,17 @@ module tb_axis_motion_detect;
         end
     end
 
-    // ---- RAM instance ----
+    // ---- RAM ----
     localparam int RAM_DEPTH = NUM_PIX;
-    localparam int ADDR_W = $clog2(RAM_DEPTH);
+    localparam int ADDR_W    = $clog2(RAM_DEPTH);
 
     logic [ADDR_W-1:0] a_rd_addr, a_wr_addr;
     logic [7:0]        a_rd_data, a_wr_data;
     logic              a_wr_en;
+
+    // Port B used by TB to read back Y8 values
+    logic [ADDR_W-1:0] b_rd_addr = '0;
+    logic [7:0]        b_rd_data;
 
     ram #(.DEPTH(RAM_DEPTH)) u_ram (
         .clk_i       (clk),
@@ -105,8 +100,8 @@ module tb_axis_motion_detect;
         .a_wr_addr_i (a_wr_addr),
         .a_wr_data_i (a_wr_data),
         .a_wr_en_i   (a_wr_en),
-        .b_rd_addr_i ('0),
-        .b_rd_data_o (),
+        .b_rd_addr_i (b_rd_addr),
+        .b_rd_data_o (b_rd_data),
         .b_wr_addr_i ('0),
         .b_wr_data_i ('0),
         .b_wr_en_i   (1'b0)
@@ -120,66 +115,61 @@ module tb_axis_motion_detect;
         .RGN_BASE (0),
         .RGN_SIZE (NUM_PIX)
     ) u_dut (
-        .clk_i                (clk),
-        .rst_n_i              (rst_n),
-        .s_axis_tdata_i       (s_tdata),
-        .s_axis_tvalid_i      (s_tvalid),
-        .s_axis_tready_o      (s_tready),
-        .s_axis_tlast_i       (s_tlast),
-        .s_axis_tuser_i       (s_tuser),
-        .m_axis_vid_tdata_o   (vid_tdata),
-        .m_axis_vid_tvalid_o  (vid_tvalid),
-        .m_axis_vid_tready_i  (vid_tready),
-        .m_axis_vid_tlast_o   (vid_tlast),
-        .m_axis_vid_tuser_o   (vid_tuser),
-        .m_axis_msk_tdata_o   (msk_tdata),
-        .m_axis_msk_tvalid_o  (msk_tvalid),
-        .m_axis_msk_tready_i  (msk_tready),
-        .m_axis_msk_tlast_o   (msk_tlast),
-        .m_axis_msk_tuser_o   (msk_tuser),
-        .mem_rd_addr_o        (a_rd_addr),
-        .mem_rd_data_i        (a_rd_data),
-        .mem_wr_addr_o        (a_wr_addr),
-        .mem_wr_data_o        (a_wr_data),
-        .mem_wr_en_o          (a_wr_en)
+        .clk_i               (clk),
+        .rst_n_i             (rst_n),
+        .s_axis_tdata_i      (s_tdata),
+        .s_axis_tvalid_i     (s_tvalid),
+        .s_axis_tready_o     (s_tready),
+        .s_axis_tlast_i      (s_tlast),
+        .s_axis_tuser_i      (s_tuser),
+        .m_axis_vid_tdata_o  (vid_tdata),
+        .m_axis_vid_tvalid_o (vid_tvalid),
+        .m_axis_vid_tready_i (vid_tready),
+        .m_axis_vid_tlast_o  (vid_tlast),
+        .m_axis_vid_tuser_o  (vid_tuser),
+        .m_axis_msk_tdata_o  (msk_tdata),
+        .m_axis_msk_tvalid_o (msk_tvalid),
+        .m_axis_msk_tready_i (msk_tready),
+        .m_axis_msk_tlast_o  (msk_tlast),
+        .m_axis_msk_tuser_o  (msk_tuser),
+        .mem_rd_addr_o       (a_rd_addr),
+        .mem_rd_data_i       (a_rd_data),
+        .mem_wr_addr_o       (a_wr_addr),
+        .mem_wr_data_o       (a_wr_data),
+        .mem_wr_en_o         (a_wr_en)
     );
 
-    // ---- Test pixel data ----
+    // ---- Golden Y8 model ----
+    // Matches rgb2ycrcb: y = (77*R + 150*G + 29*B) >> 8
+    function automatic logic [7:0] y_of(input logic [23:0] rgb);
+        logic [7:0] r, g, b;
+        logic [16:0] sum;
+        r = rgb[23:16]; g = rgb[15:8]; b = rgb[7:0];
+        sum = 17'(77 * r) + 17'(150 * g) + 17'(29 * b);
+        return sum[15:8];
+    endfunction
+
+    // ---- Pixel arrays ----
+    // frame_pixels: base pixel set (used for frames 0 and 1)
     logic [23:0] frame_pixels [NUM_PIX];
-    initial begin
-        frame_pixels[0] = 24'hFF_00_00;
-        frame_pixels[1] = 24'h00_FF_00;
-        frame_pixels[2] = 24'h00_00_FF;
-        frame_pixels[3] = 24'hFF_FF_00;
-        frame_pixels[4] = 24'h80_80_80;
-        frame_pixels[5] = 24'hFF_FF_FF;
-        frame_pixels[6] = 24'h40_80_C0;
-        frame_pixels[7] = 24'hC0_40_80;
-    end
+    // mixed_pixels: crafted for threshold boundary (frame 2 and 3)
+    logic [23:0] mixed_pixels [NUM_PIX];
+    // y_prev: Y8 values from the previously driven frame (updated by TB)
+    logic [7:0]  y_prev [NUM_PIX];
+
+    // ---- Capture arrays ----
+    logic [23:0] cap_vid [NUM_PIX];
+    logic        cap_msk [NUM_PIX];
 
     integer num_errors = 0;
 
-    // ---- Capture mask outputs ----
-    // Only capture when both valid AND ready are asserted (actual handshake).
-    integer msk_count;
-    logic mask_results [NUM_PIX];
+    // ---- Tasks ----
 
-    task automatic capture_frame_mask;
-        msk_count = 0;
-        while (msk_count < NUM_PIX) begin
-            @(posedge clk);
-            if (msk_tvalid && msk_tready) begin
-                mask_results[msk_count] = msk_tdata;
-                msk_count = msk_count + 1;
-            end
-        end
-    endtask
-
-    // ---- Drive one frame ----
-    task automatic drive_frame;
+    // Drive one frame; concurrent capture happens in the always block below.
+    task automatic drive_frame(input logic [23:0] pixels [NUM_PIX]);
         integer px;
         for (px = 0; px < NUM_PIX; px = px + 1) begin
-            drv_tdata  = frame_pixels[px];
+            drv_tdata  = pixels[px];
             drv_tvalid = 1'b1;
             drv_tlast  = ((px % H) == H - 1) ? 1'b1 : 1'b0;
             drv_tuser  = (px == 0) ? 1'b1 : 1'b0;
@@ -191,62 +181,228 @@ module tb_axis_motion_detect;
         drv_tuser  = 1'b0;
     endtask
 
-    // ---- Check helper ----
-    task automatic check_mask(input logic expected, input string label);
+    // Wait until NUM_PIX vid and mask outputs have been captured.
+    task automatic wait_frame_captured;
+        integer timeout;
+        timeout = 0;
+        while ((vid_cap_cnt < NUM_PIX || msk_cap_cnt < NUM_PIX) && timeout < 10000) begin
+            @(posedge clk);
+            timeout = timeout + 1;
+        end
+        if (timeout >= 10000) begin
+            $display("FAIL: capture timed out (vid=%0d msk=%0d)", vid_cap_cnt, msk_cap_cnt);
+            num_errors = num_errors + 1;
+        end
+    endtask
+
+    // Check video passthrough against expected pixel array.
+    task automatic check_vid_passthrough(input logic [23:0] expected [NUM_PIX], input string label);
         integer i;
         for (i = 0; i < NUM_PIX; i = i + 1) begin
-            if (mask_results[i] !== expected) begin
-                $display("FAIL %s pixel %0d: mask=%0b, expected %0b",
-                         label, i, mask_results[i], expected);
+            if (cap_vid[i] !== expected[i]) begin
+                $display("FAIL %s vid px%0d: got %06h exp %06h",
+                         label, i, cap_vid[i], expected[i]);
                 num_errors = num_errors + 1;
             end
         end
-        $display("%s check done", label);
+        $display("%s: vid passthrough check done", label);
     endtask
 
+    // Check mask bits against golden per-pixel expected array.
+    task automatic check_mask_golden(input logic [7:0] y_p [NUM_PIX],
+                                     input logic [23:0] pixels [NUM_PIX],
+                                     input string label);
+        integer i;
+        logic [7:0] y_c, diff;
+        logic exp_msk;
+        for (i = 0; i < NUM_PIX; i = i + 1) begin
+            y_c     = y_of(pixels[i]);
+            diff    = (y_c > y_p[i]) ? (y_c - y_p[i]) : (y_p[i] - y_c);
+            exp_msk = (diff > THRESH[7:0]);
+            if (cap_msk[i] !== exp_msk) begin
+                $display("FAIL %s msk px%0d: got=%0b exp=%0b y_cur=%0d y_prev=%0d diff=%0d",
+                         label, i, cap_msk[i], exp_msk, y_c, y_p[i], diff);
+                num_errors = num_errors + 1;
+            end
+        end
+        $display("%s: mask golden check done", label);
+    endtask
+
+    // Read RAM via port B and compare against expected Y8 array.
+    task automatic check_ram_y8(input logic [23:0] pixels [NUM_PIX], input string label);
+        integer i;
+        logic [7:0] exp_y, got_y;
+        // RAM is registered — need 2 cycles after address to get data
+        for (i = 0; i < NUM_PIX; i = i + 1) begin
+            b_rd_addr = (ADDR_W)'(i);
+            @(posedge clk);
+            @(posedge clk);  // wait for registered read
+            exp_y = y_of(pixels[i]);
+            got_y = b_rd_data;
+            if (got_y !== exp_y) begin
+                $display("FAIL %s RAM[%0d]: got %0d exp %0d", label, i, got_y, exp_y);
+                num_errors = num_errors + 1;
+            end
+        end
+        b_rd_addr = '0;
+        $display("%s: RAM Y8 check done", label);
+    endtask
+
+    // Update y_prev[] to Y8 of the just-driven pixel array.
+    task automatic update_y_prev(input logic [23:0] pixels [NUM_PIX]);
+        integer i;
+        for (i = 0; i < NUM_PIX; i = i + 1)
+            y_prev[i] = y_of(pixels[i]);
+    endtask
+
+    // ---- Concurrent capture ----
+    integer vid_cap_cnt = 0;
+    integer msk_cap_cnt = 0;
+
+    always @(posedge clk) begin
+        if (vid_tvalid && vid_tready && vid_cap_cnt < NUM_PIX) begin
+            cap_vid[vid_cap_cnt] = vid_tdata;
+            vid_cap_cnt = vid_cap_cnt + 1;
+        end
+        if (msk_tvalid && msk_tready && msk_cap_cnt < NUM_PIX) begin
+            cap_msk[msk_cap_cnt] = msk_tdata;
+            msk_cap_cnt = msk_cap_cnt + 1;
+        end
+    end
+
+    // ---- Reset capture counters before each frame ----
+    task automatic reset_capture;
+        vid_cap_cnt = 0;
+        msk_cap_cnt = 0;
+    endtask
+
+    // ---- Main test ----
+    integer j;
+
     initial begin
+        // Initialise pixel arrays
+        frame_pixels[0] = 24'hFF_00_00;  // red
+        frame_pixels[1] = 24'h00_FF_00;  // green
+        frame_pixels[2] = 24'h00_00_FF;  // blue
+        frame_pixels[3] = 24'hFF_FF_00;  // yellow
+        frame_pixels[4] = 24'h80_80_80;  // gray
+        frame_pixels[5] = 24'hFF_FF_FF;  // white
+        frame_pixels[6] = 24'h40_80_C0;
+        frame_pixels[7] = 24'hC0_40_80;
+
+        // y_prev starts at 0 (RAM zero-init)
+        for (j = 0; j < NUM_PIX; j = j + 1)
+            y_prev[j] = 8'h00;
+
+        // Build mixed_pixels:
+        // We want some pixels with diff=THRESH-1, diff=THRESH, diff=THRESH+1
+        // relative to frame_pixels' Y8 values when used as y_prev.
+        // After frame 1 (same as frame_pixels), y_prev = y_of(frame_pixels[i]).
+        // mixed_pixels[i] is chosen so that:
+        //   y_of(mixed_pixels[i]) = y_prev[i] + delta, clamped to [0,255].
+        // We pick deltas: THRESH-1, THRESH, THRESH+1, cycling.
+        begin
+            logic [7:0] yp;
+            integer delta;
+            for (j = 0; j < NUM_PIX; j = j + 1) begin
+                yp = y_of(frame_pixels[j]);
+                case (j % 4)
+                    0:       delta = THRESH - 1;  // expect mask=0
+                    1:       delta = THRESH;       // expect mask=0 (strict >)
+                    2:       delta = THRESH + 1;   // expect mask=1
+                    default: delta = 0;            // expect mask=0
+                endcase
+                // Construct a gray pixel with the desired Y value.
+                // For gray (R=G=B=v): Y = (77+150+29)*v >> 8 = 256*v >> 8 = v
+                // So we can directly set R=G=B = clamp(yp + delta, 0, 255).
+                begin
+                    integer target_y;
+                    target_y = yp + delta;
+                    if (target_y > 255) target_y = 255;
+                    mixed_pixels[j] = {8'(target_y), 8'(target_y), 8'(target_y)};
+                end
+            end
+        end
+
+        // ---- Reset ----
         rst_n = 0;
         repeat (8) @(posedge clk);
         rst_n = 1;
         repeat (2) @(posedge clk);
 
-        // ---- Frame 0: RAM is zero → all pixels should produce motion ----
-        $display("Driving frame 0 (expect all mask=1)...");
+        // ================================================================
+        // Frame 0: RAM zero-init → y_prev=0, golden mask per pixel
+        // ================================================================
+        $display("=== Frame 0 (y_prev=0, golden mask + vid passthrough) ===");
+        reset_capture();
         fork
-            drive_frame();
-            capture_frame_mask();
+            drive_frame(frame_pixels);
+            wait_frame_captured();
         join
-        repeat (10) @(posedge clk);
-        check_mask(1'b1, "frame 0");
+        repeat (5) @(posedge clk);
+        check_vid_passthrough(frame_pixels, "frame0");
+        check_mask_golden(y_prev, frame_pixels, "frame0");
+        // y_prev stays 0 for checking frame 0; update after checks
+        update_y_prev(frame_pixels);
 
-        // ---- Frame 1: same pixels → diff 0 → mask all 0 ----
-        $display("Driving frame 1 (expect all mask=0)...");
+        // ================================================================
+        // Frame 1: same pixels → diff=0 → all mask=0; check RAM Y8
+        // ================================================================
+        $display("=== Frame 1 (identical pixels, diff=0, RAM Y8 check) ===");
+        reset_capture();
         fork
-            drive_frame();
-            capture_frame_mask();
+            drive_frame(frame_pixels);
+            wait_frame_captured();
         join
-        repeat (10) @(posedge clk);
-        check_mask(1'b0, "frame 1");
+        repeat (5) @(posedge clk);
+        check_vid_passthrough(frame_pixels, "frame1");
+        check_mask_golden(y_prev, frame_pixels, "frame1");
+        // Wait a few extra cycles for last RAM write-back to settle
+        repeat (5) @(posedge clk);
+        check_ram_y8(frame_pixels, "frame1");
+        update_y_prev(frame_pixels);
 
-        // ---- Frame 2: stall test ----
-        // Same pixels as frame 1 → diff still 0 → mask still all 0.
-        // Consumer deasserts ready for STALL_LEN cycles every OPEN_LEN cycles.
-        // Verifies that the pipeline stall logic holds pixels without dropping them.
-        $display("Driving frame 2 (stall test, expect all mask=0)...");
+        // ================================================================
+        // Frame 2: mixed-motion — threshold boundary
+        // y_prev = y_of(frame_pixels[i]), mixed_pixels crafted per delta
+        // ================================================================
+        $display("=== Frame 2 (mixed-motion, threshold boundary) ===");
+        reset_capture();
+        fork
+            drive_frame(mixed_pixels);
+            wait_frame_captured();
+        join
+        repeat (5) @(posedge clk);
+        check_vid_passthrough(mixed_pixels, "frame2");
+        check_mask_golden(y_prev, mixed_pixels, "frame2");
+        update_y_prev(mixed_pixels);
+
+        // ================================================================
+        // Frame 3: same mixed-motion under consumer stall
+        // ================================================================
+        $display("=== Frame 3 (mixed-motion + stall) ===");
+        reset_capture();
         stall_active = 1'b1;
         fork
-            drive_frame();
-            capture_frame_mask();
+            drive_frame(mixed_pixels);
+            wait_frame_captured();
         join
         stall_active = 1'b0;
-        repeat (10) @(posedge clk);
-        check_mask(1'b0, "frame 2 (stall test)");
+        repeat (5) @(posedge clk);
+        check_vid_passthrough(mixed_pixels, "frame3");
+        check_mask_golden(y_prev, mixed_pixels, "frame3");
+        // RAM should now hold Y8 of mixed_pixels (frame 3 wrote same as frame 2)
+        repeat (5) @(posedge clk);
+        check_ram_y8(mixed_pixels, "frame3");
+        update_y_prev(mixed_pixels);
 
-        // ---- Summary ----
+        // ================================================================
+        // Summary
+        // ================================================================
         if (num_errors > 0) begin
             $fatal(1, "tb_axis_motion_detect FAILED with %0d errors", num_errors);
         end else begin
-            $display("tb_axis_motion_detect PASSED — 3 frames OK (incl. stall test)");
+            $display("tb_axis_motion_detect PASSED — 4 frames OK");
             $finish;
         end
     end

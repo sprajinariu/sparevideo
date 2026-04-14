@@ -53,7 +53,10 @@ module axis_overlay_bbox #(
             row <= '0;
         end else if (s_axis_tvalid_i && s_axis_tready_o) begin
             if (s_axis_tuser_i) begin
-                col <= '0;
+                // SOF pixel is at image col=0; advance to 1 so the next pixel
+                // (image col=1) sees col=1. The SOF pixel itself already reads
+                // col=0 from the registered value set by the previous tlast.
+                col <= ($bits(col))'(1);
                 row <= '0;
             end else if (s_axis_tlast_i) begin
                 col <= '0;
