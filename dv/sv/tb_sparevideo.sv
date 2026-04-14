@@ -17,7 +17,10 @@
 
 `timescale 1ns / 1ps
 
-module tb_sparevideo;
+module tb_sparevideo #(
+    parameter int H_ACTIVE = 320,
+    parameter int V_ACTIVE = 240
+);
 
 `ifdef VERILATOR
     import "DPI-C" function longint get_wall_ms();
@@ -93,11 +96,11 @@ module tb_sparevideo;
     // The DUT's VGA controller is parameterised at instantiation; we
     // override here so the timing matches the small TB blanking values.
     sparevideo_top #(
-        .H_ACTIVE      (320),
+        .H_ACTIVE      (H_ACTIVE),
         .H_FRONT_PORCH (H_FRONT_PORCH),
         .H_SYNC_PULSE  (H_SYNC_PULSE),
         .H_BACK_PORCH  (H_BACK_PORCH),
-        .V_ACTIVE      (240),
+        .V_ACTIVE      (V_ACTIVE),
         .V_FRONT_PORCH (V_FRONT_PORCH),
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH)
