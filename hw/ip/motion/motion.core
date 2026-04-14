@@ -1,0 +1,18 @@
+CAPI=2:
+name: "sparevideo:ip:motion"
+description: "Motion detection pipeline — axis_motion_detect, axis_bbox_reduce, axis_overlay_bbox"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_motion_detect.sv
+      - rtl/axis_bbox_reduce.sv
+      - rtl/axis_overlay_bbox.sv
+    file_type: systemVerilogSource
+    depend:
+      - sparevideo:ip:rgb2ycrcb
+
+targets:
+  default:
+    filesets:
+      - files_rtl

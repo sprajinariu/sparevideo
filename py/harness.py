@@ -104,7 +104,8 @@ def cmd_prepare(args):
 def cmd_verify(args):
     """Compare input and output frame files."""
     input_frames, output_frames = _load_input_output(args)
-    results = compare_frames(input_frames, output_frames)
+    tolerance = args.tolerance
+    results = compare_frames(input_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
     for r in results:
@@ -113,12 +114,12 @@ def cmd_verify(args):
             all_pass = False
         print(f"Frame {r['frame_idx']}: {status}"
               f"  max_diff={r['max_diff']} mean_diff={r['mean_diff']:.2f}"
-              f"  diff_pixels={r['num_diff_pixels']}")
+              f"  diff_pixels={r['num_diff_pixels']} (tolerance={tolerance})")
 
     if all_pass:
-        print(f"\nPASS: {len(results)} frames verified")
+        print(f"\nPASS: {len(results)} frames verified (tolerance={tolerance})")
     else:
-        print(f"\nFAIL: some frames differ")
+        print(f"\nFAIL: some frames exceed diff tolerance ({tolerance} pixels)")
         sys.exit(1)
 
 
@@ -151,11 +152,16 @@ def main():
 
     # verify
     p_ver = sub.add_parser("verify", parents=[common],
-                           help="Verify output matches input (passthrough)")
+                           help="Verify output matches input")
     p_ver.add_argument("--input", default="dv/data/input.txt",
                        help="Input file (text or binary)")
     p_ver.add_argument("--output", default="dv/data/output.txt",
                        help="Output file (text or binary)")
+    p_ver.add_argument("--tolerance", type=int, default=0,
+                       help="Max differing pixels per frame that still counts "
+                            "as PASS (default 0 = exact match). Use "
+                            "2*(W+H) to accommodate the frame-0 bbox border "
+                            "drawn by the motion-detect pipeline.")
 
     # render
     p_ren = sub.add_parser("render", parents=[common],

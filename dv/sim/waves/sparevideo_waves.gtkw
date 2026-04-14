@@ -1,0 +1,79 @@
+[*]
+[*] GTKWave Analyzer v3.3.116 (w)1999-2023 BSI
+[*] Thu Apr  9 12:40:12 2026
+[*]
+[dumpfile] "/home/spraj/work/sparevideo/dv/sim/tb_sparevideo.vcd"
+[dumpfile_mtime] "Thu Apr  9 12:23:42 2026"
+[dumpfile_size] 17606126
+[savefile] "/home/spraj/work/sparevideo/dv/sim/waves/sparevideo_waves.gtkw"
+[timestart] 0
+[size] 2560 1345
+[pos] -27 -24
+*-22.740065 96906000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.tb_sparevideo.
+[treeopen] TOP.tb_sparevideo.u_dut.
+[sst_width] 297
+[signals_width] 174
+[sst_expanded] 1
+[sst_vpaned_height] 416
+@24
+TOP.tb_sparevideo.u_dut.H_ACTIVE[31:0]
+TOP.tb_sparevideo.u_dut.V_ACTIVE[31:0]
+@200
+-
+-FIFO_IN input
+@28
+TOP.tb_sparevideo.u_dut.clk_pix
+@22
+TOP.tb_sparevideo.u_dut.u_fifo_in.s_axis_tdata[23:0]
+@28
+TOP.tb_sparevideo.u_dut.u_fifo_in.s_axis_tvalid
+TOP.tb_sparevideo.u_dut.u_fifo_in.s_axis_tready
+TOP.tb_sparevideo.u_dut.u_fifo_in.s_axis_tuser[0]
+TOP.tb_sparevideo.u_dut.u_fifo_in.s_axis_tlast
+@200
+-
+-FIFO_IN output
+@22
+TOP.tb_sparevideo.u_dut.u_fifo_in.m_axis_tdata[23:0]
+@28
+TOP.tb_sparevideo.u_dut.u_fifo_in.m_axis_tvalid
+TOP.tb_sparevideo.u_dut.u_fifo_in.m_axis_tready
+TOP.tb_sparevideo.u_dut.u_fifo_in.m_axis_tuser[0]
+TOP.tb_sparevideo.u_dut.u_fifo_in.m_axis_tlast
+@200
+-
+-FIFO_OUT input
+@28
+TOP.tb_sparevideo.u_dut.clk_dsp
+@22
+TOP.tb_sparevideo.u_dut.u_fifo_out.s_axis_tdata[23:0]
+@28
+TOP.tb_sparevideo.u_dut.u_fifo_out.s_axis_tvalid
+TOP.tb_sparevideo.u_dut.u_fifo_out.s_axis_tready
+TOP.tb_sparevideo.u_dut.u_fifo_out.s_axis_tuser[0]
+TOP.tb_sparevideo.u_dut.u_fifo_out.s_axis_tlast
+@200
+-
+-
+-VGA in
+@28
+TOP.tb_sparevideo.u_dut.clk_pix
+@22
+TOP.tb_sparevideo.u_dut.u_vga.pixel_data[23:0]
+@28
+TOP.tb_sparevideo.u_dut.u_vga.pixel_valid
+TOP.tb_sparevideo.u_dut.u_vga.pixel_ready
+@200
+-VGA out
+@22
+TOP.tb_sparevideo.u_dut.u_vga.vga_r[7:0]
+TOP.tb_sparevideo.u_dut.u_vga.vga_g[7:0]
+TOP.tb_sparevideo.u_dut.u_vga.vga_b[7:0]
+TOP.tb_sparevideo.u_dut.u_vga.v_count[7:0]
+TOP.tb_sparevideo.u_dut.u_vga.h_count[8:0]
+@28
+TOP.tb_sparevideo.u_dut.u_vga.active
+[pattern_trace] 1
+[pattern_trace] 0

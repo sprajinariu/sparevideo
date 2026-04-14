@@ -15,7 +15,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y iverilog verilator
+          sudo apt-get install -y verilator
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -50,23 +50,23 @@ jobs:
       - name: Lint
         run: make lint
 
-      - name: Compile — Verilator (default)
+      - name: Compile
         run: make compile
-
-      - name: Compile — Icarus
-        run: make compile SIMULATOR=icarus
 
       - name: Dry-run (file loopback, zero sim time)
         run: make sw-dry-run
 
-      - name: Pipeline — text mode, color_bars (Verilator)
+      - name: Block IP testbenches
+        run: make test-ip
+
+      - name: Pipeline — text mode, color_bars
         run: make run-pipeline
 
-      - name: Pipeline — text mode, gradient (Verilator)
+      - name: Pipeline — text mode, gradient
         run: make run-pipeline SOURCE="synthetic:gradient"
 
-      - name: Pipeline — binary mode (Verilator)
+      - name: Pipeline — binary mode
         run: make run-pipeline MODE=binary
 
-      - name: Pipeline — text mode, color_bars (Icarus)
-        run: make run-pipeline SIMULATOR=icarus
+      - name: Pipeline — moving_box (motion detection)
+        run: make run-pipeline SOURCE="synthetic:moving_box" TOLERANCE=10000

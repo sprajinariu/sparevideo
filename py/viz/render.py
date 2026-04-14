@@ -80,21 +80,31 @@ def render_grid(input_frames, output_frames, path, label_height=24):
     return path
 
 
-def compare_frames(input_frames, output_frames):
+def compare_frames(input_frames, output_frames, tolerance=0):
     """Compare input and output frames, return per-frame results.
 
+    Args:
+        input_frames: List of numpy arrays (H, W, 3).
+        output_frames: List of numpy arrays (H, W, 3).
+        tolerance: Max number of differing pixels per frame that still counts
+            as a pass. 0 = exact match (default). Use a non-zero value to
+            accommodate the bounding-box overlay added by the motion pipeline
+            (frame 0 always has a full-frame border; motion frames have a bbox).
+
     Returns:
-        List of dicts with keys: frame_idx, match, max_diff, mean_diff, num_diff_pixels.
+        List of dicts with keys: frame_idx, match, max_diff, mean_diff,
+        num_diff_pixels.
     """
     results = []
     for i, (inp, out) in enumerate(zip(input_frames, output_frames)):
         diff = np.abs(inp.astype(int) - out.astype(int))
-        match = np.array_equal(inp, out)
+        num_diff = int(np.any(diff > 0, axis=-1).sum())
+        match = num_diff <= tolerance
         results.append({
             "frame_idx": i,
             "match": match,
             "max_diff": int(diff.max()),
             "mean_diff": float(diff.mean()),
-            "num_diff_pixels": int(np.any(diff > 0, axis=-1).sum()),
+            "num_diff_pixels": num_diff,
         })
     return results

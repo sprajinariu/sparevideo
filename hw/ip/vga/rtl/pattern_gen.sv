@@ -3,18 +3,18 @@
 // Supports 4 patterns: color bars, checkerboard, solid red, gradient.
 
 module pattern_gen (
-    input  logic        clk,
-    input  logic        rst_n,
-    input  logic [1:0]  pattern_sel,    // 0=color bars, 1=checkerboard, 2=solid, 3=gradient
+    input  logic        clk_i,
+    input  logic        rst_n_i,
+    input  logic [1:0]  pattern_sel_i,  // 0=color bars, 1=checkerboard, 2=solid, 3=gradient
 
     // Synchronization inputs from VGA controller
-    input  logic        frame_start,
-    input  logic        line_start,
+    input  logic        frame_start_i,
+    input  logic        line_start_i,
 
     // Streaming pixel output
-    output logic [23:0] pixel_data,     // {R[7:0], G[7:0], B[7:0]}
-    output logic        pixel_valid,
-    input  logic        pixel_ready
+    output logic [23:0] pixel_data_o,   // {R[7:0], G[7:0], B[7:0]}
+    output logic        pixel_valid_o,
+    input  logic        pixel_ready_i
 );
 
     // Internal position counters
@@ -22,25 +22,25 @@ module pattern_gen (
     logic [9:0] pixel_y;
 
     // Position tracking
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i) begin
             pixel_x <= '0;
             pixel_y <= '0;
         end else begin
-            if (frame_start) begin
+            if (frame_start_i) begin
                 pixel_x <= '0;
                 pixel_y <= '0;
-            end else if (line_start) begin
+            end else if (line_start_i) begin
                 pixel_x <= '0;
                 pixel_y <= pixel_y + 1'b1;
-            end else if (pixel_valid && pixel_ready) begin
+            end else if (pixel_valid_o && pixel_ready_i) begin
                 pixel_x <= pixel_x + 1'b1;
             end
         end
     end
 
     // Always ready to provide pixels (combinational patterns)
-    assign pixel_valid = 1'b1;
+    assign pixel_valid_o = 1'b1;
 
     // Color bar column index (640px / 8 = 80px per column)
     logic [2:0] col_idx;
@@ -60,7 +60,7 @@ module pattern_gen (
     logic [23:0] color_bars_data;
 
     always_comb begin
-        case (col_idx)
+        unique case (col_idx)
             3'd0:    color_bars_data = 24'hFFFFFF; // White
             3'd1:    color_bars_data = 24'hFFFF00; // Yellow
             3'd2:    color_bars_data = 24'h00FFFF; // Cyan
@@ -83,12 +83,12 @@ module pattern_gen (
 
     // Pattern mux
     always_comb begin
-        case (pattern_sel)
-            2'd0:    pixel_data = color_bars_data;
-            2'd1:    pixel_data = checker_bit ? 24'hFFFFFF : 24'h000000;
-            2'd2:    pixel_data = 24'hFF0000;
-            2'd3:    pixel_data = {grad_r, grad_g, 8'h00};
-            default: pixel_data = 24'h000000;
+        unique case (pattern_sel_i)
+            2'd0:    pixel_data_o = color_bars_data;
+            2'd1:    pixel_data_o = checker_bit ? 24'hFFFFFF : 24'h000000;
+            2'd2:    pixel_data_o = 24'hFF0000;
+            2'd3:    pixel_data_o = {grad_r, grad_g, 8'h00};
+            default: pixel_data_o = 24'h000000;
         endcase
     end
 

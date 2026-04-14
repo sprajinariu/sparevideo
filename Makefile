@@ -11,6 +11,11 @@ WIDTH     ?= 320
 HEIGHT    ?= 240
 FRAMES    ?= 4
 MODE      ?= text
+# Default tolerance: accommodate the frame-0 bounding-box border that the
+# motion-detect pipeline overlays on every run (border pixel count ≈ 2*(W+H)).
+# Override with TOLERANCE=0 for exact-match checks or a higher value for
+# motion-heavy sources (e.g. TOLERANCE=10000 for synthetic:moving_box).
+TOLERANCE ?= $(shell echo "$$((2*($(WIDTH)+$(HEIGHT))))")
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -32,7 +37,7 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py setup clean
+        test-py test-ip setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -50,9 +55,14 @@ help:
 	@echo "    render       Save input vs output comparison PNG"
 	@echo ""
 	@echo "  Additional targets:"
-	@echo "    sim-waves    RTL sim + open GTKWave"
-	@echo "    sw-dry-run   Bypass RTL (file loopback, zero sim time)"
-	@echo "    test-py      Run Python unit tests"
+	@echo "    sim-waves             RTL sim + open GTKWave"
+	@echo "    sw-dry-run            Bypass RTL (file loopback, zero sim time)"
+	@echo "    test-py               Run Python unit tests"
+	@echo "    test-ip               All per-block IP unit testbenches (Verilator)"
+	@echo "    test-ip-rgb2ycrcb     rgb2ycrcb unit test"
+	@echo "    test-ip-motion-detect axis_motion_detect unit test"
+	@echo "    test-ip-bbox-reduce   axis_bbox_reduce unit test"
+	@echo "    test-ip-overlay-bbox  axis_overlay_bbox unit test"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator        Simulator: verilator (default) or icarus"
@@ -61,6 +71,7 @@ help:
 	@echo "    HEIGHT=240                 Frame height"
 	@echo "    FRAMES=4                   Number of frames"
 	@echo "    MODE=text|binary           File format"
+	@echo "    TOLERANCE=<n>              Max diff pixels/frame for verify (default 2*(W+H))"
 
 # ---- Main pipeline flow ----
 
@@ -92,7 +103,7 @@ sw-dry-run:
 verify:
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
-		--mode $(MODE)
+		--mode $(MODE) --tolerance $(TOLERANCE)
 
 render:
 	@mkdir -p $(DATA_DIR)/renders
@@ -104,10 +115,13 @@ render:
 # ---- Other targets ----
 
 lint:
-	$(FUSESOC) $(CORES_ROOT) run --target=lint opensoc:video:sparesoc_top
+	$(FUSESOC) $(CORES_ROOT) run --target=lint sparevideo:video:sparevideo_top
 
 test-py:
 	$(VENV_PY) $(CURDIR)/py/tests/test_frame_io.py
+
+test-ip:
+	$(MAKE) -C dv/sim test-ip SIMULATOR=$(SIMULATOR)
 
 setup:
 	sudo apt install -y iverilog verilator

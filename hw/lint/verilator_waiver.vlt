@@ -1,8 +1,14 @@
 `verilator_config
 // Waivers for sparevideo RTL
-// Empty pin connections in sparesoc_top intentionally tie off unused
+// Empty pin connections in sparevideo_top intentionally tie off unused
 // outputs of vendored verilog-axis modules.
-lint_off -rule PINCONNECTEMPTY -file "*sparesoc_top.sv"
+lint_off -rule PINCONNECTEMPTY -file "*sparevideo_top.sv"
 // vga_controller and pattern_gen lack `timescale; harmless mismatch
 // against vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"
+// rgb2ycrcb uses 17-bit intermediate sums for overflow safety; only bits
+// [15:8] feed the output registers. Bits [16] and [7:0] are intentionally
+// discarded (the >>8 is pure wiring, no saturation needed).
+lint_off -rule UNUSEDSIGNAL    -file "*rgb2ycrcb.sv"
+// rgb2ycrcb has no `timescale directive; harmless mismatch vs vendored files.
+lint_off -rule TIMESCALEMOD    -file "*rgb2ycrcb.sv"

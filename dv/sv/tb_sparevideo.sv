@@ -1,4 +1,4 @@
-// Testbench for sparesoc_top (AXI4-Stream version)
+// Testbench for sparevideo_top (AXI4-Stream version)
 //
 // Drives an AXI4-Stream input on clk_pix, runs processing on clk_dsp,
 // and captures VGA RGB output on clk_pix.
@@ -10,6 +10,8 @@
 //   +HEIGHT=<n>        Frame height (default 240)
 //   +FRAMES=<n>        Number of frames (default 4)
 //   +MODE=text|binary  File format (default "text")
+//   +THRESH=<n>        Motion threshold (informational; MOTION_THRESH is a
+//                      compile-time parameter — recompile to change it)
 //   +sw_dry_run=1      Bypass RTL — direct file loopback (no clock)
 //   +DUMP_VCD          Dump waveforms to VCD
 
@@ -87,7 +89,7 @@ module tb_sparevideo;
 
     // The DUT's VGA controller is parameterised at instantiation; we
     // override here so the timing matches the small TB blanking values.
-    sparesoc_top #(
+    sparevideo_top #(
         .H_ACTIVE      (320),
         .H_FRONT_PORCH (H_FRONT_PORCH),
         .H_SYNC_PULSE  (H_SYNC_PULSE),
@@ -97,20 +99,20 @@ module tb_sparevideo;
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH)
     ) u_dut (
-        .clk_pix       (clk_pix),
-        .clk_dsp       (clk_dsp),
-        .rst_pix_n     (rst_pix_n),
-        .rst_dsp_n     (rst_dsp_n),
-        .s_axis_tdata  (s_axis_tdata),
-        .s_axis_tvalid (s_axis_tvalid),
-        .s_axis_tready (s_axis_tready),
-        .s_axis_tlast  (s_axis_tlast),
-        .s_axis_tuser  (s_axis_tuser),
-        .vga_hsync     (vga_hsync),
-        .vga_vsync     (vga_vsync),
-        .vga_r         (vga_r),
-        .vga_g         (vga_g),
-        .vga_b         (vga_b)
+        .clk_pix_i       (clk_pix),
+        .clk_dsp_i       (clk_dsp),
+        .rst_pix_n_i     (rst_pix_n),
+        .rst_dsp_n_i     (rst_dsp_n),
+        .s_axis_tdata_i  (s_axis_tdata),
+        .s_axis_tvalid_i (s_axis_tvalid),
+        .s_axis_tready_o (s_axis_tready),
+        .s_axis_tlast_i  (s_axis_tlast),
+        .s_axis_tuser_i  (s_axis_tuser),
+        .vga_hsync_o     (vga_hsync),
+        .vga_vsync_o     (vga_vsync),
+        .vga_r_o         (vga_r),
+        .vga_g_o         (vga_g),
+        .vga_b_o         (vga_b)
     );
 
     initial clk_pix = 0;
@@ -154,6 +156,14 @@ module tb_sparevideo;
         if ($value$plusargs("MODE=%s",     cfg_mode))    ;
         sw_dry_run = 0;
         if ($value$plusargs("sw_dry_run=%d", sw_dry_run)) ;
+
+        begin : log_thresh
+            integer thresh_arg;
+            thresh_arg = 16;
+            if ($value$plusargs("THRESH=%d", thresh_arg))
+                $display("TB note: +THRESH=%0d seen (informational; MOTION_THRESH is compile-time)",
+                         thresh_arg);
+        end
 
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
@@ -284,7 +294,26 @@ module tb_sparevideo;
 
                 end // col
                 if (sw_dry_run && cfg_mode == "text") $fwrite(fd_out, "\n");
+
+                // Horizontal blanking gap after each active row (RTL only).
+                // Matches the H_BLANK period the VGA controller inserts, so the
+                // input rate equals the output rate and the output FIFO never overflows.
+                if (!sw_dry_run) begin
+                    drv_tvalid = 0;
+                    repeat (H_BLANK) @(posedge clk_pix);
+                end
             end // row
+
+            // Vertical blanking gap after each frame (RTL only).
+            // V_BLANK full lines (each H_ACTIVE + H_BLANK cycles wide).
+            if (!sw_dry_run) begin
+                begin : v_blank_gap
+                    integer vb;
+                    drv_tvalid = 0;
+                    for (vb = 0; vb < V_BLANK * (cfg_width + H_BLANK); vb = vb + 1)
+                        @(posedge clk_pix);
+                end
+            end
 
 `ifdef VERILATOR
             t_frame_end_ms = get_wall_ms();
@@ -358,7 +387,7 @@ module tb_sparevideo;
     // sampled at posedge K when active_K was true. So vga_r is one
     // cycle behind `pixel_ready`. We delay our capture qualifier by
     // one clock so it lines up with the registered RGB.
-    wire dut_active = u_dut.u_vga.pixel_ready & u_dut.vga_started;
+    wire dut_active = u_dut.u_vga.pixel_ready_o & u_dut.vga_started;
     logic dut_active_d;
     always_ff @(posedge clk_pix) begin
         if (!rst_pix_n) dut_active_d <= 1'b0;
