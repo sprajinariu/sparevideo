@@ -40,11 +40,14 @@ hw/lint/
 third_party/verilog-axis/
   rtl/                 Vendored alexforencich/verilog-axis (MIT)
 hw/ip/rgb2ycrcb/tb/
-  tb_rgb2ycrcb.sv      Unit TB: RGB→YCrCb corner-case checks
+  tb_rgb2ycrcb.sv      Unit TB: 18 vectors — corner cases, near-boundary, exact-match (0 tolerance)
 hw/ip/motion/tb/
-  tb_axis_motion_detect.sv  Unit TB: motion mask correctness + pipeline stall test
-  tb_axis_bbox_reduce.sv    Unit TB: bbox accumulation, bbox_empty
-  tb_axis_overlay_bbox.sv   Unit TB: rectangle pixel selection
+  tb_axis_motion_detect.sv  Unit TB: 4-frame golden model — RGB passthrough, Y8 RAM readback,
+                              per-pixel mask, threshold boundary (THRESH±1), stall with real data
+  tb_axis_bbox_reduce.sv    Unit TB: 9 tests — known region, all-zero, single-pixel, full-frame,
+                              corners, single-row, single-col, 8×8 frame, SOF reset isolation
+  tb_axis_overlay_bbox.sv   Unit TB: 8 tests — solid overlay, empty bbox, full-frame, single-pixel,
+                              edge-aligned, varied pixel colors, backpressure
 dv/sv/
   tb_sparevideo.sv     Unified top-level testbench (RTL sim + SW dry-run)
   tb_utils.c           DPI-C helper: wall-clock time via clock_gettime (Verilator)
@@ -138,10 +141,10 @@ make render
 # Other targets
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
-make test-ip-rgb2ycrcb       # rgb2ycrcb color-space converter
-make test-ip-motion-detect   # axis_motion_detect (Y8 diff + backpressure)
-make test-ip-bbox-reduce     # axis_bbox_reduce (bounding box accumulator)
-make test-ip-overlay-bbox    # axis_overlay_bbox (bbox rect overlay)
+make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
+make test-ip-motion-detect   # axis_motion_detect: 4-frame golden model, threshold boundary, stall
+make test-ip-bbox-reduce     # axis_bbox_reduce: 9 tests, edge cases, SOF reset
+make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure
 make sw-dry-run              # Bypass RTL — file loopback, zero sim time
 make sim-waves               # RTL sim + open GTKWave
 make compile                 # Compile only

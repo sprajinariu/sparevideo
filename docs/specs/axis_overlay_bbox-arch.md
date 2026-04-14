@@ -50,7 +50,9 @@
 
 ### Column/row counters
 
-`col` increments on every accepted pixel (`tvalid && tready`), resets to 0 on `tlast`. `row` increments on `tlast`, resets to 0 on `tuser`. These track the spatial position of the current pixel in the frame.
+`col` increments on every accepted pixel (`tvalid && tready`), resets to 0 on `tlast`. `row` increments on `tlast`, resets to 0 on `tuser`.
+
+On `tuser` (SOF), `col` is set to **1** — not 0. The SOF pixel is always at image column 0 and reads the registered `col` before the update fires, so it correctly sees `col=0` from the previous `tlast` or hardware reset. Setting the register to 1 ensures the *next* pixel (image column 1) also sees `col=1`. Without this, every pixel in the first row of each frame would have its column index shifted by 1, causing the `on_rect` predicate to misfire for column-dependent bbox edges.
 
 ### Rectangle edge predicate
 
