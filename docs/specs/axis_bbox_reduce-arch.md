@@ -46,18 +46,19 @@
 Two sets of registers operate in parallel:
 
 **Scratch accumulators** (update every accepted mask pixel):
-- `acc_min_x`, `acc_max_x`: track leftmost and rightmost motion column seen so far.
-- `acc_min_y`, `acc_max_y`: track topmost and bottommost motion row seen so far.
-- `acc_empty`: 1 if no mask=1 pixel has been seen yet this frame.
+- `sc_min_x`, `sc_max_x`: track leftmost and rightmost motion column seen so far.
+- `sc_min_y`, `sc_max_y`: track topmost and bottommost motion row seen so far.
+- `sc_any`: 1 if at least one mask=1 pixel has been seen this frame.
 
-Reset to sentinel values at SOF: `acc_min_x = H_ACTIVE−1`, `acc_max_x = 0`, `acc_min_y = V_ACTIVE−1`, `acc_max_y = 0`, `acc_empty = 1`.
+On SOF (`tuser=1`) the scratch is initialised in one of two ways (see §5).
 
-**Output registers** (latch at EOF):
-- `bbox_{min,max}_{x,y}_o` and `bbox_empty_o` snapshot the accumulators on the last accepted pixel of the frame (`s_axis_tlast_i && s_axis_tvalid_i && row == V_ACTIVE−1`).
-- `bbox_valid_o` pulses for 1 cycle at the latch.
+**Output registers** (latch one cycle after EOF):
+- `bbox_{min,max}_{x,y}_o` and `bbox_empty_o` snapshot the scratch accumulators one cycle after EOF (i.e. one cycle after `s_axis_tlast_i && s_axis_tvalid_i && row == V_ACTIVE−1`). The one-cycle delay is necessary because the EOF pixel's scratch update is an NBA assignment that commits at end-of-cycle; reading the scratch in the *same* cycle would capture stale values.
+- `bbox_valid_o` pulses for 1 cycle at the latch (2 cycles after the last accepted mask pixel).
 
 **Column/row counters**:
 - `col` increments on every accepted pixel; resets to 0 on `tlast`.
+- On `tuser` (SOF), `col` is set to **1** — not 0. The SOF pixel itself is always at image column 0 and reads `col` before the register update, so it correctly sees `col=0`. Setting the register to 1 ensures that the *next* pixel (image column 1) also sees `col=1`. Without this correction the entire first row would have its column indices shifted by 1.
 - `row` increments on `tlast`; resets to 0 on `tuser`.
 
 ---
@@ -66,12 +67,29 @@ Reset to sentinel values at SOF: `acc_min_x = H_ACTIVE−1`, `acc_max_x = 0`, `a
 
 No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no ready check needed since `tready` is hardwired 1).
 
+### Scratch accumulator update (priority order, evaluated each accepted pixel)
+
 | Condition | Action |
 |-----------|--------|
-| `tvalid && tuser` | Reset col, row, accumulators |
-| `tvalid && tdata == 1` | Update `acc_min/max_x/y` if current `col`/`row` is outside current range |
-| `tvalid && tlast` | Increment row, reset col |
-| `tvalid && tlast && row == V_ACTIVE−1` | Latch accumulators → output registers; pulse `bbox_valid_o`; reset accumulators for next frame |
+| `tvalid && tuser && tdata == 1` | SOF pixel has motion: initialise `sc_min/max_x/y` directly to `(0,0)` and set `sc_any=1`. Direct initialisation avoids a comparison race — the SOF reset and the min/max update cannot be separated into independent branches when the pixel is at (0,0). |
+| `tvalid && tuser && tdata == 0` | SOF pixel, no motion: reset scratch to sentinels (`sc_min_x='1`, `sc_max_x='0`, …) and clear `sc_any`. |
+| `tvalid && !tuser && tdata == 1` | Non-SOF motion pixel: `sc_any=1`; update `sc_min/max_x/y` by comparison with `col`/`row`. |
+
+### Column/row counter update
+
+| Condition | Action |
+|-----------|--------|
+| `tvalid && tuser` | `col <= 1`, `row <= 0` (see §4 for why col is set to 1, not 0) |
+| `tvalid && tlast` | `col <= 0`, `row <= row + 1` |
+| `tvalid && !tuser && !tlast` | `col <= col + 1` |
+
+### Output latch
+
+| Condition | Action |
+|-----------|--------|
+| `is_eof_r` (one cycle after EOF) | Snapshot `sc_*` → `bbox_*_o`; pulse `bbox_valid_o` for 1 cycle |
+
+`is_eof` is a combinational flag (`tvalid && tlast && row == V_ACTIVE−1`). It is registered into `is_eof_r` so the latch fires one cycle later, after the EOF pixel's NBA scratch updates have committed.
 
 ---
 
@@ -79,11 +97,11 @@ No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no
 
 | Event | Latency |
 |-------|---------|
-| Last accepted mask pixel → `bbox_valid_o` | 1 cycle |
+| Last accepted mask pixel (EOF) → `bbox_valid_o` | 2 cycles (1 for `is_eof` → `is_eof_r`, 1 for latch → output) |
 | Output registers stable | From `bbox_valid_o` until next `bbox_valid_o` (one full frame) |
 | Throughput | 1 mask pixel / cycle (always ready) |
 
-The output bbox is stable for the entire duration of the *next* frame, making it safe for `axis_overlay_bbox` to read combinationally without synchronization.
+The output bbox is stable for the entire duration of the *next* frame, making it safe for `axis_overlay_bbox` to read combinationally without synchronization. The 2-cycle latch delay does not affect overlay correctness because both the mask stream and the overlay input are in the same clock domain and the bbox is consumed by the *following* frame.
 
 ---
 
