@@ -186,6 +186,20 @@ The SVAs `assert_fifo_in_not_full` and `assert_fifo_out_not_full` (in `sparevide
 
 `s_status_depth` (write-clock domain) and `m_status_depth` (read-clock domain) do NOT include the internal output-pipeline FIFO (~16 entries with default `RAM_PIPELINE=2`). The reported depth can therefore be 0 while up to 16 entries are in-flight on the read side. Keep this in mind when using depth for flow-control thresholds.
 
+### Motion pipeline — lessons learned
+
+These apply to any future motion pipeline block (Gaussian, morphology, CCL, adaptive threshold).
+
+**No first-frame priming.** Writing raw `y_cur` to RAM on frame 0 causes departure ghosts: foreground objects in frame 0 get committed to the background, and when they move, the ghost persists for `~1/alpha` frames. The EMA starts from zero and converges naturally. The bbox is already suppressed for the first 2 frames, so the convergence cost is acceptable.
+
+**Compile-time RTL parameters must propagate through the full Makefile chain.** Any new `-G` parameter (e.g., KERNEL_SIZE, MAX_LABELS) needs: top Makefile `?=` default → SIM_VARS → dv/sim/Makefile `?=` default → VLT_FLAGS `-G` → tb_sparevideo.sv parameter → DUT. The config stamp in dv/sim/Makefile must include it so parameter changes trigger recompilation.
+
+**Synthetic test patterns must exercise the feature meaningfully.** Rule of thumb for noise patterns: `2 × noise_amplitude > THRESH` for EMA to demonstrate value over raw differencing. The `noisy_moving_box` pattern uses `noise_amplitude=10` vs `THRESH=16`.
+
+**Departure ghosts are inherent to EMA.** When an object moves, pixels at its old position show as motion until the background converges back (~`1/alpha` frames). This is the trade-off for noise suppression, not a bug.
+
+**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 3 control flows (passthrough, motion, mask) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple sources at TOLERANCE=0.
+
 ### Python environment
 
 - All Python tooling runs from the venv at `.venv/`. Never use system Python directly.
