@@ -121,7 +121,7 @@ sim: compile
 sim-waves:
 	$(MAKE) -C dv/sim sim-waves $(SIM_VARS)
 
-sw-dry-run:
+sw-dry-run: prepare compile
 	$(MAKE) -C dv/sim sw-dry-run $(SIM_VARS)
 
 verify:

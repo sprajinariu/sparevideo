@@ -54,7 +54,7 @@ jobs:
         run: make compile
 
       - name: Dry-run (file loopback, zero sim time)
-        run: make prepare && make sw-dry-run
+        run: make sw-dry-run
 
       - name: Block IP testbenches
         run: make test-ip
