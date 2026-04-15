@@ -61,8 +61,12 @@ make setup                   # One-time setup (install deps)
 - `py/harness.py` — Pipeline harness CLI (prepare / verify / render)
 - `py/frames/frame_io.py` — Read/write text and binary frame files
 - `py/frames/video_source.py` — Load video from MP4/PNG/synthetic, resize, extract frames
+- `py/models/` — Control-flow reference models for pixel-accurate verification
+- `py/models/passthrough.py` — Passthrough model (identity)
+- `py/models/motion.py` — Motion pipeline model (luma, mask, bbox, overlay)
 - `py/viz/render.py` — Render input/output frames as comparison image grid
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
+- `py/tests/test_models.py` — Unit tests for control-flow reference models
 - `py/tests/test_vga.py` — Cocotb VGA timing tests (requires VGA IP)
 - FuseSoC core files: `sparevideo_top.core`, `hw/ip/vga/vga.core`, `verilog-axis.core`
 
@@ -91,6 +95,8 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 ## Pipeline Harness
 
 - Python prepares input, SV simulates, Python verifies and renders.
+- Verification is model-based: `make verify` computes expected output using a Python reference model for the active control flow, then compares RTL output pixel-by-pixel at TOLERANCE=0.
+- Each control flow has a reference model in `py/models/` (dispatch via `run_model(ctrl_flow, frames)`). Models are spec-driven — they implement the intended algorithm, not an RTL transcription. If the RTL disagrees with the model, the RTL is wrong.
 - Text mode (`.txt`) uses space-separated 6-digit hex pixels (RRGGBB), one row per line. No headers.
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
@@ -105,6 +111,7 @@ Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant 
 | `rtl-writing` | Writing, editing, or reviewing any `.sv` RTL file — covers file template, signal naming, always block rules, lint |
 | `hardware-arch-doc` | Before implementing any new module — produces the arch doc that becomes the contract for the RTL |
 | `hardware-testing` | Writing unit testbenches (`hw/ip/*/tb/`) or integration tests (`dv/sv/`) — covers `drv_*` pattern, Makefile wiring, Layer 2 rules |
+| `software-testing` | Writing Python reference models (`py/models/`) or model tests — covers model design, bit-accuracy, adding new control flows |
 
 ## TODO after each major change
 

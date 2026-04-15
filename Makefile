@@ -12,15 +12,8 @@ HEIGHT    ?= 240
 FRAMES    ?= 4
 MODE      ?= text
 CTRL_FLOW ?= motion
-# Default tolerance depends on control flow:
-#   passthrough: 0 (exact match expected)
-#   motion:      2*(W+H) — accommodates the frame-0 bounding-box border
-# Override with a higher value for motion-heavy sources (e.g. TOLERANCE=10000).
-ifeq ($(CTRL_FLOW),passthrough)
-  TOLERANCE ?= 0
-else
-  TOLERANCE ?= $(shell echo "$$((2*($(WIDTH)+$(HEIGHT))))")
-endif
+# Default tolerance: 0 (pixel-accurate model-based verification for all flows).
+TOLERANCE ?= 0
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -77,7 +70,7 @@ help:
 	@echo "    FRAMES=4                   Number of frames"
 	@echo "    MODE=text|binary           File format"
 	@echo "    CTRL_FLOW=motion|passthrough  Control flow (default motion)"
-	@echo "    TOLERANCE=<n>              Max diff pixels/frame for verify (default 2*(W+H))"
+	@echo "    TOLERANCE=<n>              Max diff pixels/frame for verify (default 0 = exact)"
 
 # ---- Main pipeline flow ----
 
@@ -109,7 +102,7 @@ sw-dry-run:
 verify:
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
-		--mode $(MODE) --tolerance $(TOLERANCE)
+		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE)
 
 render:
 	@mkdir -p $(DATA_DIR)/renders
@@ -125,6 +118,7 @@ lint:
 
 test-py:
 	$(VENV_PY) $(CURDIR)/py/tests/test_frame_io.py
+	$(VENV_PY) $(CURDIR)/py/tests/test_models.py
 
 test-ip:
 	$(MAKE) -C dv/sim test-ip SIMULATOR=$(SIMULATOR)

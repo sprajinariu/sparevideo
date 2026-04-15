@@ -42,7 +42,7 @@ jobs:
       - name: Import check
         run: |
           cd py && ../.venv/bin/python -c \
-            "import frames.frame_io, frames.video_source, viz.render"
+            "import frames.frame_io, frames.video_source, viz.render, models"
 
       - name: Python unit tests
         run: make test-py
@@ -59,14 +59,23 @@ jobs:
       - name: Block IP testbenches
         run: make test-ip
 
-      - name: Pipeline — text mode, color_bars
-        run: make run-pipeline
+      - name: Pipeline — passthrough, color_bars
+        run: make run-pipeline CTRL_FLOW=passthrough
 
-      - name: Pipeline — text mode, gradient
-        run: make run-pipeline SOURCE="synthetic:gradient"
+      - name: Pipeline — passthrough, gradient
+        run: make run-pipeline SOURCE="synthetic:gradient" CTRL_FLOW=passthrough
 
-      - name: Pipeline — binary mode
-        run: make run-pipeline MODE=binary
+      - name: Pipeline — passthrough, binary mode
+        run: make run-pipeline MODE=binary CTRL_FLOW=passthrough
 
-      - name: Pipeline — moving_box (motion detection)
-        run: make run-pipeline SOURCE="synthetic:moving_box" TOLERANCE=10000
+      - name: Pipeline — motion, moving_box
+        run: make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=motion
+
+      - name: Pipeline — motion, dark_moving_box
+        run: make run-pipeline SOURCE="synthetic:dark_moving_box" CTRL_FLOW=motion
+
+      - name: Pipeline — motion, two_boxes
+        run: make run-pipeline SOURCE="synthetic:two_boxes" CTRL_FLOW=motion
+
+      - name: Pipeline — motion, color_bars (static scene)
+        run: make run-pipeline SOURCE="synthetic:color_bars" CTRL_FLOW=motion

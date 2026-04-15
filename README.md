@@ -20,50 +20,70 @@ Architecture details, module interfaces, and design decisions are documented in 
 
 ## Project Structure
 
+### RTL
+
 ```
 hw/top/
-  sparevideo_top.sv    Top-level (AXI4-Stream → CDC → control-flow mux → CDC → VGA)
-  sparevideo_pkg.sv    Package: shared parameters, types, control flow constants
-  ram.sv               Generic true-dual-port byte RAM (behavioral, sim-only)
+├── sparevideo_top.sv          Top-level: AXI4-Stream → CDC → pipeline mux → CDC → VGA
+├── sparevideo_pkg.sv          Package: shared parameters, types, control flow constants
+└── ram.sv                     Generic true-dual-port byte RAM (behavioral, sim-only)
+
 hw/ip/rgb2ycrcb/rtl/
-  rgb2ycrcb.sv         RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point, 2-cycle pipeline)
+└── rgb2ycrcb.sv               RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point)
+
 hw/ip/motion/rtl/
-  axis_motion_detect.sv  Motion mask generator + RGB passthrough (1-cycle pipeline)
-  axis_bbox_reduce.sv    Mask → bounding-box accumulator
-  axis_overlay_bbox.sv   Bounding-box rectangle overlay on RGB video
+├── axis_motion_detect.sv      Motion mask generator + RGB passthrough
+├── axis_bbox_reduce.sv        Mask → bounding-box accumulator
+└── axis_overlay_bbox.sv       Bounding-box rectangle overlay on RGB video
+
 hw/ip/vga/rtl/
-  vga_controller.sv    VGA controller (instantiated in sparevideo_top)
-  pattern_gen.sv       Test pattern generator (retained, unused)
+├── vga_controller.sv          VGA timing generator (instantiated in top)
+└── pattern_gen.sv             Test pattern generator (retained, unused)
+
 hw/lint/
-  verilator_waiver.vlt        Project lint waivers
-  third_party_waiver.vlt      Lint waivers for vendored third-party RTL
-third_party/verilog-axis/
-  rtl/                 Vendored alexforencich/verilog-axis (MIT)
+├── verilator_waiver.vlt       Project lint waivers
+└── third_party_waiver.vlt     Third-party lint waivers
+
+third_party/verilog-axis/rtl/  Vendored alexforencich/verilog-axis (MIT)
+```
+
+### Verification — SystemVerilog
+
+```
 hw/ip/rgb2ycrcb/tb/
-  tb_rgb2ycrcb.sv      Unit TB: 18 vectors — corner cases, near-boundary, exact-match (0 tolerance)
+└── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
+
 hw/ip/motion/tb/
-  tb_axis_motion_detect.sv  Unit TB: 4-frame golden model — RGB passthrough, Y8 RAM readback,
-                              per-pixel mask, threshold boundary (THRESH±1), stall with real data
-  tb_axis_bbox_reduce.sv    Unit TB: 9 tests — known region, all-zero, single-pixel, full-frame,
-                              corners, single-row, single-col, 8×8 frame, SOF reset isolation
-  tb_axis_overlay_bbox.sv   Unit TB: 8 tests — solid overlay, empty bbox, full-frame, single-pixel,
-                              edge-aligned, varied pixel colors, backpressure
+├── tb_axis_motion_detect.sv   4-frame golden model, threshold boundary, stall
+├── tb_axis_bbox_reduce.sv     9 tests: edge cases, SOF reset isolation
+└── tb_axis_overlay_bbox.sv    8 tests: empty/full/single-pixel, backpressure
+
 dv/sv/
-  tb_sparevideo.sv     Unified top-level testbench (RTL sim + SW dry-run)
-  tb_utils.c           DPI-C helper: wall-clock time via clock_gettime (Verilator)
+├── tb_sparevideo.sv           Unified top-level testbench (RTL sim + SW dry-run)
+└── tb_utils.c                 DPI-C wall-clock helper (Verilator)
+
 dv/sim/
-  Makefile             Simulation targets
-dv/data/               Generated input/output files (gitignored)
+├── Makefile                   Simulation and test-ip targets
+└── dv/data/                   Generated input/output files (gitignored)
+```
+
+### Verification — Python
+
+```
 py/
-  harness.py           Pipeline harness CLI (prepare / verify / render)
-  frames/
-    frame_io.py        Read/write text and binary frame files
-    video_source.py    Load video from MP4/PNG/synthetic sources
-  viz/
-    render.py          Render input/output comparison image grid
-py/tests/
-  test_frame_io.py     Unit tests for frame I/O round-trips
-plans/old/             Implemented design plans (timestamped)
+├── harness.py                 Pipeline CLI: prepare / verify / render
+├── frames/
+│   ├── frame_io.py            Read/write text and binary frame files
+│   └── video_source.py        Load video from MP4/PNG/synthetic sources
+├── models/
+│   ├── __init__.py            Model dispatch (run_model → per-control-flow model)
+│   ├── passthrough.py         Passthrough model (identity)
+│   └── motion.py              Motion pipeline model (luma, mask, bbox, overlay)
+├── viz/
+│   └── render.py              Render input/output comparison image grid
+└── tests/
+    ├── test_frame_io.py       Frame I/O round-trip tests
+    └── test_models.py         Reference model unit tests
 ```
 
 ## Prerequisites
@@ -89,17 +109,23 @@ make setup
 
 ## Usage
 
+There are three levels of testing:
+
+- **`make run-pipeline`** — End-to-end integration. Python generates input frames, Verilator simulates the full RTL pipeline, then Python compares the RTL output against a reference model pixel-by-pixel. This is the primary way to verify the design.
+- **`make test-ip`** — Per-block SV unit testbenches. Each RTL module has its own testbench with known-good vectors and edge cases. Fast, no Python involved.
+- **`make test-py`** — Python unit tests. Verifies the reference models and frame I/O independently of RTL simulation.
+
 ```bash
-# Run the full pipeline: prepare → compile → sim → verify → render
+# Run the full pipeline: prepare (py) → compile (verilator) → sim (verilator) → verify (py) → render (py)
 make run-pipeline
 
 # With custom source and options
-make run-pipeline SOURCE="synthetic:moving_box" FRAMES=8 TOLERANCE=10000
+make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=motion
 make run-pipeline SOURCE=path/to/video.mp4 MODE=binary
 
-# Control flow selection
-make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
-make run-pipeline CTRL_FLOW=motion TOLERANCE=10000    # motion detect + bbox overlay
+# Control flow selection (model-based verification at TOLERANCE=0)
+make run-pipeline CTRL_FLOW=passthrough   # identity — exact match
+make run-pipeline CTRL_FLOW=motion        # motion detect + bbox overlay — pixel-accurate model
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -110,13 +136,13 @@ make lint
 
 `make run-pipeline` runs these steps in order, passing all options automatically:
 
-| Step | Target | Description |
-|------|--------|-------------|
-| 1 | `prepare` | Generate input frames — **saves options** to `dv/data/config.mk` |
-| 2 | `compile` | Compile RTL + testbench |
-| 3 | `sim` | Run RTL simulation |
-| 4 | `verify` | Check output against input within tolerance |
-| 5 | `render` | Save input vs output comparison PNG |
+| Step | Target | What runs | Description |
+|------|--------|-----------|-------------|
+| 1 | `prepare` | Python | Generate input frames from source — **saves options** to `dv/data/config.mk` |
+| 2 | `compile` | Verilator | Compile RTL + testbench into a binary |
+| 3 | `sim` | Verilator | Run RTL simulation, write output frames to file |
+| 4 | `verify` | Python | Compare RTL output against reference model (pixel-accurate) |
+| 5 | `render` | Python | Save input vs output comparison PNG |
 
 ### Running steps individually
 
@@ -125,7 +151,7 @@ make lint
 ```bash
 make prepare SOURCE="synthetic:moving_box" WIDTH=320 HEIGHT=240 FRAMES=8
 make sim
-make verify TOLERANCE=10000
+make verify   # uses saved CTRL_FLOW to select the reference model
 make render
 ```
 
@@ -137,7 +163,7 @@ make render
 | `HEIGHT` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `FRAMES` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
-| `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
+| `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
 | `SOURCE` | ✓ | `prepare` only |
@@ -153,7 +179,7 @@ make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pix
 make sw-dry-run              # Bypass RTL — file loopback, zero sim time
 make sim-waves               # RTL sim + open GTKWave
 make compile                 # Compile only
-make test-py                 # Run Python unit tests
+make test-py                 # Python unit tests (frame I/O + reference models)
 ```
 
 ## Options
@@ -167,7 +193,7 @@ make test-py                 # Run Python unit tests
 | `HEIGHT` | `240` | Frame height in pixels |
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
-| `TOLERANCE` | `2*(W+H)` | Max differing pixels per frame in `verify`. Default accommodates the frame-0 bounding-box border. Use a higher value (e.g. `10000`) for motion-heavy sources. |
+| `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
 
 ### Synthetic Sources
 
@@ -196,6 +222,8 @@ make run-pipeline SIMARGS="+THRESH=32"
 A pixel is classified as motion when `|Y_cur - Y_prev| > THRESH`. The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
 
 ### File Formats
+
+Frame data is passed between Python and the SV testbench via files on disk. Python writes input frames before simulation and reads output frames back for verification. The `MODE` option selects the format.
 
 **Text mode** (`.txt`): Space-separated 6-digit hex pixels (RRGGBB), one row per line. No header.
 ```
