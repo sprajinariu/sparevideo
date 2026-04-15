@@ -26,7 +26,8 @@ module sparevideo_top #(
     parameter int V_SYNC_PULSE  = sparevideo_pkg::V_SYNC_PULSE,
     parameter int V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
     // Motion detect threshold — override at instantiation or compile time.
-    // Pixels with abs(Y_cur - Y_prev) > MOTION_THRESH are flagged as motion.
+    // Pixels with abs(Y_cur - Y_prev) > MOTION_THRESH are flagged as motion
+    // (polarity-agnostic — both arrival and departure pixels are flagged).
     parameter int MOTION_THRESH = 16
 ) (
     // ---- Clocks & resets -------------------------------------------
@@ -41,6 +42,9 @@ module sparevideo_top #(
     output logic        s_axis_tready_o,  // sink ready; back-pressures producer when low
     input  logic        s_axis_tlast_i,   // end-of-line marker (asserted on last pixel of each row)
     input  logic        s_axis_tuser_i,   // start-of-frame marker (asserted on first pixel of frame)
+
+    // ---- Control flow (quasi-static sideband, directly usable in clk_dsp) ---
+    input  logic        ctrl_flow_i,      // 0 = passthrough, 1 = motion detect
 
     // ---- VGA output (clk_pix domain) -------------------------------
     output logic        vga_hsync_o,    // horizontal sync, active-low
@@ -190,12 +194,27 @@ module sparevideo_top #(
     logic [$clog2(V_ACTIVE)-1:0] bbox_min_y, bbox_max_y;
     logic                        bbox_empty;
 
-    // Overlay output (to output async FIFO)
+    // Overlay output (to output async FIFO via control-flow mux)
     logic [23:0] ovl_tdata;
     logic        ovl_tvalid;
     logic        ovl_tready;
     logic        ovl_tlast;
     logic        ovl_tuser;
+
+    // Motion detect input gating
+    logic        md_s_tvalid;   // gated tvalid to motion detect
+    logic        md_s_tready;   // motion detect's tready output (separated from dsp_in_tready)
+
+    // Processing output mux (feeds u_fifo_out)
+    logic [23:0] proc_tdata;
+    logic        proc_tvalid;
+    logic        proc_tready;   // driven by u_fifo_out write-side tready
+    logic        proc_tlast;
+    logic        proc_tuser;
+
+    // Gate motion detect input: passthrough mode sends no data into the motion pipeline.
+    assign md_s_tvalid = (ctrl_flow_i == sparevideo_pkg::CTRL_MOTION_DETECT)
+                       ? dsp_in_tvalid : 1'b0;
 
     axis_motion_detect #(
         .H_ACTIVE (H_ACTIVE),
@@ -208,8 +227,8 @@ module sparevideo_top #(
         .rst_n_i              (rst_dsp_n_i),
         // AXI4-Stream input (RGB888)
         .s_axis_tdata_i       (dsp_in_tdata),
-        .s_axis_tvalid_i      (dsp_in_tvalid),
-        .s_axis_tready_o      (dsp_in_tready),
+        .s_axis_tvalid_i      (md_s_tvalid),
+        .s_axis_tready_o      (md_s_tready),
         .s_axis_tlast_i       (dsp_in_tlast),
         .s_axis_tuser_i       (dsp_in_tuser),
         // AXI4-Stream output — video passthrough (RGB888)
@@ -282,6 +301,29 @@ module sparevideo_top #(
     );
 
     // -----------------------------------------------------------------
+    // Control-flow output mux
+    //   Passthrough: dsp_in (raw input) → output FIFO; motion pipeline tready = 1.
+    //   Motion:      ovl (overlay output) → output FIFO; motion pipeline tready from FIFO.
+    // -----------------------------------------------------------------
+    always_comb begin
+        if (ctrl_flow_i == sparevideo_pkg::CTRL_PASSTHROUGH) begin
+            proc_tdata    = dsp_in_tdata;
+            proc_tvalid   = dsp_in_tvalid;
+            proc_tlast    = dsp_in_tlast;
+            proc_tuser    = dsp_in_tuser;
+            dsp_in_tready = proc_tready;
+            ovl_tready    = 1'b1;           // unused path: don't stall
+        end else begin
+            proc_tdata    = ovl_tdata;
+            proc_tvalid   = ovl_tvalid;
+            proc_tlast    = ovl_tlast;
+            proc_tuser    = ovl_tuser;
+            dsp_in_tready = md_s_tready;
+            ovl_tready    = proc_tready;
+        end
+    end
+
+    // -----------------------------------------------------------------
     // Output async FIFO: clk_dsp -> clk_pix
     // -----------------------------------------------------------------
     localparam int OUT_FIFO_DEPTH = 32;
@@ -305,14 +347,14 @@ module sparevideo_top #(
     ) u_fifo_out (
         .s_clk            (clk_dsp_i),
         .s_rst            (rst_dsp),
-        .s_axis_tdata     (ovl_tdata),
+        .s_axis_tdata     (proc_tdata),
         .s_axis_tkeep     (3'b0),
-        .s_axis_tvalid    (ovl_tvalid),
-        .s_axis_tready    (ovl_tready),
-        .s_axis_tlast     (ovl_tlast),
+        .s_axis_tvalid    (proc_tvalid),
+        .s_axis_tready    (proc_tready),
+        .s_axis_tlast     (proc_tlast),
         .s_axis_tid       (8'b0),
         .s_axis_tdest     (8'b0),
-        .s_axis_tuser     (ovl_tuser),
+        .s_axis_tuser     (proc_tuser),
 
         .m_clk            (clk_pix_i),
         .m_rst            (rst_pix),

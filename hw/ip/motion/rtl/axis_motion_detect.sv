@@ -10,6 +10,12 @@
 //   Cycle C+1: y_cur registered (rgb2ycrcb output), mem_rd_data arrives from RAM
 //              → compare & emit
 //
+// Mask logic: a pixel is flagged as motion when abs(Y_cur - Y_prev) > THRESH.
+// No brightness-polarity filter is applied — both arrival and departure pixels
+// are flagged. This makes the mask polarity-agnostic (works for bright-on-dark,
+// dark-on-bright, and colour scenes). The bbox will be slightly larger than the
+// object by approximately one frame of displacement in each axis.
+//
 // The Y8 frame buffer is external — this module exposes a 1R1W memory port
 // and connects to the shared `ram` port A at the top level.
 

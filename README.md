@@ -4,7 +4,7 @@ Video processing pipeline with motion detection and bounding-box overlay, verifi
 
 ## Overview
 
-A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **motion detection + bounding-box overlay pipeline**, crosses back to the pixel clock, and drives a VGA controller.
+A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough or motion detection + bounding-box overlay), crosses back to the pixel clock, and drives a VGA controller. A top-level `ctrl_flow_i` sideband signal selects the active path.
 
 Architecture details, module interfaces, and design decisions are documented in [`docs/specs/`](docs/specs/):
 
@@ -22,8 +22,8 @@ Architecture details, module interfaces, and design decisions are documented in 
 
 ```
 hw/top/
-  sparevideo_top.sv    Top-level (AXI4-Stream → CDC → motion pipeline → CDC → VGA)
-  sparevideo_pkg.sv    Package: shared parameters and types
+  sparevideo_top.sv    Top-level (AXI4-Stream → CDC → control-flow mux → CDC → VGA)
+  sparevideo_pkg.sv    Package: shared parameters, types, control flow constants
   ram.sv               Generic true-dual-port byte RAM (behavioral, sim-only)
 hw/ip/rgb2ycrcb/rtl/
   rgb2ycrcb.sv         RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point, 2-cycle pipeline)
@@ -97,6 +97,10 @@ make run-pipeline
 make run-pipeline SOURCE="synthetic:moving_box" FRAMES=8 TOLERANCE=10000
 make run-pipeline SOURCE=path/to/video.mp4 MODE=binary
 
+# Control flow selection
+make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
+make run-pipeline CTRL_FLOW=motion TOLERANCE=10000    # motion detect + bbox overlay
+
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
 
@@ -133,6 +137,7 @@ make render
 | `HEIGHT` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `FRAMES` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
+| `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
 | `SOURCE` | ✓ | `prepare` only |
@@ -156,12 +161,29 @@ make test-py                 # Run Python unit tests
 | Option | Default | Description |
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
-| `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). Available: `synthetic:color_bars`, `synthetic:gradient`, `synthetic:checkerboard`, `synthetic:moving_box`, MP4/AVI files (OpenCV), PNG directory |
+| `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing) or `motion` (motion detect + bbox overlay) |
+| `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `2*(W+H)` | Max differing pixels per frame in `verify`. Default accommodates the frame-0 bounding-box border. Use a higher value (e.g. `10000`) for motion-heavy sources. |
+
+### Synthetic Sources
+
+| Pattern | Description |
+|---------|-------------|
+| `synthetic:color_bars` | 8 vertical color bars (static — no motion) |
+| `synthetic:gradient` | Red horizontal + green vertical gradient (static) |
+| `synthetic:checkerboard` | 16×16 pixel checkerboard (static) |
+| `synthetic:moving_box` | Red box, diagonal top-left → bottom-right |
+| `synthetic:moving_box_h` | Red box, horizontal left → right |
+| `synthetic:moving_box_v` | Green box, vertical top → bottom |
+| `synthetic:moving_box_reverse` | Blue box, diagonal bottom-right → top-left |
+| `synthetic:dark_moving_box` | Dark box on bright background (tests polarity-agnostic mask) |
+| `synthetic:two_boxes` | Red + cyan boxes moving in opposing directions |
+
+Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking.
 
 ### THRESH (motion detection threshold)
 
@@ -171,7 +193,7 @@ The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (defa
 make run-pipeline SIMARGS="+THRESH=32"
 ```
 
-Pixels where `|Y_cur - Y_prev| > THRESH` are classified as motion.
+A pixel is classified as motion when `|Y_cur - Y_prev| > THRESH`. The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
 
 ### File Formats
 

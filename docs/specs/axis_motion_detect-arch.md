@@ -23,7 +23,7 @@ axis_motion_detect (u_motion_detect)
 |-----------|---------|-------------|
 | `H_ACTIVE` | 320 | Active pixels per line |
 | `V_ACTIVE` | 240 | Active lines per frame |
-| `THRESH` | 16 | Unsigned luma-difference threshold (motion if `|Y_cur−Y_prev| > THRESH`) |
+| `THRESH` | 16 | Unsigned luma-difference threshold; also serves as the minimum current-luma floor (see §4) |
 | `RGN_BASE` | 0 | Base byte-address of the Y_PREV region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the Y_PREV region (sanity-checked at elaboration) |
 
@@ -70,6 +70,12 @@ mem_wr_addr_o = RGN_BASE + pix_addr    // write Y_cur back at same address
 mem_wr_data_o = Y_cur
 mem_wr_en_o   = tvalid && tready       // only on actual acceptance
 ```
+
+### Polarity-agnostic mask
+
+The mask uses a pure frame-difference condition (`diff > THRESH`) with no brightness-polarity filter. Both arrival pixels (where the object now is) and departure pixels (where the object was) are flagged. This makes the mask work correctly for all scene types: bright-on-dark, dark-on-bright, gradients, and colour scenes.
+
+The trade-off is that the bounding box produced by `axis_bbox_reduce` encompasses both old and new object positions, making it slightly larger than the object by approximately one frame of displacement in each axis.
 
 ### Pixel address counter
 
@@ -121,7 +127,7 @@ There is no explicit FSM. Control is combinational backpressure logic (`pipe_sta
 | Total pixel input → mask/vid output | 1 clock cycle |
 | Throughput | 1 pixel / cycle (when `both_ready=1`) |
 
-Frame 0: RAM is zero-initialized → all pixels read `Y_prev=0` → mask=1 for every pixel → full-frame bbox. This is a known artifact.
+Frame 0: RAM is zero-initialized → all pixels read `Y_prev=0` → mask=1 for every non-black pixel → near-full-frame bbox. `axis_bbox_reduce` suppresses bbox output for the first 2 frames (priming period) to avoid this artifact.
 
 ---
 
@@ -137,3 +143,4 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 - **Fixed THRESH**: compile-time parameter. Runtime control requires promoting to an input port and a `sparevideo_csr` AXI-Lite register.
 - **`Cr`/`Cb` unused**: `rgb2ycrcb` outputs `cb_o` and `cr_o`; only `y_o` is used. Lint waivers suppress `PINCONNECTEMPTY`/`UNUSEDSIGNAL`.
 - **Single-buffered**: no double-buffering. Mid-frame RAM corruption by port B clients accessing the Y_PREV region during an active frame will produce incorrect mask bits. See the host-responsibility rule in [ram-arch.md](ram-arch.md).
+- **Bbox oversizing**: the polarity-agnostic mask flags both arrival and departure pixels, so the bbox is slightly larger than the object by approximately the per-frame displacement. This is a deliberate trade-off for scene-type independence.

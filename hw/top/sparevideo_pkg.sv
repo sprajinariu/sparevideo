@@ -22,6 +22,12 @@ package sparevideo_pkg;
     typedef logic [7:0]  component_t;
 
     // ---------------------------------------------------------------
+    // Control flow selection (top-level pipeline mode)
+    // ---------------------------------------------------------------
+    localparam logic CTRL_PASSTHROUGH   = 1'b0;
+    localparam logic CTRL_MOTION_DETECT = 1'b1;
+
+    // ---------------------------------------------------------------
     // Default video timing (320x240 — small, fast-to-simulate)
     // Override at sparevideo_top instantiation for other resolutions.
     // ---------------------------------------------------------------

@@ -132,7 +132,7 @@ Y_cur  = rgb2ycrcb(R, G, B).y               // external module, 2-cycle pipeline
                                             // Cr/Cb outputs left unconnected for now.
 Y_prev = mem_rd_data                        // from external RAM, 1-cycle after mem_rd_addr
 diff   = (Y_cur > Y_prev) ? Y_cur - Y_prev : Y_prev - Y_cur
-mask   = (diff > THRESH)
+mask   = (diff > THRESH) && (Y_cur > THRESH)
 
 // Descriptor-based addressing — motion detect never sees raw physical addresses.
 // Any byte in the shared `ram` that lies outside [RGN_BASE, RGN_BASE+RGN_SIZE)
@@ -143,6 +143,15 @@ mem_wr_en    <= (s_axis_tvalid && s_axis_tready)
 mem_rd_addr   = RGN_BASE + pix_idx_next     // read for next pixel
 pix_idx <= (tlast && row==V_ACTIVE-1) ? 0 : pix_idx+1
 ```
+
+**Departure-ghost filtering.** The mask condition `(diff > THRESH) && (Y_cur > THRESH)` intentionally filters out "departure ghost" pixels — locations where the object *was* in the previous frame but is now dark background. Without the `Y_cur > THRESH` guard, the mask would flag both the object's old position (departure zone) and new position (arrival zone), causing `axis_bbox_reduce` to produce a bbox spanning both locations — roughly double the object size in the direction of motion. The guard ensures only the current-frame object position is marked, producing a tight bbox.
+
+This works for general scenes because:
+- **Bright object on dark background**: arrival pixels have high `Y_cur` (pass), departure pixels have low `Y_cur` (filtered). Bbox tracks the object's current position.
+- **Dark object on bright background**: neither arrival nor departure pixels have high `Y_cur` at the object location. The mask fires on the *background pixels revealed* where the dark hole moved away (those pixels went from dark→bright, so `Y_cur` is high). The bbox tracks where the object *was*, which is the exposed bright region — a known limitation, acceptable for the streaming model.
+- **Textured/mid-tone scenes**: pixels crossing the threshold in either direction are filtered to only those with significant current luma, preventing asymmetric ghost artifacts.
+
+Test patterns exercising these scenarios: `synthetic:moving_box` (bright-on-dark diagonal), `moving_box_h` / `moving_box_v` / `moving_box_reverse` (directional variants), `dark_moving_box` (dark-on-bright), `two_boxes` (multiple objects, opposing directions).
 
 **Memory port (external, not internal)**
 
@@ -447,7 +456,15 @@ Each testbench:
 
 - Add a new `+THRESH=%d` plusarg next to the existing `$value$plusargs` block. Default `16` if absent. Override `MOTION_THRESH` on the `u_dut` instantiation via SV `defparam` (or, preferred, promote `MOTION_THRESH` to a module parameter of `sparevideo_top` with default `8'd16` so the TB can use ordinary parameter-override syntax). The descriptor localparams (`RGN_*`) are not TB-overridable — they are derived from `H_ACTIVE`/`V_ACTIVE` which the TB already overrides.
 - No new stimulus logic needed for `color_bars` / `gradient` — both are static across frames → mask is all zero (except frame 0, which is "everything moved" from the zero-initialized frame buffer; bbox logic handles that as a full-frame box, which the overlay draws as a rectangle around the image border) → remaining frames are bit-exact passthrough except for the outer border on frame 0.
-- For motion-bearing stimulus, use the existing `synthetic:moving_box` source listed in the [README.md](README.md) options table at line 154. **Sub-task**: confirm `moving_box` is actually implemented in [py/frames/video_source.py](py/frames/video_source.py); if only documented-but-absent, implement it (a single bright square translating by N pixels/frame on a black background).
+- For motion-bearing stimulus, use the `synthetic:moving_box` family of sources in [py/frames/video_source.py](py/frames/video_source.py). Available motion patterns:
+  - `moving_box` — red box, diagonal top-left → bottom-right
+  - `moving_box_h` — red box, horizontal left → right
+  - `moving_box_v` — green box, vertical top → bottom
+  - `moving_box_reverse` — blue box, diagonal bottom-right → top-left
+  - `dark_moving_box` — dark box on bright background (tests departure-ghost filtering)
+  - `two_boxes` — two boxes moving in opposing directions (tests multi-object bbox merge)
+  
+  Run with `FRAMES=8` (or higher) to exercise multiple direction changes and bbox stability across more frames.
 
 ## Python Harness Changes
 
@@ -481,7 +498,7 @@ This sub-question is intentionally left half-open (see **Open Questions**); the 
 | [Makefile](Makefile) | modify — add top-level `test-ip` umbrella target |
 | [dv/sv/tb_sparevideo.sv](dv/sv/tb_sparevideo.sv) | modify — `+THRESH=` plusarg + parameter override on `u_dut` |
 | [py/harness.py](py/harness.py) or [py/viz/render.py](py/viz/render.py) | modify — `--tolerance` flag on `verify` |
-| [py/frames/video_source.py](py/frames/video_source.py) | modify (conditional) — implement `synthetic:moving_box` if missing |
+| [py/frames/video_source.py](py/frames/video_source.py) | modify — motion test patterns: `moving_box`, `moving_box_h`, `moving_box_v`, `moving_box_reverse`, `dark_moving_box`, `two_boxes` |
 | [.github/workflows/regression.yml](.github/workflows/regression.yml) | modify — add `test-ip` step + `moving_box` run-pipeline step |
 | [README.md](README.md) | modify — document `THRESH` option, `test-ip`, and the new pipeline |
 | [CLAUDE.md](CLAUDE.md) | modify — update Project Overview |
@@ -491,8 +508,13 @@ This sub-question is intentionally left half-open (see **Open Questions**); the 
 1. `make lint` passes with no new warnings. Motion IP is first-party and must not rely on the `third_party_waiver.vlt` blanket waiver.
 2. `make compile SIMULATOR=verilator` and `make compile SIMULATOR=icarus` both succeed.
 3. `make run-pipeline` (color_bars, gradient, text + binary) passes with the new `--tolerance` bound. Frames 1..N-1 are still bit-exact; frame 0 is the expected border-only diff.
-4. `make run-pipeline SOURCE=synthetic:moving_box` passes verify and the rendered comparison PNG visibly shows a green rectangle tracking the moving box.
-5. `make run-pipeline SOURCE=<sample.mp4>` — human eyeball check on `dv/data/renders/comparison.png`.
+4. `make run-pipeline SOURCE=synthetic:moving_box FRAMES=8` passes verify and the rendered comparison PNG visibly shows a green rectangle tracking the moving box.
+5. `make run-pipeline SOURCE=synthetic:moving_box_h FRAMES=8` — horizontal motion, bbox tracks correctly.
+6. `make run-pipeline SOURCE=synthetic:moving_box_v FRAMES=8` — vertical motion.
+7. `make run-pipeline SOURCE=synthetic:moving_box_reverse FRAMES=8` — reverse diagonal.
+8. `make run-pipeline SOURCE=synthetic:dark_moving_box FRAMES=8` — dark-on-bright; bbox should NOT tightly track the dark hole (departure-ghost filtering limits this to exposed-bright-region tracking).
+9. `make run-pipeline SOURCE=synthetic:two_boxes FRAMES=8` — two objects, bbox encompasses both.
+10. `make run-pipeline SOURCE=<sample.mp4>` — human eyeball check on `dv/data/renders/comparison.png`.
 6. `make test-py` still passes (Python harness changes covered by existing or new unit tests).
 7. CI workflow at [.github/workflows/regression.yml](.github/workflows/regression.yml) gains one new step for `synthetic:moving_box`; all other existing steps stay green.
 

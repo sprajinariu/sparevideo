@@ -114,6 +114,9 @@ endmodule
 ### Rules
 
 - Your job is to discover implementation issues.
+- Layer 1 testing should be more diligent than layer 2, since debugging effort is much larger in layer 2.
+- Create basic tests that cover most use-cases. Synthetic data inputs are preffered for simplicity.
+- Test backpressure mechanism does not disturb data content.
 - Use `!==` (4-state inequality) not `!=` — catches `X` and `Z` propagation.
 - Test boundary conditions: zero, max value, overflow, sign extension edge cases.
 - Each test case is one `check()` call with a descriptive name.

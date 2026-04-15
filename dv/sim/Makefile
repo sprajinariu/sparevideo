@@ -19,12 +19,14 @@ WIDTH     ?= 320
 HEIGHT    ?= 240
 FRAMES    ?= 4
 MODE      ?= text
+CTRL_FLOW ?= motion
 INFILE    ?= ../data/input.txt
 OUTFILE   ?= ../data/output.txt
 
 SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
            +WIDTH=$(WIDTH) +HEIGHT=$(HEIGHT) \
-           +FRAMES=$(FRAMES) +MODE=$(MODE)
+           +FRAMES=$(FRAMES) +MODE=$(MODE) \
+           +CTRL_FLOW=$(CTRL_FLOW)
 
 .PHONY: compile sim sim-waves sw-dry-run clean \
        test-ip test-ip-rgb2ycrcb test-ip-motion-detect test-ip-bbox-reduce test-ip-overlay-bbox
@@ -64,6 +66,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -73,9 +76,16 @@ VLT_FLAGS = --binary -sv --timing \
             -Wno-CASEINCOMPLETE \
             --trace
 
+# Recompile when WIDTH/HEIGHT change (they affect -G parameters).
+CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
+$(CONFIG_STAMP): FORCE
+	@mkdir -p $(VOBJ_DIR)
+	@echo "$(WIDTH) $(HEIGHT)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT)" > $@
+FORCE:
+
 compile: $(VOBJ_DIR)/Vtb_sparevideo
 
-$(VOBJ_DIR)/Vtb_sparevideo: $(RTL_SRCS) $(TB_SRC) $(DPI_SRC)
+$(VOBJ_DIR)/Vtb_sparevideo: $(RTL_SRCS) $(TB_SRC) $(DPI_SRC) $(CONFIG_STAMP)
 	verilator $(VLT_FLAGS) $(RTL_SRCS) $(TB_SRC) $(DPI_SRC)
 
 sim: compile
