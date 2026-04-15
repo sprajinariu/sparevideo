@@ -1,5 +1,7 @@
 # Plan: Python Golden Models for Pixel-Accurate Pipeline Verification
 
+**Date:** 2026-04-15 (completed)
+
 ## Context
 
 `make verify` for `CTRL_FLOW=motion` currently uses a loose tolerance (2*(W+H) or even TOLERANCE=10000 in CI), which doesn't actually verify that the RTL output is correct — only that it's "not too different" from the input. This plan adds Python reference models that implement the pipeline algorithms from their specifications, so verification can compare RTL output against a known-correct reference at TOLERANCE=0.

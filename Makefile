@@ -63,14 +63,27 @@ help:
 	@echo "    test-ip-overlay-bbox  axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
-	@echo "    SIMULATOR=verilator        Simulator: verilator (default) or icarus"
-	@echo "    SOURCE=synthetic:color_bars  Input source (prepare only)"
-	@echo "    WIDTH=320                  Frame width"
-	@echo "    HEIGHT=240                 Frame height"
-	@echo "    FRAMES=4                   Number of frames"
-	@echo "    MODE=text|binary           File format"
-	@echo "    CTRL_FLOW=motion|passthrough  Control flow (default motion)"
-	@echo "    TOLERANCE=<n>              Max diff pixels/frame for verify (default 0 = exact)"
+	@echo "    SIMULATOR=verilator              Simulator: verilator (default) or icarus"
+	@echo "    SOURCE=synthetic:color_bars      Input source (prepare only). See sources below."
+	@echo "    WIDTH=320                        Frame width"
+	@echo "    HEIGHT=240                       Frame height"
+	@echo "    FRAMES=4                         Number of frames"
+	@echo "    MODE=text|binary                 File format"
+	@echo "    CTRL_FLOW=motion|passthrough|mask Control flow (default motion)"
+	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
+	@echo ""
+	@echo "  Sources (SOURCE=):"
+	@echo "    synthetic:color_bars       8 vertical color bars (static)"
+	@echo "    synthetic:gradient         Red horizontal + green vertical gradient (static)"
+	@echo "    synthetic:checkerboard     16x16 pixel checkerboard (static)"
+	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
+	@echo "    synthetic:moving_box_h     Red box, horizontal left → right"
+	@echo "    synthetic:moving_box_v     Green box, vertical top → bottom"
+	@echo "    synthetic:moving_box_reverse Blue box, diagonal bottom-right → top-left"
+	@echo "    synthetic:dark_moving_box  Dark box on bright background"
+	@echo "    synthetic:two_boxes        Red + cyan boxes, opposing directions"
+	@echo "    path/to/video.mp4          MP4/AVI file (via OpenCV)"
+	@echo "    path/to/png_dir/           Directory of PNG frames"
 
 # ---- Main pipeline flow ----
 
@@ -118,7 +131,7 @@ render:
 	@mkdir -p $(DATA_DIR)/renders
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
-		--mode $(MODE) \
+		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) \
 		--render-output $(CURDIR)/$(DATA_DIR)/renders/comparison.png
 
 # ---- Other targets ----

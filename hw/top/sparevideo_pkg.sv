@@ -24,8 +24,9 @@ package sparevideo_pkg;
     // ---------------------------------------------------------------
     // Control flow selection (top-level pipeline mode)
     // ---------------------------------------------------------------
-    localparam logic CTRL_PASSTHROUGH   = 1'b0;
-    localparam logic CTRL_MOTION_DETECT = 1'b1;
+    localparam logic [1:0] CTRL_PASSTHROUGH   = 2'b00;
+    localparam logic [1:0] CTRL_MOTION_DETECT = 2'b01;
+    localparam logic [1:0] CTRL_MASK_DISPLAY  = 2'b10;
 
     // ---------------------------------------------------------------
     // Default video timing (320x240 — small, fast-to-simulate)

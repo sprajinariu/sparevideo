@@ -79,3 +79,9 @@ jobs:
 
       - name: Pipeline — motion, color_bars (static scene)
         run: make run-pipeline SOURCE="synthetic:color_bars" CTRL_FLOW=motion
+
+      - name: Pipeline — mask, moving_box
+        run: make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask
+
+      - name: Pipeline — mask, dark_moving_box
+        run: make run-pipeline SOURCE="synthetic:dark_moving_box" CTRL_FLOW=mask

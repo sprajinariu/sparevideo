@@ -53,7 +53,7 @@ module tb_sparevideo #(
     string  cfg_mode    = "text";
 
     // Control flow (driven by plusarg, quasi-static)
-    logic ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
+    logic [1:0] ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
 
     // ---------------------------------------------------------------
     // Clocks, resets, DUT signals
@@ -172,6 +172,8 @@ module tb_sparevideo #(
                     ctrl_flow = sparevideo_pkg::CTRL_PASSTHROUGH;
                 else if (ctrl_flow_str == "motion")
                     ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
+                else if (ctrl_flow_str == "mask")
+                    ctrl_flow = sparevideo_pkg::CTRL_MASK_DISPLAY;
                 else
                     $warning("Unknown CTRL_FLOW '%s', using default (motion)", ctrl_flow_str);
             end
@@ -187,7 +189,10 @@ module tb_sparevideo #(
 
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
-        $display("  ctrl_flow: %s", ctrl_flow ? "motion" : "passthrough");
+        $display("  ctrl_flow: %s",
+            (ctrl_flow == sparevideo_pkg::CTRL_PASSTHROUGH)   ? "passthrough" :
+            (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion" :
+            (ctrl_flow == sparevideo_pkg::CTRL_MASK_DISPLAY)  ? "mask" : "unknown");
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 

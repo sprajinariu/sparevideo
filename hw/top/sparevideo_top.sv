@@ -44,7 +44,7 @@ module sparevideo_top #(
     input  logic        s_axis_tuser_i,   // start-of-frame marker (asserted on first pixel of frame)
 
     // ---- Control flow (quasi-static sideband, directly usable in clk_dsp) ---
-    input  logic        ctrl_flow_i,      // 0 = passthrough, 1 = motion detect
+    input  logic [1:0]  ctrl_flow_i,      // 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask
 
     // ---- VGA output (clk_pix domain) -------------------------------
     output logic        vga_hsync_o,    // horizontal sync, active-low
@@ -189,6 +189,17 @@ module sparevideo_top #(
     logic        msk_tlast;
     logic        msk_tuser;
 
+    // Mask display: expand 1-bit mask to 24-bit RGB for VGA output
+    logic [23:0] msk_rgb_tdata;
+    logic        msk_rgb_tvalid;
+    logic        msk_rgb_tlast;
+    logic        msk_rgb_tuser;
+
+    assign msk_rgb_tdata  = msk_tdata ? 24'hFF_FF_FF : 24'h00_00_00;
+    assign msk_rgb_tvalid = msk_tvalid;
+    assign msk_rgb_tlast  = msk_tlast;
+    assign msk_rgb_tuser  = msk_tuser;
+
     // Bbox sideband (latched once per frame by bbox_reduce)
     logic [$clog2(H_ACTIVE)-1:0] bbox_min_x, bbox_max_x;
     logic [$clog2(V_ACTIVE)-1:0] bbox_min_y, bbox_max_y;
@@ -213,8 +224,11 @@ module sparevideo_top #(
     logic        proc_tuser;
 
     // Gate motion detect input: passthrough mode sends no data into the motion pipeline.
-    assign md_s_tvalid = (ctrl_flow_i == sparevideo_pkg::CTRL_MOTION_DETECT)
-                       ? dsp_in_tvalid : 1'b0;
+    // Both motion and mask modes require the motion detect pipeline to run.
+    logic motion_pipe_active;
+    assign motion_pipe_active = (ctrl_flow_i == sparevideo_pkg::CTRL_MOTION_DETECT)
+                             || (ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY);
+    assign md_s_tvalid = motion_pipe_active ? dsp_in_tvalid : 1'b0;
 
     axis_motion_detect #(
         .H_ACTIVE (H_ACTIVE),
@@ -251,7 +265,14 @@ module sparevideo_top #(
         .mem_wr_en_o          (ram_a_wr_en)
     );
 
-    // axis_bbox_reduce is always ready — its tready output drives msk_tready.
+    // Mask tready backpressure: in mask display mode, the mask stream must
+    // stall when the output FIFO stalls (proc_tready low).  In other modes,
+    // bbox_reduce is the sole consumer and is always ready.
+    logic bbox_msk_tready;
+    assign msk_tready = (ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
+                      ? (proc_tready && bbox_msk_tready)
+                      : bbox_msk_tready;
+
     axis_bbox_reduce #(
         .H_ACTIVE (H_ACTIVE),
         .V_ACTIVE (V_ACTIVE)
@@ -261,7 +282,7 @@ module sparevideo_top #(
         // AXI4-Stream input — mask (1 bit per pixel)
         .s_axis_tdata_i  (msk_tdata),
         .s_axis_tvalid_i (msk_tvalid),
-        .s_axis_tready_o (msk_tready),  // driven to 1'b1 internally
+        .s_axis_tready_o (bbox_msk_tready),  // driven to 1'b1 internally
         .s_axis_tlast_i  (msk_tlast),
         .s_axis_tuser_i  (msk_tuser),
         // Sideband output — latched bbox (stable for the full next frame)
@@ -304,23 +325,35 @@ module sparevideo_top #(
     // Control-flow output mux
     //   Passthrough: dsp_in (raw input) → output FIFO; motion pipeline tready = 1.
     //   Motion:      ovl (overlay output) → output FIFO; motion pipeline tready from FIFO.
+    //   Mask:        msk_rgb (B/W mask) → output FIFO; overlay path drained.
     // -----------------------------------------------------------------
     always_comb begin
-        if (ctrl_flow_i == sparevideo_pkg::CTRL_PASSTHROUGH) begin
-            proc_tdata    = dsp_in_tdata;
-            proc_tvalid   = dsp_in_tvalid;
-            proc_tlast    = dsp_in_tlast;
-            proc_tuser    = dsp_in_tuser;
-            dsp_in_tready = proc_tready;
-            ovl_tready    = 1'b1;           // unused path: don't stall
-        end else begin
-            proc_tdata    = ovl_tdata;
-            proc_tvalid   = ovl_tvalid;
-            proc_tlast    = ovl_tlast;
-            proc_tuser    = ovl_tuser;
-            dsp_in_tready = md_s_tready;
-            ovl_tready    = proc_tready;
-        end
+        case (ctrl_flow_i)
+            sparevideo_pkg::CTRL_PASSTHROUGH: begin
+                proc_tdata    = dsp_in_tdata;
+                proc_tvalid   = dsp_in_tvalid;
+                proc_tlast    = dsp_in_tlast;
+                proc_tuser    = dsp_in_tuser;
+                dsp_in_tready = proc_tready;
+                ovl_tready    = 1'b1;
+            end
+            sparevideo_pkg::CTRL_MASK_DISPLAY: begin
+                proc_tdata    = msk_rgb_tdata;
+                proc_tvalid   = msk_rgb_tvalid;
+                proc_tlast    = msk_rgb_tlast;
+                proc_tuser    = msk_rgb_tuser;
+                dsp_in_tready = md_s_tready;
+                ovl_tready    = 1'b1;       // overlay path unused, don't stall
+            end
+            default: begin // CTRL_MOTION_DETECT
+                proc_tdata    = ovl_tdata;
+                proc_tvalid   = ovl_tvalid;
+                proc_tlast    = ovl_tlast;
+                proc_tuser    = ovl_tuser;
+                dsp_in_tready = md_s_tready;
+                ovl_tready    = proc_tready;
+            end
+        endcase
     end
 
     // -----------------------------------------------------------------

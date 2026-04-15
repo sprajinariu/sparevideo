@@ -132,7 +132,12 @@ def cmd_verify(args):
 def cmd_render(args):
     """Render input vs output comparison grid."""
     input_frames, output_frames = _load_input_output(args)
-    out_path = render_grid(input_frames, output_frames, args.render_output)
+    ctrl_flow = getattr(args, "ctrl_flow", None)
+    reference_frames = None
+    if ctrl_flow:
+        reference_frames = run_model(ctrl_flow, input_frames)
+    out_path = render_grid(input_frames, output_frames, args.render_output,
+                           reference_frames=reference_frames)
     print(f"Rendered comparison grid to {out_path}")
 
 
@@ -164,7 +169,7 @@ def main():
     p_ver.add_argument("--output", default="dv/data/output.txt",
                        help="Output file (text or binary)")
     p_ver.add_argument("--ctrl-flow", default="passthrough",
-                       choices=["passthrough", "motion"],
+                       choices=["passthrough", "motion", "mask"],
                        help="Control flow model to verify against "
                             "(default: passthrough)")
     p_ver.add_argument("--tolerance", type=int, default=0,
@@ -178,6 +183,9 @@ def main():
                        help="Input file")
     p_ren.add_argument("--output", default="dv/data/output.txt",
                        help="Output file")
+    p_ren.add_argument("--ctrl-flow", default=None,
+                       choices=["passthrough", "motion", "mask"],
+                       help="Control flow model to include as reference row")
     p_ren.add_argument("--render-output", default="dv/data/renders/comparison.png",
                        help="Output PNG path")
 

@@ -8,7 +8,7 @@ Do not include `Co-Authored-By` trailers in commit messages.
 
 ## Project Overview
 
-sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough or motion detection with bounding-box overlay), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
+sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with bounding-box overlay, or mask display), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
 
 All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no interfaces/modports, no classes) for Icarus Verilog 12 compatibility.
 
@@ -30,7 +30,8 @@ make run-pipeline SOURCE="synthetic:gradient" MODE=binary SIMULATOR=verilator
 
 # Control flow selection (default: motion)
 make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
-make run-pipeline CTRL_FLOW=motion TOLERANCE=10000    # motion detect + bbox overlay
+make run-pipeline CTRL_FLOW=motion                    # motion detect + bbox overlay
+make run-pipeline CTRL_FLOW=mask                      # raw motion mask, B/W output
 
 # 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
@@ -64,6 +65,7 @@ make setup                   # One-time setup (install deps)
 - `py/models/` — Control-flow reference models for pixel-accurate verification
 - `py/models/passthrough.py` — Passthrough model (identity)
 - `py/models/motion.py` — Motion pipeline model (luma, mask, bbox, overlay)
+- `py/models/mask.py` — Mask display model (luma, mask, B/W expansion)
 - `py/viz/render.py` — Render input/output frames as comparison image grid
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
 - `py/tests/test_models.py` — Unit tests for control-flow reference models
@@ -86,7 +88,7 @@ The single testbench (`dv/sim/tb_sparevideo.sv`) supports two modes:
 
 **SW dry-run** (`+sw_dry_run`): Bypasses RTL entirely. File loopback at zero sim time — reads input, writes output directly. Useful for testing the Python harness flow without waiting for RTL sim.
 
-Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion`, `+sw_dry_run`, `+DUMP_VCD`.
+Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion|mask`, `+sw_dry_run`, `+DUMP_VCD`.
 
 TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 

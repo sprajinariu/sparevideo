@@ -4,7 +4,7 @@ Video processing pipeline with motion detection and bounding-box overlay, verifi
 
 ## Overview
 
-A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough or motion detection + bounding-box overlay), crosses back to the pixel clock, and drives a VGA controller. A top-level `ctrl_flow_i` sideband signal selects the active path.
+A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough, motion detection + bounding-box overlay, or mask display), crosses back to the pixel clock, and drives a VGA controller. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active path.
 
 Architecture details, module interfaces, and design decisions are documented in [`docs/specs/`](docs/specs/):
 
@@ -78,7 +78,8 @@ py/
 ├── models/
 │   ├── __init__.py            Model dispatch (run_model → per-control-flow model)
 │   ├── passthrough.py         Passthrough model (identity)
-│   └── motion.py              Motion pipeline model (luma, mask, bbox, overlay)
+│   ├── motion.py              Motion pipeline model (luma, mask, bbox, overlay)
+│   └── mask.py                Mask display model (luma, mask, B/W expansion)
 ├── viz/
 │   └── render.py              Render input/output comparison image grid
 └── tests/
@@ -126,6 +127,7 @@ make run-pipeline SOURCE=path/to/video.mp4 MODE=binary
 # Control flow selection (model-based verification at TOLERANCE=0)
 make run-pipeline CTRL_FLOW=passthrough   # identity — exact match
 make run-pipeline CTRL_FLOW=motion        # motion detect + bbox overlay — pixel-accurate model
+make run-pipeline CTRL_FLOW=mask          # raw motion mask — B/W output for debugging
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -187,7 +189,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | Option | Default | Description |
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
-| `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing) or `motion` (motion detect + bbox overlay) |
+| `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), or `mask` (raw motion mask as B/W image) |
 | `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |

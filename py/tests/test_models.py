@@ -208,6 +208,79 @@ def test_motion_empty_frames():
     assert run_model("motion", []) == []
 
 
+# ---- Mask display model tests ----
+
+def test_mask_static_scene():
+    """Static scene: identical frames produce all-black output (no motion)."""
+    frames = _static_frames(width=16, height=8, num_frames=4)
+    out = run_model("mask", frames)
+    assert len(out) == len(frames)
+    # Frame 0: Y_ref=0, so any non-black input triggers motion → white pixels.
+    # Skip frame 0 for the "static = black" assertion.
+    for i in range(1, len(frames)):
+        assert not out[i].any(), f"Frame {i} should be all-black (no motion in static scene)"
+
+
+def test_mask_frame0_mostly_white():
+    """Frame 0: Y_ref is zero-initialized, so non-black input → mostly white."""
+    frame = np.full((8, 16, 3), 128, dtype=np.uint8)
+    out = run_model("mask", [frame])
+    # Luma of (128,128,128) = (77*128 + 150*128 + 29*128)>>8 = 32768>>8 = 128
+    # |128 - 0| = 128 > 16 → motion everywhere
+    assert np.all(out[0] == 255), "Frame 0 should be all-white (everything is motion vs zero ref)"
+
+
+def test_mask_output_strictly_bw():
+    """Every pixel in mask output must be exactly black or white."""
+    frames = load_frames("synthetic:moving_box", width=32, height=24, num_frames=4)
+    out = run_model("mask", frames)
+    for i, f in enumerate(out):
+        is_black = np.all(f == 0, axis=-1)
+        is_white = np.all(f == 255, axis=-1)
+        assert np.all(is_black | is_white), f"Frame {i} has non-B/W pixels"
+
+
+def test_mask_moving_box_has_motion():
+    """Moving box: frames after frame 0 should have white pixels in motion region."""
+    frames = load_frames("synthetic:moving_box", width=64, height=48, num_frames=4)
+    out = run_model("mask", frames)
+    # Frame 1+: motion where the box moved
+    for i in range(1, len(frames)):
+        white_pixels = np.all(out[i] == 255, axis=-1)
+        assert white_pixels.any(), f"Frame {i} should have white (motion) pixels"
+
+
+def test_mask_threshold_boundary():
+    """Mask model respects strict > threshold."""
+    thresh = 16
+    # Frame with uniform luma = thresh (just at boundary → no motion)
+    # Y = (77*R + 150*G + 29*B) >> 8.  For R=thresh, G=0, B=0: Y = (77*16)>>8 = 1232>>8 = 4
+    # Instead, craft frames where the luma diff is exactly thresh vs thresh+1.
+    h, w = 4, 4
+    # Frame 0: all black → Y_ref becomes 0 after frame 0
+    f0 = np.zeros((h, w, 3), dtype=np.uint8)
+    # Frame 1: uniform color giving Y = thresh (should be NO motion since !(thresh > thresh))
+    # Y = (77*R)>>8 = thresh → R = thresh*256/77 ≈ 53.2 → R=53 gives Y=(77*53)>>8=4081>>8=15
+    # R=54 gives Y=(77*54)>>8=4158>>8=16=thresh. So R=54,G=0,B=0 → Y=16.
+    f1_at = np.zeros((h, w, 3), dtype=np.uint8)
+    f1_at[:, :, 0] = 54  # Y = 16 = thresh
+    # Frame 2 (after f1): Y_ref=16. Need luma diff > thresh.
+    # Use a frame that gives Y=16+17=33. R s.t. (77*R)>>8=33 → R=33*256/77≈109.7 → R=110 gives (77*110)>>8=8470>>8=33.
+    f2_above = np.zeros((h, w, 3), dtype=np.uint8)
+    f2_above[:, :, 0] = 110  # Y = 33, diff = |33-16| = 17 > 16
+
+    out = run_model("mask", [f0, f1_at, f2_above], thresh=thresh)
+    # Frame 1: |16 - 0| = 16 = thresh → NOT > thresh → black
+    assert not out[1].any(), "Diff == thresh should NOT trigger motion"
+    # Frame 2: |33 - 16| = 17 > thresh → white
+    assert np.all(out[2] == 255), "Diff > thresh should trigger motion"
+
+
+def test_mask_empty_frames():
+    """Empty frame list returns empty."""
+    assert run_model("mask", []) == []
+
+
 def test_unknown_ctrl_flow():
     """Unknown control flow raises ValueError."""
     try:
