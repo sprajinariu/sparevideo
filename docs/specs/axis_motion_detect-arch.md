@@ -115,7 +115,7 @@ The trade-off is that the bounding box produced by `axis_bbox_reduce` encompasse
 
 ### RAM read/write discipline
 
-The RAM uses read-first semantics on port A. When motion detect reads and writes the same address in the same cycle (the current pixel's address), port A returns the **old** value (previous frame's Y_cur). No external bypass logic is needed.
+The RAM uses read-first semantics on port A. When motion detect reads and writes the same address in the same cycle (the current pixel's address), port A returns the **old** value (previous frame's background estimate). No external bypass logic is needed.
 
 ### Pipeline stages
 
