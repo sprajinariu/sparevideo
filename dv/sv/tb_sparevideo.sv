@@ -387,9 +387,13 @@ module tb_sparevideo #(
             end
         end
 
-        if (error_count == 0) $display("PASS");
-        else                  $display("FAIL: %0d errors", error_count);
-        $finish;
+        if (error_count == 0) begin
+            $display("PASS");
+            $finish;
+        end else begin
+            $display("FAIL: %0d errors", error_count);
+            $fatal(1, "Simulation failed with %0d errors", error_count);
+        end
     end
 
     // ---------------------------------------------------------------
@@ -405,10 +409,15 @@ module tb_sparevideo #(
     integer rtl_capturing = 0;
 
     // The vga_controller latches RGB at posedge K+1 from pixel_data
-    // sampled at posedge K when active_K was true. So vga_r is one
-    // cycle behind `pixel_ready`. We delay our capture qualifier by
-    // one clock so it lines up with the registered RGB.
-    wire dut_active = u_dut.u_vga.pixel_ready_o & u_dut.vga_started;
+    // sampled at posedge K when (active && pixel_valid) was true.
+    // So vga_r is one cycle behind the handshake. We delay the
+    // capture qualifier by one clock so it lines up with the
+    // registered RGB. Both ready AND valid must be true — ready alone
+    // would capture cycles where the VGA is in the active region but
+    // the FIFO hasn't delivered a pixel yet.
+    wire dut_active = u_dut.u_vga.pixel_ready_o
+                    & u_dut.pix_out_tvalid
+                    & u_dut.vga_started;
     logic dut_active_d;
     always_ff @(posedge clk_pix) begin
         if (!rst_pix_n) dut_active_d <= 1'b0;

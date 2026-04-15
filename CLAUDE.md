@@ -119,7 +119,7 @@ Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant 
 - Keep makefiles up-to-date
 - Keep requirements.txt up-to-date
 - Clean up large files (e.g. VCDs, simulation outputs, binaries), don't upload them to git
-- After implementing a plan, move it to plans/old/ and put a date timestamp on it to have a history on what has been implemented.
+- After implementing a plan, move it to docs/plans/old/ and put a date timestamp on it to have a history on what has been implemented.
 
 ## General guidelines
 

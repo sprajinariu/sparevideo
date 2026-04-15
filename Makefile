@@ -80,6 +80,8 @@ run-pipeline: prepare compile sim verify render
 # prepare writes dv/data/config.mk so that subsequent steps (sim, verify, render)
 # automatically pick up the same WIDTH/HEIGHT/FRAMES/MODE without re-specifying them.
 prepare:
+	@echo ""
+	@echo "==== [1/5] PREPARE (Python) ===="
 	@mkdir -p $(DATA_DIR)/renders
 	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\n' \
 		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' > $(DATA_DIR)/config.mk
@@ -88,9 +90,13 @@ prepare:
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
 
 compile:
+	@echo ""
+	@echo "==== [2/5] COMPILE (Verilator) ===="
 	$(MAKE) -C dv/sim compile $(SIM_VARS)
 
 sim: compile
+	@echo ""
+	@echo "==== [3/5] SIMULATE (Verilator) ===="
 	$(MAKE) -C dv/sim sim $(SIM_VARS)
 
 sim-waves:
@@ -100,11 +106,15 @@ sw-dry-run:
 	$(MAKE) -C dv/sim sw-dry-run $(SIM_VARS)
 
 verify:
+	@echo ""
+	@echo "==== [4/5] VERIFY (Python) ===="
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE)
 
 render:
+	@echo ""
+	@echo "==== [5/5] RENDER (Python) ===="
 	@mkdir -p $(DATA_DIR)/renders
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
