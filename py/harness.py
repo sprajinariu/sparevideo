@@ -10,6 +10,7 @@ import numpy as np
 
 from frames.frame_io import read_frames, write_frames
 from frames.video_source import load_frames
+from models import run_model
 from viz.render import compare_frames, render_grid
 
 META_FILENAME = "meta.json"
@@ -102,10 +103,13 @@ def cmd_prepare(args):
 
 
 def cmd_verify(args):
-    """Compare input and output frame files."""
+    """Compare RTL output against reference model output."""
     input_frames, output_frames = _load_input_output(args)
+    ctrl_flow = args.ctrl_flow
     tolerance = args.tolerance
-    results = compare_frames(input_frames, output_frames, tolerance=tolerance)
+
+    expected_frames = run_model(ctrl_flow, input_frames)
+    results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
     for r in results:
@@ -117,9 +121,11 @@ def cmd_verify(args):
               f"  diff_pixels={r['num_diff_pixels']} (tolerance={tolerance})")
 
     if all_pass:
-        print(f"\nPASS: {len(results)} frames verified (tolerance={tolerance})")
+        print(f"\nPASS: {len(results)} frames verified"
+              f" (model={ctrl_flow}, tolerance={tolerance})")
     else:
-        print(f"\nFAIL: some frames exceed diff tolerance ({tolerance} pixels)")
+        print(f"\nFAIL: some frames differ from {ctrl_flow} model"
+              f" (tolerance={tolerance} pixels)")
         sys.exit(1)
 
 
@@ -152,16 +158,18 @@ def main():
 
     # verify
     p_ver = sub.add_parser("verify", parents=[common],
-                           help="Verify output matches input")
+                           help="Verify RTL output against reference model")
     p_ver.add_argument("--input", default="dv/data/input.txt",
                        help="Input file (text or binary)")
     p_ver.add_argument("--output", default="dv/data/output.txt",
                        help="Output file (text or binary)")
+    p_ver.add_argument("--ctrl-flow", default="passthrough",
+                       choices=["passthrough", "motion"],
+                       help="Control flow model to verify against "
+                            "(default: passthrough)")
     p_ver.add_argument("--tolerance", type=int, default=0,
                        help="Max differing pixels per frame that still counts "
-                            "as PASS (default 0 = exact match). Use "
-                            "2*(W+H) to accommodate the frame-0 bbox border "
-                            "drawn by the motion-detect pipeline.")
+                            "as PASS (default 0 = exact match).")
 
     # render
     p_ren = sub.add_parser("render", parents=[common],
