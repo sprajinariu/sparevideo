@@ -6,7 +6,8 @@ Supported sources:
   - "synthetic:<pattern>" where pattern is one of:
       color_bars, gradient, checkerboard, moving_box,
       moving_box_h, moving_box_v, moving_box_reverse,
-      dark_moving_box, two_boxes
+      dark_moving_box, two_boxes, noisy_moving_box,
+      lighting_ramp
 """
 
 import sys
@@ -111,6 +112,8 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "moving_box_reverse": _gen_moving_box_reverse,
         "dark_moving_box": _gen_dark_moving_box,
         "two_boxes": _gen_two_boxes,
+        "noisy_moving_box": _gen_noisy_moving_box,
+        "lighting_ramp": _gen_lighting_ramp,
     }
     if pattern not in generators:
         raise ValueError(
@@ -249,6 +252,50 @@ def _gen_two_boxes(width, height, num_frames):
         cx = int((1 - t) * (width - bw))
         cy = height * 2 // 3
         frame[cy : cy + bh, cx : cx + bw] = (0, 255, 255)
+        frames.append(frame)
+    return frames
+
+
+def _gen_noisy_moving_box(width, height, num_frames):
+    """A red box moving diagonally on a background with per-frame sensor noise.
+
+    Background pixels jitter +/-10 luma per frame (simulating camera sensor noise).
+    With THRESH=16, raw frame differencing (ALPHA_SHIFT=0) produces false positives
+    on the background; EMA (ALPHA_SHIFT>=1) suppresses them.
+    """
+    rng = np.random.default_rng(seed=42)
+    box_w, box_h = width // 4, height // 4
+    base_bg = 30
+    noise_amplitude = 10
+    frames = []
+    for i in range(num_frames):
+        noise = rng.integers(-noise_amplitude, noise_amplitude + 1,
+                             size=(height, width), dtype=np.int16)
+        bg = np.clip(base_bg + noise, 0, 255).astype(np.uint8)
+        frame = np.stack([bg, bg, bg], axis=-1)
+        t = i / max(num_frames - 1, 1)
+        cx = int(t * (width - box_w))
+        cy = int(t * (height - box_h))
+        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        frames.append(frame)
+    return frames
+
+
+def _gen_lighting_ramp(width, height, num_frames):
+    """Moving box on a background that slowly brightens (+1 luma/frame).
+
+    Tests that EMA tracks gradual lighting changes without producing
+    false positives across the entire frame.
+    """
+    box_w, box_h = width // 4, height // 4
+    frames = []
+    for i in range(num_frames):
+        bg_level = min(100 + i, 255)
+        frame = np.full((height, width, 3), bg_level, dtype=np.uint8)
+        t = i / max(num_frames - 1, 1)
+        cx = int(t * (width - box_w))
+        cy = int(t * (height - box_h))
+        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
         frames.append(frame)
     return frames
 

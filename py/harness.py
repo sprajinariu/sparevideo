@@ -108,17 +108,24 @@ def cmd_verify(args):
     ctrl_flow = args.ctrl_flow
     tolerance = args.tolerance
 
-    expected_frames = run_model(ctrl_flow, input_frames)
+    alpha_shift = getattr(args, "alpha_shift", 3)
+    expected_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift)
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
-    for r in results:
+    for i, r in enumerate(results):
         status = "PASS" if r["match"] else "FAIL"
         if not r["match"]:
             all_pass = False
-        print(f"Frame {r['frame_idx']}: {status}"
-              f"  max_diff={r['max_diff']} mean_diff={r['mean_diff']:.2f}"
-              f"  diff_pixels={r['num_diff_pixels']} (tolerance={tolerance})")
+        line = (f"Frame {r['frame_idx']}: {status}"
+                f"  max_diff={r['max_diff']} mean_diff={r['mean_diff']:.2f}"
+                f"  diff_pixels={r['num_diff_pixels']} (tolerance={tolerance})")
+        # For mask control flow, report motion pixel count
+        if ctrl_flow == "mask" and i < len(output_frames):
+            total_px = output_frames[i].shape[0] * output_frames[i].shape[1]
+            motion_px = int(np.any(output_frames[i] > 0, axis=-1).sum())
+            line += f"  motion={motion_px}/{total_px}"
+        print(line)
 
     if all_pass:
         print(f"\nPASS: {len(results)} frames verified"
@@ -133,9 +140,10 @@ def cmd_render(args):
     """Render input vs output comparison grid."""
     input_frames, output_frames = _load_input_output(args)
     ctrl_flow = getattr(args, "ctrl_flow", None)
+    alpha_shift = getattr(args, "alpha_shift", 3)
     reference_frames = None
     if ctrl_flow:
-        reference_frames = run_model(ctrl_flow, input_frames)
+        reference_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift)
     out_path = render_grid(input_frames, output_frames, args.render_output,
                            reference_frames=reference_frames)
     print(f"Rendered comparison grid to {out_path}")
@@ -175,6 +183,8 @@ def main():
     p_ver.add_argument("--tolerance", type=int, default=0,
                        help="Max differing pixels per frame that still counts "
                             "as PASS (default 0 = exact match).")
+    p_ver.add_argument("--alpha-shift", type=int, default=3, dest="alpha_shift",
+                       help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")
 
     # render
     p_ren = sub.add_parser("render", parents=[common],
@@ -186,6 +196,8 @@ def main():
     p_ren.add_argument("--ctrl-flow", default=None,
                        choices=["passthrough", "motion", "mask"],
                        help="Control flow model to include as reference row")
+    p_ren.add_argument("--alpha-shift", type=int, default=3, dest="alpha_shift",
+                       help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")
     p_ren.add_argument("--render-output", default="dv/data/renders/comparison.png",
                        help="Output PNG path")
 

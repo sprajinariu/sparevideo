@@ -28,7 +28,10 @@ module sparevideo_top #(
     // Motion detect threshold — override at instantiation or compile time.
     // Pixels with abs(Y_cur - Y_prev) > MOTION_THRESH are flagged as motion
     // (polarity-agnostic — both arrival and departure pixels are flagged).
-    parameter int MOTION_THRESH = 16
+    parameter int MOTION_THRESH = 16,
+    // EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
+    // Default 3 → alpha = 1/8. Higher = slower adaptation.
+    parameter int ALPHA_SHIFT   = 3
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
@@ -231,11 +234,12 @@ module sparevideo_top #(
     assign md_s_tvalid = motion_pipe_active ? dsp_in_tvalid : 1'b0;
 
     axis_motion_detect #(
-        .H_ACTIVE (H_ACTIVE),
-        .V_ACTIVE (V_ACTIVE),
-        .THRESH   (MOTION_THRESH),
-        .RGN_BASE (RGN_Y_PREV_BASE),
-        .RGN_SIZE (RGN_Y_PREV_SIZE)
+        .H_ACTIVE    (H_ACTIVE),
+        .V_ACTIVE    (V_ACTIVE),
+        .THRESH      (MOTION_THRESH),
+        .ALPHA_SHIFT (ALPHA_SHIFT),
+        .RGN_BASE    (RGN_Y_PREV_BASE),
+        .RGN_SIZE    (RGN_Y_PREV_SIZE)
     ) u_motion_detect (
         .clk_i                (clk_dsp_i),
         .rst_n_i              (rst_dsp_n_i),

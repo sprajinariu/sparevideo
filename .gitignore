@@ -12,6 +12,8 @@ dv/data/*.dat
 dv/data/*.bin
 dv/data/*.json
 dv/data/renders/
+dv/data/config.mk
+dv/data/real_video/*
 
 # FuseSoC build
 build/

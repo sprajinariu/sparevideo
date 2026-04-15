@@ -2,9 +2,10 @@
 
 Implements the full motion pipeline from the algorithm specification:
   1. RGB -> Y luma extraction (Rec.601-ish, 8-bit fixed-point)
-  2. Frame-difference motion mask (|Y_cur - Y_prev| > threshold)
-  3. Bounding box reduction with priming suppression
-  4. Rectangle overlay with 1-frame delay
+  2. Frame-difference motion mask (|Y_cur - Y_ref| > threshold)
+  3. EMA background model update: bg_new = bg + (Y_cur - bg) >> alpha_shift
+  4. Bounding box reduction with priming suppression
+  5. Rectangle overlay with 1-frame delay
 
 This is a spec-driven model, not an RTL transcription. It implements the
 intended algorithmic behavior. If the RTL disagrees with this model, the
@@ -34,6 +35,19 @@ def _rgb_to_y(frame):
     b = frame[:, :, 2].astype(np.uint16)
     y_sum = _Y_R * r + _Y_G * g + _Y_B * b
     return (y_sum >> 8).astype(np.uint8)
+
+
+def _ema_update(y_cur, bg_prev, alpha_shift=3):
+    """EMA background update matching RTL arithmetic.
+
+    bg_new = bg_prev + (y_cur - bg_prev) >> alpha_shift
+    Uses arithmetic right-shift (sign-preserving) and uint8 truncation.
+    When alpha_shift=0, reduces to raw write-back (bg_new = y_cur).
+    """
+    delta = y_cur.astype(np.int16) - bg_prev.astype(np.int16)
+    step = delta >> alpha_shift  # numpy >> is arithmetic for signed types
+    new_bg = bg_prev.astype(np.int16) + step
+    return np.clip(new_bg, 0, 255).astype(np.uint8)
 
 
 def _compute_mask(y_cur, y_ref, thresh):
@@ -82,7 +96,7 @@ def _draw_bbox(frame, min_x, max_x, min_y, max_y, empty):
     return out
 
 
-def run(frames, thresh=16, **kwargs):
+def run(frames, thresh=16, alpha_shift=3, **kwargs):
     """Motion pipeline reference model.
 
     Processes frames online with state, matching the streaming RTL behavior.
@@ -90,6 +104,7 @@ def run(frames, thresh=16, **kwargs):
     Args:
         frames: List of numpy arrays (H, W, 3), dtype uint8, RGB order.
         thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
+        alpha_shift: EMA smoothing factor (default 3, alpha=1/8).
 
     Returns:
         List of numpy arrays — the expected output frames.
@@ -141,8 +156,8 @@ def run(frames, thresh=16, **kwargs):
         if not primed:
             frame_cnt += 1
 
-        # Step 6: Update reference buffer (raw write-back)
-        y_ref = y_cur.copy()
+        # Step 6: Update reference buffer (EMA write-back)
+        y_ref = _ema_update(y_cur, y_ref, alpha_shift)
 
         outputs.append(out)
 

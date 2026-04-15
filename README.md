@@ -129,6 +129,9 @@ make run-pipeline CTRL_FLOW=passthrough   # identity — exact match
 make run-pipeline CTRL_FLOW=motion        # motion detect + bbox overlay — pixel-accurate model
 make run-pipeline CTRL_FLOW=mask          # raw motion mask — B/W output for debugging
 
+# EMA background model tuning
+make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
+
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
 
@@ -166,6 +169,7 @@ make render
 | `FRAMES` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
 | `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
+| `ALPHA_SHIFT` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
 | `SOURCE` | ✓ | `prepare` only |
@@ -196,6 +200,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
+| `ALPHA_SHIFT` | `3` | EMA background adaptation rate: `alpha = 1/(1 << N)`. Higher = slower adaptation (more noise suppression, longer departure ghosts). 0 = raw frame differencing (no EMA). Compile-time RTL parameter propagated to Verilator via `-G`. |
 
 ### Synthetic Sources
 
@@ -210,6 +215,8 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `synthetic:moving_box_reverse` | Blue box, diagonal bottom-right → top-left |
 | `synthetic:dark_moving_box` | Dark box on bright background (tests polarity-agnostic mask) |
 | `synthetic:two_boxes` | Red + cyan boxes moving in opposing directions |
+| `synthetic:noisy_moving_box` | Red box on noisy background (±10 luma jitter). Tests EMA noise suppression — `ALPHA_SHIFT=0` produces false positives, `ALPHA_SHIFT>=2` suppresses them. |
+| `synthetic:lighting_ramp` | Moving box on slowly brightening background (+1 luma/frame). Tests EMA tracking of gradual lighting changes. |
 
 Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking.
 
@@ -221,7 +228,9 @@ The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (defa
 make run-pipeline SIMARGS="+THRESH=32"
 ```
 
-A pixel is classified as motion when `|Y_cur - Y_prev| > THRESH`. The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
+A pixel is classified as motion when `|Y_cur - bg| > THRESH`, where `bg` is the per-pixel EMA background model (see `ALPHA_SHIFT`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
+
+For the `mask` control flow, the verify step also reports motion pixel counts per frame (`motion=N/total`), which is useful for diagnosing false positives.
 
 ### File Formats
 

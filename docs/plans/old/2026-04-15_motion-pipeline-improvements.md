@@ -672,14 +672,40 @@ Each new block should:
 
 ---
 
+## Lessons Learned (Block 1 Implementation)
+
+These notes capture non-obvious discoveries from implementing Block 1, useful as a template for future blocks.
+
+### First-frame priming: evaluated and rejected
+
+Writing raw `y_cur` to RAM on frame 0 (instead of starting from the EMA zero state) was implemented and then reverted. The problem: any foreground object present in frame 0 gets its luma committed to the background model. When the object moves away, the departure ghost persists for `~1/alpha` frames (e.g., ~8 frames at ALPHA_SHIFT=3). Starting from zero means the background converges from zero toward the true value, which is slower but produces no departure ghosts. The convergence cost is acceptable because the bbox is already suppressed for the first 2 frames.
+
+### Compile-time RTL parameters must propagate through the full Makefile chain
+
+ALPHA_SHIFT is a compile-time Verilator parameter (`-G` flag). It required changes at 3 levels: top Makefile → dv/sim/Makefile → tb_sparevideo.sv → DUT. The config stamp in dv/sim/Makefile must also include ALPHA_SHIFT so that changing it triggers recompilation. This pattern applies to any future compile-time parameter (e.g., KERNEL_SIZE for Gaussian, MAX_LABELS for CCL).
+
+### Synthetic test patterns must exercise the feature meaningfully
+
+The initial `noisy_moving_box` had `noise_amplitude=3`, producing max frame-to-frame noise diff of 6 — well below `THRESH=16`. ALPHA_SHIFT=0 (raw differencing) produced zero false positives, making EMA appear useless. After increasing to `noise_amplitude=10` (max diff=20, exceeding THRESH=16), ALPHA_SHIFT=0 gives ~136 false positive pixels/frame while ALPHA_SHIFT=2 gives ~3. Rule of thumb: `2 × noise_amplitude > THRESH` for the test pattern to be meaningful.
+
+### Departure ghosts are inherent to EMA
+
+When an object moves, pixels at its old position show as motion until the EMA background converges back. Duration ≈ `1/alpha` frames. This is not a bug — it's the trade-off for temporal noise suppression. Lower ALPHA_SHIFT = faster convergence = fewer ghost frames but less noise rejection. The bbox will be slightly larger than the object by about one frame of displacement.
+
+### Verify all control flows × parameter combinations
+
+After any change to the motion pipeline, verify the full matrix: all 3 control flows (passthrough, motion, mask) × multiple ALPHA_SHIFT values (0, 1, 2, 3) × multiple sources (static + moving) at TOLERANCE=0. This caught the ALPHA_SHIFT propagation bug (RTL used default 3 while Python used 2).
+
+---
+
 ## Sub-Plans
 
 Detailed implementation, testing, and acceptance criteria for each block:
 
 | Block | Sub-plan | Status |
 |-------|----------|--------|
-| 0. Mask display ctrl flow | [ctrl-flow-mask-display.md](ctrl-flow-mask-display.md) | not started |
-| 1. EMA background model | [block1-ema-background.md](block1-ema-background.md) | not started |
+| 0. Mask display ctrl flow | [old/2026-04-15_ctrl-flow-mask-display.md](old/2026-04-15_ctrl-flow-mask-display.md) | done |
+| 1. EMA background model | [old/2026-04-15_block1-ema-background.md](old/2026-04-15_block1-ema-background.md) | done |
 | 2. Gaussian pre-filter | block2-gaussian-prefilter.md | not started |
 | 3. Morphological opening | block3-morphological-opening.md | not started |
 | 4. Connected-component labeling | block4-ccl.md | not started |

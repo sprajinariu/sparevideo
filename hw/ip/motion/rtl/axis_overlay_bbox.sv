@@ -70,6 +70,12 @@ module axis_overlay_bbox #(
     // ---- Rectangle hit test (combinational) ----
     logic on_rect;
 
+    // On the SOF pixel, the registered row still holds V_ACTIVE (from the
+    // previous frame's final tlast increment).  Use row=0 combinationally
+    // for the SOF pixel so the hit test sees the correct position.
+    logic [$clog2(V_ACTIVE)-1:0] row_eff;
+    assign row_eff = (s_axis_tvalid_i && s_axis_tuser_i) ? '0 : row;
+
     // Intermediate signals for Icarus compat (no bit-selects in always_comb)
     logic on_left_or_right;
     logic in_y_range;
@@ -77,8 +83,8 @@ module axis_overlay_bbox #(
     logic in_x_range;
 
     assign on_left_or_right = (col == bbox_min_x_i) || (col == bbox_max_x_i);
-    assign in_y_range       = (row >= bbox_min_y_i) && (row <= bbox_max_y_i);
-    assign on_top_or_bottom = (row == bbox_min_y_i) || (row == bbox_max_y_i);
+    assign in_y_range       = (row_eff >= bbox_min_y_i) && (row_eff <= bbox_max_y_i);
+    assign on_top_or_bottom = (row_eff == bbox_min_y_i) || (row_eff == bbox_max_y_i);
     assign in_x_range       = (col >= bbox_min_x_i) && (col <= bbox_max_x_i);
 
     assign on_rect = !bbox_empty_i &&

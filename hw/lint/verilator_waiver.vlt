@@ -12,3 +12,6 @@ lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"
 lint_off -rule UNUSEDSIGNAL    -file "*rgb2ycrcb.sv"
 // rgb2ycrcb has no `timescale directive; harmless mismatch vs vendored files.
 lint_off -rule TIMESCALEMOD    -file "*rgb2ycrcb.sv"
+// EMA step is 9-bit signed but only [7:0] feeds the 8-bit write-back.
+// Bit [8] (sign extension) is intentionally unused.
+lint_off -rule UNUSEDSIGNAL    -file "*axis_motion_detect.sv" -match "*ema_step*"

@@ -33,10 +33,13 @@ make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact mat
 make run-pipeline CTRL_FLOW=motion                    # motion detect + bbox overlay
 make run-pipeline CTRL_FLOW=mask                      # raw motion mask, B/W output
 
-# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW to dv/data/config.mk.
+# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/ALPHA_SHIFT to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
 make prepare SOURCE="synthetic:gradient" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
 make sim                     # uses saved options
+
+# EMA background model tuning (ALPHA_SHIFT is a compile-time Verilator parameter)
+make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
 
 # Other targets
 make lint                    # Verilator lint
@@ -102,7 +105,7 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 - Text mode (`.txt`) uses space-separated 6-digit hex pixels (RRGGBB), one row per line. No headers.
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
-- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box, moving_box_h, moving_box_v, moving_box_reverse, dark_moving_box, two_boxes).
+- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box, moving_box_h, moving_box_v, moving_box_reverse, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp).
 
 ## Skills
 
