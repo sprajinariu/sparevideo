@@ -5,7 +5,9 @@
 //   Frame 1 — same pixels, EMA-updated y_prev → golden mask check, RAM EMA verify
 //   Frame 2 — mixed-motion: pixels crafted for threshold boundary vs EMA y_prev
 //   Frame 3 — same mixed-motion under consumer stall → verifies stall correctness
-//   Frame 4 — identical to frame 3 → verify RAM updated from frame 3 EMA values
+//   Frame 4 — asymmetric stall: only vid stalls, msk stays ready → verifies no
+//             duplicate transfers on the ready channel (fork desync bug)
+//   Frame 5 — asymmetric stall: only msk stalls, vid stays ready → mirror test
 //
 // EMA background model: y_prev = y_prev + ((y_cur - y_prev) >>> ALPHA_SHIFT)
 //
@@ -61,13 +63,16 @@ module tb_axis_motion_detect;
     localparam int OPEN_LEN  = 3;
 
     logic stall_active = 1'b0;
+    // Asymmetric stall: only one channel stalls, the other stays ready.
+    // 0 = symmetric (both stall), 1 = vid-only stall, 2 = msk-only stall.
+    integer stall_mode = 0;
     integer stall_ctr  = 0;
 
     always_ff @(posedge clk) begin
         if (stall_active) begin
             if (stall_ctr < STALL_LEN - 1) begin
-                drv_vid_rdy <= 1'b0;
-                drv_msk_rdy <= 1'b0;
+                drv_vid_rdy <= (stall_mode == 2) ? 1'b1 : 1'b0;
+                drv_msk_rdy <= (stall_mode == 1) ? 1'b1 : 1'b0;
                 stall_ctr   <= stall_ctr + 1;
             end else if (stall_ctr < STALL_LEN + OPEN_LEN - 1) begin
                 drv_vid_rdy <= 1'b1;
@@ -402,12 +407,64 @@ module tb_axis_motion_detect;
         check_ram_ema("frame3");
 
         // ================================================================
+        // Frame 4: asymmetric stall — vid stalls, msk stays ready
+        // If the fork logic is broken, the msk consumer will re-accept
+        // the same pixel during vid stall → msk_cap_cnt > vid_cap_cnt.
+        // ================================================================
+        $display("=== Frame 4 (asymmetric stall: vid stalls, msk ready) ===");
+        // Rebuild mixed_pixels from current y_prev
+        build_mixed_pixels();
+        reset_capture();
+        stall_active = 1'b1;
+        stall_mode   = 1;  // vid-only stall
+        fork
+            drive_frame(mixed_pixels);
+            wait_frame_captured();
+        join
+        stall_active = 1'b0;
+        stall_mode   = 0;
+        repeat (5) @(posedge clk);
+        // Fork desync check: both channels must capture exactly NUM_PIX
+        if (vid_cap_cnt !== msk_cap_cnt) begin
+            $display("FAIL frame4 fork desync: vid_cap_cnt=%0d msk_cap_cnt=%0d (expected %0d each)",
+                     vid_cap_cnt, msk_cap_cnt, NUM_PIX);
+            num_errors = num_errors + 1;
+        end
+        check_vid_passthrough(mixed_pixels, "frame4");
+        check_mask_golden(y_prev, mixed_pixels, "frame4");
+        update_y_prev(mixed_pixels);
+
+        // ================================================================
+        // Frame 5: asymmetric stall — msk stalls, vid stays ready (mirror)
+        // ================================================================
+        $display("=== Frame 5 (asymmetric stall: msk stalls, vid ready) ===");
+        build_mixed_pixels();
+        reset_capture();
+        stall_active = 1'b1;
+        stall_mode   = 2;  // msk-only stall
+        fork
+            drive_frame(mixed_pixels);
+            wait_frame_captured();
+        join
+        stall_active = 1'b0;
+        stall_mode   = 0;
+        repeat (5) @(posedge clk);
+        if (vid_cap_cnt !== msk_cap_cnt) begin
+            $display("FAIL frame5 fork desync: vid_cap_cnt=%0d msk_cap_cnt=%0d (expected %0d each)",
+                     vid_cap_cnt, msk_cap_cnt, NUM_PIX);
+            num_errors = num_errors + 1;
+        end
+        check_vid_passthrough(mixed_pixels, "frame5");
+        check_mask_golden(y_prev, mixed_pixels, "frame5");
+        update_y_prev(mixed_pixels);
+
+        // ================================================================
         // Summary
         // ================================================================
         if (num_errors > 0) begin
             $fatal(1, "tb_axis_motion_detect FAILED with %0d errors", num_errors);
         end else begin
-            $display("tb_axis_motion_detect PASSED — 4 frames OK");
+            $display("tb_axis_motion_detect PASSED — 6 frames OK");
             $finish;
         end
     end

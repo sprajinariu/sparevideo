@@ -31,8 +31,12 @@ hw/top/
 hw/ip/rgb2ycrcb/rtl/
 └── rgb2ycrcb.sv               RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point)
 
+hw/ip/axis/rtl/
+└── axis_fork_pipe.sv          Reusable AXI4-Stream 1-to-2 fork with sideband pipeline
+
 hw/ip/motion/rtl/
-├── axis_motion_detect.sv      Motion mask generator + RGB passthrough
+├── axis_motion_detect.sv      Motion detector: glue (fork + rgb2ycrcb + core + memory)
+├── motion_core.sv             Pure-combinational: abs-diff threshold + EMA background update
 ├── axis_bbox_reduce.sv        Mask → bounding-box accumulator
 └── axis_overlay_bbox.sv       Bounding-box rectangle overlay on RGB video
 
@@ -54,7 +58,7 @@ hw/ip/rgb2ycrcb/tb/
 └── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
 
 hw/ip/motion/tb/
-├── tb_axis_motion_detect.sv   4-frame golden model, threshold boundary, stall
+├── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
 ├── tb_axis_bbox_reduce.sv     9 tests: edge cases, SOF reset isolation
 └── tb_axis_overlay_bbox.sv    8 tests: empty/full/single-pixel, backpressure
 
@@ -179,7 +183,7 @@ make render
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
-make test-ip-motion-detect   # axis_motion_detect: 4-frame golden model, threshold boundary, stall
+make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
 make test-ip-bbox-reduce     # axis_bbox_reduce: 9 tests, edge cases, SOF reset
 make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure
 make sw-dry-run              # Bypass RTL — file loopback, zero sim time
