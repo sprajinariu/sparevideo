@@ -1,5 +1,7 @@
 # Control Flow: Mask Display Mode
 
+**Date:** 2026-04-15 (completed)
+
 **Parent:** [motion-pipeline-improvements.md](motion-pipeline-improvements.md) — prerequisite for all 5 improvement blocks. Provides visual feedback on the motion mask for debugging and tuning.
 
 ---
@@ -193,19 +195,61 @@ The `ctrl_flow` constants are already being changed (step 1). No new parameters 
 
 ## Python Changes
 
-### Verify step
+### `py/models/mask.py` — mask display reference model
 
-The current `verify` step compares input frames against output frames pixel-by-pixel. For mask mode, the output is a black-and-white image that bears no resemblance to the input — the existing diff-based verify is meaningless.
+Add a Python reference model following the existing pattern (`passthrough.py`, `motion.py`). The mask model reuses the motion pipeline's luma extraction and frame-difference mask logic, but instead of computing a bounding box and overlaying it, it expands the raw 1-bit mask to 24-bit RGB:
 
-Options:
-1. **Skip verify for mask mode** — simplest. Print a message saying mask mode is visual-only. This is fine for now since mask mode is a debugging tool.
-2. **Add a mask-specific model** — compute the expected mask in Python (using the motion detection algorithm), expand to RGB, and compare against RTL output. This is what the block 1 sub-plan's Python model would eventually enable, but it's not needed for the mask display feature itself.
+```python
+def run(frames, thresh=16, **kwargs):
+    """Mask display reference model.
 
-**Recommendation:** Option 1 for now. Add a `--ctrl-flow` argument to `harness.py verify` that skips comparison when set to `mask`, or set `TOLERANCE` very high in the Makefile for mask mode.
+    Same motion detection front-end as motion.py (luma, frame-diff mask),
+    but outputs the raw mask as black/white RGB instead of bbox overlay.
+    """
+```
+
+**Algorithm (online, frame-by-frame with state):**
+
+1. **Luma extraction** — identical to `motion.py`: `Y = (77*R + 150*G + 29*B) >> 8`
+2. **Frame-difference motion mask** — identical to `motion.py`: `mask[y,x] = |Y_cur - Y_ref| > threshold`
+3. **Mask-to-RGB expansion** — `mask=1` → `(255,255,255)`, `mask=0` → `(0,0,0)`
+4. **Update reference buffer** — `Y_ref = Y_cur`
+
+No bounding box, no priming suppression, no overlay delay. The mask display shows the raw mask as the motion detector produces it.
+
+**Implementation note:** Import `_rgb_to_y` and `_compute_mask` from `motion.py` to avoid duplicating the luma/mask logic. These are the spec-defined operations and must stay in sync.
+
+### `py/models/__init__.py` — register mask model
+
+Add `"mask"` to the `_MODELS` dispatch dict:
+
+```python
+from models.mask import run as _run_mask
+
+_MODELS = {
+    "passthrough": _run_passthrough,
+    "motion": _run_motion,
+    "mask": _run_mask,
+}
+```
+
+### `py/tests/test_models.py` — add mask model tests
+
+**Mask identity (static scene):** Feed identical frames → all-black output (no motion, no mask pixels).
+
+**Mask moving_box:** Feed `moving_box` frames → output is strictly black/white, white pixels form the region of displacement between consecutive frames.
+
+**Mask frame 0:** First frame has Y_ref=0 (RAM init), so any non-black input pixel will produce motion → mostly white output. Verify this behavior matches RTL.
+
+**Mask threshold boundary:** Pixel diffs at exactly `threshold` → black (no motion). Diffs at `threshold+1` → white (motion).
+
+### `py/harness.py` — no changes needed
+
+The `verify` subparser already accepts `--ctrl-flow` and dispatches to `run_model()`. Adding `"mask"` to the models package is sufficient — `harness.py` will automatically use the mask model for `CTRL_FLOW=mask`.
 
 ### Render step
 
-The render step should work as-is — it renders whatever frames are in the output file. The mask frames will show up as black-and-white images in the comparison grid, which is exactly what we want for visual debugging.
+The render step works as-is — it renders whatever frames are in the output file. The mask frames show up as black-and-white images in the comparison grid, which is exactly what we want for visual debugging.
 
 ---
 
@@ -250,9 +294,10 @@ The render step should work as-is — it renders whatever frames are in the outp
 ### Must pass:
 - [ ] `make lint` — no new warnings
 - [ ] `make test-ip` — no regression
+- [ ] `make test-py` — mask model unit tests pass
 - [ ] `make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0` — exact match (no regression)
 - [ ] `make run-pipeline CTRL_FLOW=motion` — still works with bbox overlay
-- [ ] `make run-pipeline CTRL_FLOW=mask` — produces black/white output, no SVA violations
+- [ ] `make run-pipeline CTRL_FLOW=mask TOLERANCE=0` — pixel-accurate match against mask reference model
 - [ ] Every output pixel in mask mode is exactly `000000` or `FFFFFF`
 - [ ] No FIFO overflow or underrun in any mode
 
@@ -273,7 +318,9 @@ The render step should work as-is — it renders whatever frames are in the outp
 - [ ] Handle mask `tready` backpressure in mask mode
 - [ ] Add `"mask"` to TB plusarg parser
 - [ ] Update Makefile help text
-- [ ] Add `CTRL_MASK_DISPLAY` tolerance default in Makefile (or skip verify)
+- [ ] Add `py/models/mask.py` reference model
+- [ ] Register `"mask"` in `py/models/__init__.py`
+- [ ] Add mask tests to `py/tests/test_models.py`
 - [ ] Update `docs/specs/sparevideo-top-arch.md` control flow section
 - [ ] Update `CLAUDE.md` to document the new control flow option
 
@@ -286,6 +333,9 @@ The render step should work as-is — it renders whatever frames are in the outp
 | `hw/top/sparevideo_pkg.sv` | Widen control flow constants to 2-bit, add `CTRL_MASK_DISPLAY` |
 | `hw/top/sparevideo_top.sv` | Widen port, add mask-RGB expansion, update mux + input gating + tready |
 | `dv/sv/tb_sparevideo.sv` | Widen signal, add plusarg case |
-| `Makefile` | Update help text, add mask tolerance default |
+| `Makefile` | Update help text |
 | `dv/sim/Makefile` | No change (passes CTRL_FLOW as string already) |
+| `py/models/mask.py` | **New** — mask display reference model (luma → mask → B/W RGB) |
+| `py/models/__init__.py` | Register `"mask"` in `_MODELS` dispatch dict |
+| `py/tests/test_models.py` | Add mask model tests (static, moving_box, frame 0, threshold) |
 | `docs/specs/sparevideo-top-arch.md` | Document new control flow |

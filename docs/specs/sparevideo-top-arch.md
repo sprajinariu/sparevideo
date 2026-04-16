@@ -4,11 +4,12 @@
 
 `sparevideo_top` is the top-level video processing pipeline. It accepts an AXI4-Stream RGB888 video input on a 25 MHz pixel clock (`clk_pix`), crosses the stream into a 100 MHz DSP clock domain, runs a **control-flow-selectable** processing pipeline, crosses back to the pixel clock, and drives a VGA controller to produce analogue RGB + hsync/vsync output.
 
-A top-level `ctrl_flow_i` sideband signal selects the active processing path:
-- **Passthrough** (`ctrl_flow_i = 0`): input pixels pass directly to the output FIFO with no processing.
-- **Motion detect** (`ctrl_flow_i = 1`, default): motion-detection and bounding-box overlay pipeline.
+A top-level `ctrl_flow_i` sideband signal (2-bit) selects the active processing path:
+- **Passthrough** (`ctrl_flow_i = 2'b00`): input pixels pass directly to the output FIFO with no processing.
+- **Motion detect** (`ctrl_flow_i = 2'b01`, default): motion-detection and bounding-box overlay pipeline.
+- **Mask display** (`ctrl_flow_i = 2'b10`): raw 1-bit motion mask expanded to black/white RGB. Uses the same motion detection front-end but bypasses bbox/overlay, outputting the mask directly for debugging.
 
-When the motion pipeline is bypassed, its input `tvalid` is gated to 0 and its output `tready` is tied to 1 to prevent stalling.
+When the motion pipeline is bypassed (passthrough), its input `tvalid` is gated to 0 and its output `tready` is tied to 1 to prevent stalling. Both motion and mask modes activate the motion detect pipeline.
 
 The module does **not** include: camera input (MIPI CSI-2), AXI-Lite register access, multi-clock `clk_pix` sources, or any processing beyond luma-difference motion detection and single-object bounding-box overlay.
 
@@ -43,7 +44,7 @@ sparevideo_top (top level)
 | `s_axis_tready_o` | output | 1 | AXI4-Stream sink ready (back-pressures producer) |
 | `s_axis_tlast_i` | input | 1 | End-of-line marker (last pixel of each row) |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame marker (first pixel of frame) |
-| `ctrl_flow_i` | input | 1 | Control flow select: 0 = passthrough, 1 = motion detect |
+| `ctrl_flow_i` | input | 2 | Control flow select: 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask |
 | `vga_hsync_o` | output | 1 | Horizontal sync, active-low |
 | `vga_vsync_o` | output | 1 | Vertical sync, active-low |
 | `vga_r_o` | output | 8 | Red channel (0 during blanking) |
@@ -63,8 +64,9 @@ sparevideo_top (top level)
 | `V_SYNC_PULSE` | pkg | Vertical sync pulse height |
 | `V_BACK_PORCH` | pkg | Vertical back porch |
 | `MOTION_THRESH` | 16 | Luma-difference threshold for motion (≈6.25% intensity) |
+| `ALPHA_SHIFT` | 3 | EMA background adaptation rate: alpha = 1/(1 << ALPHA_SHIFT). Propagated to `u_motion_detect`. Default 3 → alpha=1/8 |
 
-`ctrl_flow_i` is a quasi-static sideband signal (set before simulation, not changed mid-frame). It is driven by the testbench via the `+CTRL_FLOW=passthrough|motion` plusarg. All defaults reference `sparevideo_pkg`.
+`ctrl_flow_i` is a quasi-static sideband signal (set before simulation, not changed mid-frame). It is driven by the testbench via the `+CTRL_FLOW=passthrough|motion|mask` plusarg. All defaults reference `sparevideo_pkg`.
 
 ---
 
@@ -83,12 +85,13 @@ s_axis ──► u_fifo_in ──► dsp_in ─┤                              
 ```
 
 The control-flow mux selects between:
-- **Passthrough** (`ctrl_flow_i = 0`): `dsp_in` feeds directly into `u_fifo_out`. Motion pipeline input `tvalid` is gated to 0; output `tready` is tied to 1.
-- **Motion detect** (`ctrl_flow_i = 1`): `ovl` (overlay output) feeds into `u_fifo_out`. This is the default path.
+- **Passthrough** (`ctrl_flow_i = 2'b00`): `dsp_in` feeds directly into `u_fifo_out`. Motion pipeline input `tvalid` is gated to 0; output `tready` is tied to 1.
+- **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. This is the default path.
+- **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure.
 
 1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
-2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the previous frame's Y8 from `u_ram` port A, computes `|Y_cur − Y_prev|`, and emits a 1-bit motion mask plus the original RGB video with matched latency. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes `Y_cur` back to RAM on acceptance.
-3. **u_ram**: dual-port byte RAM (port A for motion detect, port B reserved). Zero-initialized so frame 0 reads all-motion.
+2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the per-pixel background model from `u_ram` port A, computes `|Y_cur − bg|`, and emits a 1-bit motion mask plus the original RGB video with matched latency. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes an EMA-updated background value back to RAM on acceptance: `bg_new = bg + ((Y_cur - bg) >>> ALPHA_SHIFT)`. This temporally smooths the background model, suppressing sensor noise and adapting to gradual lighting changes. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md) §4 for the EMA algorithm details.
+3. **u_ram**: dual-port byte RAM (port A for motion detect background model, port B reserved). Zero-initialized so frame 0 reads all-motion (background starts at 0, converges via EMA over subsequent frames).
 4. **u_bbox_reduce**: accumulates `{min_x, max_x, min_y, max_y}` over motion pixels; latches at EOF. The first 2 frames after reset are suppressed (`bbox_empty` forced high) to avoid false full-frame bboxes from zeroed RAM. Drives `msk_tready` tied 1 (always ready).
 5. **u_overlay_bbox**: for each pixel, checks if `(col, row)` is on the bbox rectangle edge; substitutes `BBOX_COLOR` (bright green) when on the edge and `bbox_empty=0`. Pure pass-through otherwise.
 6. **u_fifo_out**: crosses the overlaid RGB stream back to `clk_pix`. Depth 32 entries.
@@ -124,9 +127,11 @@ The shared RAM is partitioned into named regions with `{BASE, SIZE}` descriptors
 ```
 Region       Owner                Base              Size
 ─────────    ─────────────        ────              ────
-Y_PREV       axis_motion_detect   RGN_Y_PREV_BASE=0 RGN_Y_PREV_SIZE = H_ACTIVE × V_ACTIVE
+BG_MODEL     axis_motion_detect   RGN_Y_PREV_BASE=0 RGN_Y_PREV_SIZE = H_ACTIVE × V_ACTIVE
 (reserved)   (port B, future)     —                 —
 ```
+
+The BG_MODEL region stores the per-pixel EMA background estimate (8-bit luma). Each pixel is updated on every frame via the EMA formula in `axis_motion_detect`. Zero-initialized, so the first few frames see full-frame motion until the background converges.
 
 A compile-time guard checks that `BASE + SIZE ≤ RAM_DEPTH`. Each client module receives its `RGN_BASE` and `RGN_SIZE` as parameters; it adds `RGN_BASE` to its internal counter to form the physical address, so the RAM module itself has no knowledge of partitions.
 
@@ -154,7 +159,7 @@ When runtime configurability is needed, the descriptor table and control knobs (
 ## 8. Known Limitations
 
 - **Simulation-only RAM**: `ram.sv` is a behavioral model. FPGA synthesis requires a vendor BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`).
-- **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box spans the full frame and the overlay draws a border around the image edge. This is a known cosmetic artifact.
+- **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box spans the full frame and the overlay draws a border around the image edge. This is a known cosmetic artifact. `axis_bbox_reduce` suppresses the bbox for the first 2 frames.
 - **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
 - **No AXI-Lite control**: `MOTION_THRESH` and `BBOX_COLOR` are compile-time parameters. Runtime override requires a simulation plusarg and recompile for RTL.

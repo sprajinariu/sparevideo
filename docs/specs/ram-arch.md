@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Scope
 
-`ram` is a generic behavioral dual-port byte-addressed RAM. It provides two independent 1R1W ports (A and B) sharing a single backing store. Port A is used by `axis_motion_detect` for the Y8 previous-frame buffer; port B is reserved for future host clients. The module is content-agnostic — it has no knowledge of frames, regions, or algorithms. It does **not** enforce access ordering between ports, synthesize to any specific FPGA primitive, or implement ECC.
+`ram` is a generic behavioral dual-port byte-addressed RAM. It provides two independent 1R1W ports (A and B) sharing a single backing store. Port A is used by `axis_motion_detect` for the per-pixel EMA background model; port B is reserved for future host clients. The module is content-agnostic — it has no knowledge of frames, regions, or algorithms. It does **not** enforce access ordering between ports, synthesize to any specific FPGA primitive, or implement ECC.
 
 ---
 
@@ -43,7 +43,7 @@
 
 One `logic [7:0] mem [0:DEPTH-1]` backing store, zero-initialized in an `initial` block.
 
-Two independent `always_ff @(posedge clk_i)` blocks, one per port. Each implements **read-first** semantics on the same port: if a port reads and writes the same address in the same cycle, it returns the **old** value. This is the discipline `axis_motion_detect` depends on (it reads `Y_prev` and writes `Y_cur` at the same address on the same cycle).
+Two independent `always_ff @(posedge clk_i)` blocks, one per port. Each implements **read-first** semantics on the same port: if a port reads and writes the same address in the same cycle, it returns the **old** value. This is the discipline `axis_motion_detect` depends on (it reads the old background value and writes the EMA-updated value at the same address on the same cycle).
 
 ---
 

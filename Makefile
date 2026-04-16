@@ -14,6 +14,8 @@ MODE      ?= text
 CTRL_FLOW ?= motion
 # Default tolerance: 0 (pixel-accurate model-based verification for all flows).
 TOLERANCE ?= 0
+# EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
+ALPHA_SHIFT ?= 3
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -31,6 +33,7 @@ endif
 SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
            MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) \
+           ALPHA_SHIFT=$(ALPHA_SHIFT) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
@@ -63,14 +66,30 @@ help:
 	@echo "    test-ip-overlay-bbox  axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
-	@echo "    SIMULATOR=verilator        Simulator: verilator (default) or icarus"
-	@echo "    SOURCE=synthetic:color_bars  Input source (prepare only)"
-	@echo "    WIDTH=320                  Frame width"
-	@echo "    HEIGHT=240                 Frame height"
-	@echo "    FRAMES=4                   Number of frames"
-	@echo "    MODE=text|binary           File format"
-	@echo "    CTRL_FLOW=motion|passthrough  Control flow (default motion)"
-	@echo "    TOLERANCE=<n>              Max diff pixels/frame for verify (default 0 = exact)"
+	@echo "    SIMULATOR=verilator              Simulator: verilator (default) or icarus"
+	@echo "    SOURCE=synthetic:color_bars      Input source (prepare only). See sources below."
+	@echo "    WIDTH=320                        Frame width"
+	@echo "    HEIGHT=240                       Frame height"
+	@echo "    FRAMES=4                         Number of frames"
+	@echo "    MODE=text|binary                 File format"
+	@echo "    CTRL_FLOW=motion|passthrough|mask Control flow (default motion)"
+	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
+	@echo "    ALPHA_SHIFT=3                    EMA adaptation rate: alpha=1/(1<<N) (default 3)"
+	@echo ""
+	@echo "  Sources (SOURCE=):"
+	@echo "    synthetic:color_bars       8 vertical color bars (static)"
+	@echo "    synthetic:gradient         Red horizontal + green vertical gradient (static)"
+	@echo "    synthetic:checkerboard     16x16 pixel checkerboard (static)"
+	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
+	@echo "    synthetic:moving_box_h     Red box, horizontal left → right"
+	@echo "    synthetic:moving_box_v     Green box, vertical top → bottom"
+	@echo "    synthetic:moving_box_reverse Blue box, diagonal bottom-right → top-left"
+	@echo "    synthetic:dark_moving_box  Dark box on bright background"
+	@echo "    synthetic:two_boxes        Red + cyan boxes, opposing directions"
+	@echo "    synthetic:noisy_moving_box Red box on noisy background (EMA test)"
+	@echo "    synthetic:lighting_ramp    Moving box on slowly brightening background"
+	@echo "    path/to/video.mp4          MP4/AVI file (via OpenCV)"
+	@echo "    path/to/png_dir/           Directory of PNG frames"
 
 # ---- Main pipeline flow ----
 
@@ -80,35 +99,46 @@ run-pipeline: prepare compile sim verify render
 # prepare writes dv/data/config.mk so that subsequent steps (sim, verify, render)
 # automatically pick up the same WIDTH/HEIGHT/FRAMES/MODE without re-specifying them.
 prepare:
+	@echo ""
+	@echo "==== [1/5] PREPARE (Python) ===="
 	@mkdir -p $(DATA_DIR)/renders
-	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\n' \
-		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' > $(DATA_DIR)/config.mk
+	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\n' \
+		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
 
 compile:
+	@echo ""
+	@echo "==== [2/5] COMPILE (Verilator) ===="
 	$(MAKE) -C dv/sim compile $(SIM_VARS)
 
 sim: compile
+	@echo ""
+	@echo "==== [3/5] SIMULATE (Verilator) ===="
 	$(MAKE) -C dv/sim sim $(SIM_VARS)
 
 sim-waves:
 	$(MAKE) -C dv/sim sim-waves $(SIM_VARS)
 
-sw-dry-run:
+sw-dry-run: prepare compile
 	$(MAKE) -C dv/sim sw-dry-run $(SIM_VARS)
 
 verify:
+	@echo ""
+	@echo "==== [4/5] VERIFY (Python) ===="
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
-		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE)
+		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE) \
+		--alpha-shift $(ALPHA_SHIFT)
 
 render:
+	@echo ""
+	@echo "==== [5/5] RENDER (Python) ===="
 	@mkdir -p $(DATA_DIR)/renders
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
-		--mode $(MODE) \
+		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --alpha-shift $(ALPHA_SHIFT) \
 		--render-output $(CURDIR)/$(DATA_DIR)/renders/comparison.png
 
 # ---- Other targets ----

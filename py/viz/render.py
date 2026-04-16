@@ -6,46 +6,66 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-def render_grid(input_frames, output_frames, path, label_height=24):
-    """Render input (top row) and output (bottom row) frames as a PNG grid.
+def render_grid(input_frames, output_frames, path, reference_frames=None,
+                label_height=32, min_width=800):
+    """Render frames as a PNG grid with labeled rows.
 
-    Each row has a text label ("INPUT" / "OUTPUT") on the left.
+    Rows: INPUT, OUTPUT, and optionally REFERENCE MODEL.
+    The grid is scaled up with nearest-neighbor interpolation so that
+    small frames are visible, then text labels are drawn at the final
+    resolution for crisp rendering.
 
     Args:
         input_frames: List of numpy arrays (H, W, 3).
         output_frames: List of numpy arrays (H, W, 3).
         path: Output PNG path.
-        label_height: Height of label bars.
+        reference_frames: Optional list of numpy arrays (H, W, 3).
+        label_height: Height of label bars in the final image (pixels).
+        min_width: Target minimum width for the final image.
     """
     n = max(len(input_frames), len(output_frames))
     h, w = input_frames[0].shape[:2]
 
-    gap = 2  # pixels between frames
-    frames_w = n * w + (n - 1) * gap
-    # Two label bars (one above each row) + two frame rows
-    grid_h = 2 * label_height + 2 * h
+    gap = 2  # pixels between frames at native scale
+    native_w = n * w + (n - 1) * gap
+
+    # Scale factor: ensure the final image is at least min_width wide
+    scale = max(1, min_width // native_w)
+
+    sw, sh = w * scale, h * scale  # scaled frame dimensions
+    sgap = gap * scale
+
+    frames_w = n * sw + (n - 1) * sgap
+
+    # Build row definitions: (label, frames_list)
+    rows = [
+        ("INPUT", input_frames),
+        ("OUTPUT", output_frames),
+    ]
+    if reference_frames is not None:
+        rows.append(("REFERENCE MODEL", reference_frames))
+
+    num_rows = len(rows)
+    grid_h = num_rows * (label_height + sh)
     grid_w = frames_w
     grid = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
     grid[:] = 40  # dark gray background
 
-    # Row positions
-    input_label_y = 0
-    input_frames_y = label_height
-    output_label_y = label_height + h
-    output_frames_y = 2 * label_height + h
+    # Place label bars and frames for each row
+    label_ys = []
+    for row_idx, (_, frames_list) in enumerate(rows):
+        label_y = row_idx * (label_height + sh)
+        frames_y = label_y + label_height
+        label_ys.append(label_y)
 
-    # Label bars — slightly lighter background
-    grid[input_label_y : input_label_y + label_height, :] = 55
-    grid[output_label_y : output_label_y + label_height, :] = 55
+        # Label bar — slightly lighter background
+        grid[label_y : label_y + label_height, :] = 55
 
-    # Place frames
-    for i, frame in enumerate(input_frames[:n]):
-        x = i * (w + gap)
-        grid[input_frames_y : input_frames_y + h, x : x + w] = frame
-
-    for i, frame in enumerate(output_frames[:n]):
-        x = i * (w + gap)
-        grid[output_frames_y : output_frames_y + h, x : x + w] = frame
+        # Place frames (scale up with nearest-neighbor)
+        for i, frame in enumerate(frames_list[:n]):
+            x = i * (sw + sgap)
+            scaled = np.repeat(np.repeat(frame, scale, axis=0), scale, axis=1)
+            grid[frames_y : frames_y + sh, x : x + sw] = scaled
 
     # Draw text labels using Pillow
     img = Image.fromarray(grid)
@@ -68,13 +88,10 @@ def render_grid(input_frames, output_frames, path, label_height=24):
         font = ImageFont.load_default()
 
     text_color = (200, 200, 200)
-    # Center text vertically in label bar
     text_x = 6
-    input_text_y = input_label_y + (label_height - font_size) // 2
-    output_text_y = output_label_y + (label_height - font_size) // 2
-
-    draw.text((text_x, input_text_y), "INPUT", fill=text_color, font=font)
-    draw.text((text_x, output_text_y), "OUTPUT", fill=text_color, font=font)
+    for row_idx, (label, _) in enumerate(rows):
+        text_y = label_ys[row_idx] + (label_height - font_size) // 2
+        draw.text((text_x, text_y), label, fill=text_color, font=font)
 
     img.save(str(path))
     return path

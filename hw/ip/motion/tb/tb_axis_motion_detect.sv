@@ -2,11 +2,12 @@
 //
 // Tests (in order):
 //   Frame 0 — RAM zero-init → golden mask per pixel, RGB passthrough check
-//   Frame 1 — identical pixels → diff=0 → all mask=0, RAM Y8 verified via port B
-//   Frame 2 — mixed-motion: pixels crafted for diff=THRESH-1, THRESH, THRESH+1
-//              → verifies threshold boundary (RTL uses strict >)
+//   Frame 1 — same pixels, EMA-updated y_prev → golden mask check, RAM EMA verify
+//   Frame 2 — mixed-motion: pixels crafted for threshold boundary vs EMA y_prev
 //   Frame 3 — same mixed-motion under consumer stall → verifies stall correctness
-//   Frame 4 — identical to frame 3 → verify RAM updated from frame 3 pixels
+//   Frame 4 — identical to frame 3 → verify RAM updated from frame 3 EMA values
+//
+// EMA background model: y_prev = y_prev + ((y_cur - y_prev) >>> ALPHA_SHIFT)
 //
 // Conventions: drv_* intermediaries, posedge register, $display/$fatal.
 
@@ -14,11 +15,12 @@
 
 module tb_axis_motion_detect;
 
-    localparam int H      = 4;
-    localparam int V      = 2;
-    localparam int THRESH = 16;
-    localparam int NUM_PIX = H * V;
-    localparam int CLK_PERIOD = 10;
+    localparam int H           = 4;
+    localparam int V           = 2;
+    localparam int THRESH      = 16;
+    localparam int ALPHA_SHIFT = 3;
+    localparam int NUM_PIX     = H * V;
+    localparam int CLK_PERIOD  = 10;
 
     // ---- Clock / reset ----
     logic clk = 0;
@@ -109,11 +111,12 @@ module tb_axis_motion_detect;
 
     // ---- DUT ----
     axis_motion_detect #(
-        .H_ACTIVE (H),
-        .V_ACTIVE (V),
-        .THRESH   (THRESH),
-        .RGN_BASE (0),
-        .RGN_SIZE (NUM_PIX)
+        .H_ACTIVE    (H),
+        .V_ACTIVE    (V),
+        .THRESH      (THRESH),
+        .ALPHA_SHIFT (ALPHA_SHIFT),
+        .RGN_BASE    (0),
+        .RGN_SIZE    (NUM_PIX)
     ) u_dut (
         .clk_i               (clk),
         .rst_n_i             (rst_n),
@@ -228,31 +231,59 @@ module tb_axis_motion_detect;
         $display("%s: mask golden check done", label);
     endtask
 
-    // Read RAM via port B and compare against expected Y8 array.
-    task automatic check_ram_y8(input logic [23:0] pixels [NUM_PIX], input string label);
+    // Read RAM via port B and compare against expected EMA y_prev array.
+    // Must be called AFTER update_y_prev so y_prev holds the expected EMA values.
+    task automatic check_ram_ema(input string label);
         integer i;
-        logic [7:0] exp_y, got_y;
+        logic [7:0] got_y;
         // RAM is registered — need 2 cycles after address to get data
         for (i = 0; i < NUM_PIX; i = i + 1) begin
             b_rd_addr = (ADDR_W)'(i);
             @(posedge clk);
             @(posedge clk);  // wait for registered read
-            exp_y = y_of(pixels[i]);
             got_y = b_rd_data;
-            if (got_y !== exp_y) begin
-                $display("FAIL %s RAM[%0d]: got %0d exp %0d", label, i, got_y, exp_y);
+            if (got_y !== y_prev[i]) begin
+                $display("FAIL %s RAM[%0d]: got %0d exp %0d", label, i, got_y, y_prev[i]);
                 num_errors = num_errors + 1;
             end
         end
         b_rd_addr = '0;
-        $display("%s: RAM Y8 check done", label);
+        $display("%s: RAM EMA check done", label);
     endtask
 
-    // Update y_prev[] to Y8 of the just-driven pixel array.
+    // Update y_prev[] using EMA: bg_new = bg + ((y_cur - bg) >>> ALPHA_SHIFT)
     task automatic update_y_prev(input logic [23:0] pixels [NUM_PIX]);
         integer i;
-        for (i = 0; i < NUM_PIX; i = i + 1)
-            y_prev[i] = y_of(pixels[i]);
+        logic [7:0] y_c;
+        logic signed [8:0] delta, step;
+        for (i = 0; i < NUM_PIX; i = i + 1) begin
+            y_c   = y_of(pixels[i]);
+            delta = {1'b0, y_c} - {1'b0, y_prev[i]};
+            step  = delta >>> ALPHA_SHIFT;
+            y_prev[i] = y_prev[i] + step[7:0];
+        end
+    endtask
+
+    // Build mixed_pixels relative to current y_prev (EMA state).
+    // Pixels are crafted so y_of(mixed_pixels[i]) = y_prev[i] + delta.
+    // Deltas cycle: THRESH-1, THRESH, THRESH+1, 0.
+    task automatic build_mixed_pixels;
+        integer i;
+        logic [7:0] yp;
+        integer delta, target_y;
+        for (i = 0; i < NUM_PIX; i = i + 1) begin
+            yp = y_prev[i];
+            case (i % 4)
+                0:       delta = THRESH - 1;  // expect mask=0
+                1:       delta = THRESH;       // expect mask=0 (strict >)
+                2:       delta = THRESH + 1;   // expect mask=1
+                default: delta = 0;            // expect mask=0
+            endcase
+            target_y = yp + delta;
+            if (target_y > 255) target_y = 255;
+            // Gray pixel R=G=B=v gives Y=v (since (77+150+29)*v >> 8 = v)
+            mixed_pixels[i] = {8'(target_y), 8'(target_y), 8'(target_y)};
+        end
     endtask
 
     // ---- Concurrent capture ----
@@ -294,35 +325,7 @@ module tb_axis_motion_detect;
         for (j = 0; j < NUM_PIX; j = j + 1)
             y_prev[j] = 8'h00;
 
-        // Build mixed_pixels:
-        // We want some pixels with diff=THRESH-1, diff=THRESH, diff=THRESH+1
-        // relative to frame_pixels' Y8 values when used as y_prev.
-        // After frame 1 (same as frame_pixels), y_prev = y_of(frame_pixels[i]).
-        // mixed_pixels[i] is chosen so that:
-        //   y_of(mixed_pixels[i]) = y_prev[i] + delta, clamped to [0,255].
-        // We pick deltas: THRESH-1, THRESH, THRESH+1, cycling.
-        begin
-            logic [7:0] yp;
-            integer delta;
-            for (j = 0; j < NUM_PIX; j = j + 1) begin
-                yp = y_of(frame_pixels[j]);
-                case (j % 4)
-                    0:       delta = THRESH - 1;  // expect mask=0
-                    1:       delta = THRESH;       // expect mask=0 (strict >)
-                    2:       delta = THRESH + 1;   // expect mask=1
-                    default: delta = 0;            // expect mask=0
-                endcase
-                // Construct a gray pixel with the desired Y value.
-                // For gray (R=G=B=v): Y = (77+150+29)*v >> 8 = 256*v >> 8 = v
-                // So we can directly set R=G=B = clamp(yp + delta, 0, 255).
-                begin
-                    integer target_y;
-                    target_y = yp + delta;
-                    if (target_y > 255) target_y = 255;
-                    mixed_pixels[j] = {8'(target_y), 8'(target_y), 8'(target_y)};
-                end
-            end
-        end
+        // mixed_pixels are built dynamically after frame 1 (see build_mixed below)
 
         // ---- Reset ----
         rst_n = 0;
@@ -346,9 +349,9 @@ module tb_axis_motion_detect;
         update_y_prev(frame_pixels);
 
         // ================================================================
-        // Frame 1: same pixels → diff=0 → all mask=0; check RAM Y8
+        // Frame 1: same pixels, EMA y_prev from frame 0 → golden mask; RAM EMA check
         // ================================================================
-        $display("=== Frame 1 (identical pixels, diff=0, RAM Y8 check) ===");
+        $display("=== Frame 1 (same pixels, EMA y_prev, RAM EMA check) ===");
         reset_capture();
         fork
             drive_frame(frame_pixels);
@@ -357,14 +360,16 @@ module tb_axis_motion_detect;
         repeat (5) @(posedge clk);
         check_vid_passthrough(frame_pixels, "frame1");
         check_mask_golden(y_prev, frame_pixels, "frame1");
+        update_y_prev(frame_pixels);
         // Wait a few extra cycles for last RAM write-back to settle
         repeat (5) @(posedge clk);
-        check_ram_y8(frame_pixels, "frame1");
-        update_y_prev(frame_pixels);
+        check_ram_ema("frame1");
+
+        // Build mixed_pixels now that y_prev reflects EMA state after frame 1
+        build_mixed_pixels();
 
         // ================================================================
-        // Frame 2: mixed-motion — threshold boundary
-        // y_prev = y_of(frame_pixels[i]), mixed_pixels crafted per delta
+        // Frame 2: mixed-motion — threshold boundary vs EMA y_prev
         // ================================================================
         $display("=== Frame 2 (mixed-motion, threshold boundary) ===");
         reset_capture();
@@ -391,10 +396,10 @@ module tb_axis_motion_detect;
         repeat (5) @(posedge clk);
         check_vid_passthrough(mixed_pixels, "frame3");
         check_mask_golden(y_prev, mixed_pixels, "frame3");
-        // RAM should now hold Y8 of mixed_pixels (frame 3 wrote same as frame 2)
-        repeat (5) @(posedge clk);
-        check_ram_y8(mixed_pixels, "frame3");
         update_y_prev(mixed_pixels);
+        // RAM should now hold EMA-updated values from frame 3
+        repeat (5) @(posedge clk);
+        check_ram_ema("frame3");
 
         // ================================================================
         // Summary

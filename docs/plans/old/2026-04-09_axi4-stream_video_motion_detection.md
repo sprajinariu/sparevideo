@@ -22,7 +22,7 @@ End-user outcome: running `make run-pipeline SOURCE=<some_video>.mp4` produces a
 - AXI-Lite control path. `THRESH` is a Verilog parameter, not a runtime register.
 - Same-frame bounding-box overlay — overlay uses the *previously latched* bbox, adding exactly one frame of overlay latency.
 - Multi-object tracking, morphological ops (erode/dilate), background-model motion detection.
-- **Double-buffered** RGB frame RAM (diverges from [plans/architecture.md](plans/architecture.md) lines 41–43 intentionally — we only need the previous Y frame, not a full RGB double-buffer). The Y8 RAM is dual-port but single-buffered — prev-frame storage only, no A/B swap.
+- **Double-buffered** RGB frame RAM (diverges from [architecture.md](../architecture.md) lines 41–43 intentionally — we only need the previous Y frame, not a full RGB double-buffer). The Y8 RAM is dual-port but single-buffered — prev-frame storage only, no A/B swap.
 - **Arbitration of a shared single-port RAM** across clients. `ram` exposes two physically independent ports (A for motion detect, B for sporadic host access); each client owns its port end-to-end, so no arbitration logic is needed.
 - Independent input vs output pixel clocks — both still share `clk_pix`.
 - Pixel-format changes at the DUT boundary. `s_axis_tdata` / `m_axis_tdata` stay 24-bit RGB888.
@@ -368,7 +368,7 @@ The evaluation above assumes:
 
 - `clk_dsp >= clk_pix` with enough margin that port A utilization stays below 50%. If a future change runs the pipeline at `clk_pix` speed or uses a higher-rate source (e.g., line-rate upscaling), re-run the bandwidth math.
 - The host client doesn't issue sustained-rate writes. "Sporadic" is load-bearing — a sustained-rate host client competing for the same port would need arbitration or a second RAM instance, neither of which is in scope.
-- The pipeline stays single-buffered. Moving to double-buffered (OPTION 2 in [plans/architecture.md](plans/architecture.md)) would replace this RAM with two instances and a swap mechanism, invalidating the port layout here.
+- The pipeline stays single-buffered. Moving to double-buffered (OPTION 2 in [architecture.md](../architecture.md)) would replace this RAM with two instances and a swap mechanism, invalidating the port layout here.
 
 ## `sparevideo_top.sv` Changes
 

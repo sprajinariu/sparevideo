@@ -14,14 +14,15 @@ DPI_SRC  = ../sv/tb_utils.c
 VOBJ_DIR = obj_dir
 
 # Simulation defaults
-SIMULATOR ?= verilator
-WIDTH     ?= 320
-HEIGHT    ?= 240
-FRAMES    ?= 4
-MODE      ?= text
-CTRL_FLOW ?= motion
-INFILE    ?= ../data/input.txt
-OUTFILE   ?= ../data/output.txt
+SIMULATOR   ?= verilator
+WIDTH       ?= 320
+HEIGHT      ?= 240
+FRAMES      ?= 4
+MODE        ?= text
+CTRL_FLOW   ?= motion
+ALPHA_SHIFT ?= 3
+INFILE      ?= ../data/input.txt
+OUTFILE     ?= ../data/output.txt
 
 SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
            +WIDTH=$(WIDTH) +HEIGHT=$(HEIGHT) \
@@ -66,7 +67,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
-            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -80,7 +81,7 @@ VLT_FLAGS = --binary -sv --timing \
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo

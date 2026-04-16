@@ -18,8 +18,9 @@
 `timescale 1ns / 1ps
 
 module tb_sparevideo #(
-    parameter int H_ACTIVE = 320,
-    parameter int V_ACTIVE = 240
+    parameter int H_ACTIVE    = 320,
+    parameter int V_ACTIVE    = 240,
+    parameter int ALPHA_SHIFT = 3
 );
 
 `ifdef VERILATOR
@@ -53,7 +54,7 @@ module tb_sparevideo #(
     string  cfg_mode    = "text";
 
     // Control flow (driven by plusarg, quasi-static)
-    logic ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
+    logic [1:0] ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
 
     // ---------------------------------------------------------------
     // Clocks, resets, DUT signals
@@ -103,7 +104,8 @@ module tb_sparevideo #(
         .V_ACTIVE      (V_ACTIVE),
         .V_FRONT_PORCH (V_FRONT_PORCH),
         .V_SYNC_PULSE  (V_SYNC_PULSE),
-        .V_BACK_PORCH  (V_BACK_PORCH)
+        .V_BACK_PORCH  (V_BACK_PORCH),
+        .ALPHA_SHIFT   (ALPHA_SHIFT)
     ) u_dut (
         .clk_pix_i       (clk_pix),
         .clk_dsp_i       (clk_dsp),
@@ -172,6 +174,8 @@ module tb_sparevideo #(
                     ctrl_flow = sparevideo_pkg::CTRL_PASSTHROUGH;
                 else if (ctrl_flow_str == "motion")
                     ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
+                else if (ctrl_flow_str == "mask")
+                    ctrl_flow = sparevideo_pkg::CTRL_MASK_DISPLAY;
                 else
                     $warning("Unknown CTRL_FLOW '%s', using default (motion)", ctrl_flow_str);
             end
@@ -187,7 +191,10 @@ module tb_sparevideo #(
 
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
-        $display("  ctrl_flow: %s", ctrl_flow ? "motion" : "passthrough");
+        $display("  ctrl_flow: %s",
+            (ctrl_flow == sparevideo_pkg::CTRL_PASSTHROUGH)   ? "passthrough" :
+            (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion" :
+            (ctrl_flow == sparevideo_pkg::CTRL_MASK_DISPLAY)  ? "mask" : "unknown");
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 
@@ -387,9 +394,13 @@ module tb_sparevideo #(
             end
         end
 
-        if (error_count == 0) $display("PASS");
-        else                  $display("FAIL: %0d errors", error_count);
-        $finish;
+        if (error_count == 0) begin
+            $display("PASS");
+            $finish;
+        end else begin
+            $display("FAIL: %0d errors", error_count);
+            $fatal(1, "Simulation failed with %0d errors", error_count);
+        end
     end
 
     // ---------------------------------------------------------------
@@ -405,10 +416,15 @@ module tb_sparevideo #(
     integer rtl_capturing = 0;
 
     // The vga_controller latches RGB at posedge K+1 from pixel_data
-    // sampled at posedge K when active_K was true. So vga_r is one
-    // cycle behind `pixel_ready`. We delay our capture qualifier by
-    // one clock so it lines up with the registered RGB.
-    wire dut_active = u_dut.u_vga.pixel_ready_o & u_dut.vga_started;
+    // sampled at posedge K when (active && pixel_valid) was true.
+    // So vga_r is one cycle behind the handshake. We delay the
+    // capture qualifier by one clock so it lines up with the
+    // registered RGB. Both ready AND valid must be true — ready alone
+    // would capture cycles where the VGA is in the active region but
+    // the FIFO hasn't delivered a pixel yet.
+    wire dut_active = u_dut.u_vga.pixel_ready_o
+                    & u_dut.pix_out_tvalid
+                    & u_dut.vga_started;
     logic dut_active_d;
     always_ff @(posedge clk_pix) begin
         if (!rst_pix_n) dut_active_d <= 1'b0;

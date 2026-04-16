@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 
 from models import run_model
-from models.motion import _rgb_to_y, _compute_mask, _compute_bbox, BBOX_COLOR
+from models.motion import _rgb_to_y, _compute_mask, _compute_bbox, _ema_update, BBOX_COLOR
 from frames.video_source import load_frames
 
 
@@ -120,31 +120,36 @@ def test_bbox_region():
 # ---- End-to-end motion model tests ----
 
 def test_motion_static_scene():
-    """Static scene: after priming, output equals input (no bbox overlay)."""
-    frames = _static_frames(width=32, height=16, num_frames=6)
+    """Static scene: after EMA convergence, output equals input (no bbox overlay)."""
+    # With EMA (alpha_shift=3), bg starts at 0 and converges slowly to the
+    # static pixel luma. Use enough frames for convergence, then check the
+    # later frames are pure passthrough (no overlay).
+    frames = _static_frames(width=32, height=16, num_frames=60)
     out = run_model("motion", frames)
 
     # Frame 0: no prior bbox -> passthrough
     np.testing.assert_array_equal(out[0], frames[0])
 
-    # Frames 1+: no motion detected (same frames), output should be passthrough
-    # (bbox_empty=True for all frames since static scene)
-    for i in range(1, len(frames)):
-        np.testing.assert_array_equal(out[i], frames[i])
+    # After sufficient convergence (~50 frames with alpha_shift=3),
+    # the EMA background matches the static pixel value and no motion
+    # is detected. Check the last 5 frames are passthrough.
+    for i in range(55, 60):
+        np.testing.assert_array_equal(out[i], frames[i],
+                                      err_msg=f"Frame {i} should be passthrough after EMA convergence")
 
 
 def test_motion_color_bars_static():
-    """Color bars (static): output equals input after priming."""
-    frames = load_frames("synthetic:color_bars", width=64, height=32, num_frames=6)
+    """Color bars (static): output equals input after EMA convergence."""
+    frames = load_frames("synthetic:color_bars", width=64, height=32, num_frames=60)
     out = run_model("motion", frames)
 
     # Frame 0: passthrough (no prior bbox)
     np.testing.assert_array_equal(out[0], frames[0])
 
-    # All frames: since color bars are static, mask is zero after priming,
-    # and bbox is empty -> no overlay
-    for i in range(1, len(frames)):
-        np.testing.assert_array_equal(out[i], frames[i])
+    # After EMA convergence, static color bars produce no motion -> no overlay
+    for i in range(55, 60):
+        np.testing.assert_array_equal(out[i], frames[i],
+                                      err_msg=f"Frame {i} should be passthrough after EMA convergence")
 
 
 def test_motion_moving_box_has_overlay():
@@ -208,6 +213,79 @@ def test_motion_empty_frames():
     assert run_model("motion", []) == []
 
 
+# ---- Mask display model tests ----
+
+def test_mask_static_scene_converged():
+    """Static scene: after EMA convergence, identical frames produce all-black output."""
+    frames = _static_frames(width=16, height=8, num_frames=60)
+    out = run_model("mask", frames)
+    assert len(out) == len(frames)
+    # With EMA (alpha_shift=3), bg converges slowly from 0 to the static luma.
+    # After enough frames, diff drops below threshold → all-black mask.
+    for i in range(55, 60):
+        assert not out[i].any(), f"Frame {i} should be all-black after EMA convergence"
+
+
+def test_mask_frame0_mostly_white():
+    """Frame 0: Y_ref is zero-initialized, so non-black input → mostly white."""
+    frame = np.full((8, 16, 3), 128, dtype=np.uint8)
+    out = run_model("mask", [frame])
+    # Luma of (128,128,128) = (77*128 + 150*128 + 29*128)>>8 = 32768>>8 = 128
+    # |128 - 0| = 128 > 16 → motion everywhere
+    assert np.all(out[0] == 255), "Frame 0 should be all-white (everything is motion vs zero ref)"
+
+
+def test_mask_output_strictly_bw():
+    """Every pixel in mask output must be exactly black or white."""
+    frames = load_frames("synthetic:moving_box", width=32, height=24, num_frames=4)
+    out = run_model("mask", frames)
+    for i, f in enumerate(out):
+        is_black = np.all(f == 0, axis=-1)
+        is_white = np.all(f == 255, axis=-1)
+        assert np.all(is_black | is_white), f"Frame {i} has non-B/W pixels"
+
+
+def test_mask_moving_box_has_motion():
+    """Moving box: frames after frame 0 should have white pixels in motion region."""
+    frames = load_frames("synthetic:moving_box", width=64, height=48, num_frames=4)
+    out = run_model("mask", frames)
+    # Frame 1+: motion where the box moved
+    for i in range(1, len(frames)):
+        white_pixels = np.all(out[i] == 255, axis=-1)
+        assert white_pixels.any(), f"Frame {i} should have white (motion) pixels"
+
+
+def test_mask_threshold_boundary():
+    """Mask model respects strict > threshold."""
+    thresh = 16
+    # Frame with uniform luma = thresh (just at boundary → no motion)
+    # Y = (77*R + 150*G + 29*B) >> 8.  For R=thresh, G=0, B=0: Y = (77*16)>>8 = 1232>>8 = 4
+    # Instead, craft frames where the luma diff is exactly thresh vs thresh+1.
+    h, w = 4, 4
+    # Frame 0: all black → Y_ref becomes 0 after frame 0
+    f0 = np.zeros((h, w, 3), dtype=np.uint8)
+    # Frame 1: uniform color giving Y = thresh (should be NO motion since !(thresh > thresh))
+    # Y = (77*R)>>8 = thresh → R = thresh*256/77 ≈ 53.2 → R=53 gives Y=(77*53)>>8=4081>>8=15
+    # R=54 gives Y=(77*54)>>8=4158>>8=16=thresh. So R=54,G=0,B=0 → Y=16.
+    f1_at = np.zeros((h, w, 3), dtype=np.uint8)
+    f1_at[:, :, 0] = 54  # Y = 16 = thresh
+    # Frame 2 (after f1): Y_ref=16. Need luma diff > thresh.
+    # Use a frame that gives Y=16+17=33. R s.t. (77*R)>>8=33 → R=33*256/77≈109.7 → R=110 gives (77*110)>>8=8470>>8=33.
+    f2_above = np.zeros((h, w, 3), dtype=np.uint8)
+    f2_above[:, :, 0] = 110  # Y = 33, diff = |33-16| = 17 > 16
+
+    out = run_model("mask", [f0, f1_at, f2_above], thresh=thresh)
+    # Frame 1: |16 - 0| = 16 = thresh → NOT > thresh → black
+    assert not out[1].any(), "Diff == thresh should NOT trigger motion"
+    # Frame 2: |33 - 16| = 17 > thresh → white
+    assert np.all(out[2] == 255), "Diff > thresh should trigger motion"
+
+
+def test_mask_empty_frames():
+    """Empty frame list returns empty."""
+    assert run_model("mask", []) == []
+
+
 def test_unknown_ctrl_flow():
     """Unknown control flow raises ValueError."""
     try:
@@ -215,6 +293,98 @@ def test_unknown_ctrl_flow():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
+
+
+# ---- EMA background model tests ----
+
+def test_ema_update_basic():
+    """EMA update matches RTL arithmetic: bg + (y_cur - bg) >> alpha_shift."""
+    bg = np.array([[100]], dtype=np.uint8)
+    y_cur = np.array([[200]], dtype=np.uint8)
+    # delta = 200 - 100 = 100, step = 100 >> 3 = 12, new_bg = 100 + 12 = 112
+    result = _ema_update(y_cur, bg, alpha_shift=3)
+    assert result[0, 0] == 112
+
+    # Negative delta: y_cur < bg
+    bg2 = np.array([[200]], dtype=np.uint8)
+    y_cur2 = np.array([[100]], dtype=np.uint8)
+    # delta = 100 - 200 = -100, step = -100 >> 3 = -13 (arithmetic shift)
+    # new_bg = 200 + (-13) = 187
+    result2 = _ema_update(y_cur2, bg2, alpha_shift=3)
+    assert result2[0, 0] == 187
+
+
+def test_ema_update_alpha_shift_zero():
+    """alpha_shift=0 reduces to raw write-back (bg_new = y_cur)."""
+    bg = np.array([[50]], dtype=np.uint8)
+    y_cur = np.array([[200]], dtype=np.uint8)
+    result = _ema_update(y_cur, bg, alpha_shift=0)
+    assert result[0, 0] == 200
+
+
+def test_ema_convergence_static():
+    """EMA background converges toward static pixel value."""
+    h, w = 1, 1
+    y_cur = np.array([[82]], dtype=np.uint8)
+    bg = np.zeros((h, w), dtype=np.uint8)
+
+    # Run 60 iterations of EMA update with same y_cur
+    for _ in range(60):
+        bg = _ema_update(y_cur, bg, alpha_shift=3)
+
+    # After many frames, bg should be close to y_cur.
+    # Arithmetic right-shift truncation introduces a small negative bias,
+    # so bg may settle a few levels below y_cur.
+    assert abs(int(bg[0, 0]) - 82) <= 8, f"bg={bg[0, 0]}, expected ~82 (within EMA rounding bias)"
+
+
+def test_ema_step_change_motion_then_absorbed():
+    """After a step change, motion is detected then absorbed as bg converges."""
+    h, w = 4, 4
+    # Static scene at luma ~39 (R=100, G=0, B=0 → Y = (77*100)>>8 = 30)
+    static_frame = np.zeros((h, w, 3), dtype=np.uint8)
+    static_frame[:, :, 0] = 100  # R=100 → Y=30
+
+    # Let bg converge to static value first (50 frames)
+    frames = [static_frame.copy() for _ in range(50)]
+
+    # Then change to a bright frame
+    bright_frame = np.full((h, w, 3), 200, dtype=np.uint8)  # Y ≈ 200
+    frames.extend([bright_frame.copy() for _ in range(30)])
+
+    out = run_model("mask", frames, alpha_shift=3)
+
+    # After bg converges to static (~frame 45-49), mask should be black
+    assert not out[49].any(), "Frame 49 should be all-black (bg converged to static)"
+
+    # Frame 50 (step change): large diff → motion (white pixels)
+    assert out[50].any(), "Frame 50 should detect motion after step change"
+
+    # After many more frames, bg converges to bright value → no motion
+    assert not out[79].any(), "Frame 79 should be all-black (bg converged to bright)"
+
+
+def test_mask_noisy_moving_box():
+    """noisy_moving_box synthetic source produces valid mask output."""
+    frames = load_frames("synthetic:noisy_moving_box", width=32, height=24, num_frames=10)
+    out = run_model("mask", frames, alpha_shift=3)
+    assert len(out) == 10
+    # All output should be strictly B/W
+    for i, f in enumerate(out):
+        is_black = np.all(f == 0, axis=-1)
+        is_white = np.all(f == 255, axis=-1)
+        assert np.all(is_black | is_white), f"Frame {i} has non-B/W pixels"
+
+
+def test_mask_lighting_ramp():
+    """lighting_ramp synthetic source produces valid mask output."""
+    frames = load_frames("synthetic:lighting_ramp", width=32, height=24, num_frames=10)
+    out = run_model("mask", frames, alpha_shift=3)
+    assert len(out) == 10
+    for i, f in enumerate(out):
+        is_black = np.all(f == 0, axis=-1)
+        is_white = np.all(f == 255, axis=-1)
+        assert np.all(is_black | is_white), f"Frame {i} has non-B/W pixels"
 
 
 # ---- Run all tests ----

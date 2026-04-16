@@ -1,7 +1,8 @@
 // AXI4-Stream motion detector.
 //
 // Computes a 1-bit motion mask by comparing the current frame's luma (Y8)
-// against the previous frame stored in an external shared RAM (port A).
+// against a per-pixel EMA background model stored in an external shared RAM
+// (port A). Writes an EMA-updated background value back to RAM on acceptance.
 // Passes the RGB video stream through unchanged with matched latency.
 //
 // Pipeline timing (1-cycle total latency):
@@ -16,15 +17,16 @@
 // dark-on-bright, and colour scenes). The bbox will be slightly larger than the
 // object by approximately one frame of displacement in each axis.
 //
-// The Y8 frame buffer is external — this module exposes a 1R1W memory port
-// and connects to the shared `ram` port A at the top level.
+// The Y8 background model buffer is external — this module exposes a 1R1W
+// memory port and connects to the shared `ram` port A at the top level.
 
 module axis_motion_detect #(
-    parameter int H_ACTIVE = 320,
-    parameter int V_ACTIVE = 240,
-    parameter int THRESH   = 16,
-    parameter int RGN_BASE = 0,
-    parameter int RGN_SIZE = H_ACTIVE * V_ACTIVE
+    parameter int H_ACTIVE    = 320,
+    parameter int V_ACTIVE    = 240,
+    parameter int THRESH      = 16,
+    parameter int ALPHA_SHIFT = 3,    // EMA alpha = 1 / (1 << ALPHA_SHIFT), default 1/8
+    parameter int RGN_BASE    = 0,
+    parameter int RGN_SIZE    = H_ACTIVE * V_ACTIVE
 ) (
     input  logic        clk_i,
     input  logic        rst_n_i,
@@ -191,7 +193,16 @@ module axis_motion_detect #(
                                                : (mem_rd_data_i - y_cur);
     assign mask_bit = (diff > THRESH[7:0]);
 
-    // ---- Memory write-back: store current Y for next frame ----
+    // ---- EMA background update ----
+    logic signed [8:0] ema_delta;     // y_cur - bg, signed 9-bit
+    logic signed [8:0] ema_step;      // delta >>> ALPHA_SHIFT (arithmetic right-shift)
+    logic        [7:0] ema_update;    // new background value
+
+    assign ema_delta  = {1'b0, y_cur} - {1'b0, mem_rd_data_i};
+    assign ema_step   = ema_delta >>> ALPHA_SHIFT;
+    assign ema_update = mem_rd_data_i + ema_step[7:0];
+
+    // ---- Memory write-back: store EMA-updated background ----
     // Gate on both_ready so the write fires exactly once per pixel,
     // on the cycle the downstream actually consumes it.
     always_ff @(posedge clk_i) begin
@@ -202,7 +213,7 @@ module axis_motion_detect #(
         end else begin
             mem_wr_en_o   <= tvalid_pipe[PIPE_STAGES-1] && both_ready;
             mem_wr_addr_o <= ($bits(mem_wr_addr_o))'(RGN_BASE) + idx_pipe[PIPE_STAGES-1];
-            mem_wr_data_o <= y_cur;
+            mem_wr_data_o <= ema_update;
         end
     end
 

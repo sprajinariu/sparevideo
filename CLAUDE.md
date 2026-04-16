@@ -8,7 +8,7 @@ Do not include `Co-Authored-By` trailers in commit messages.
 
 ## Project Overview
 
-sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough or motion detection with bounding-box overlay), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
+sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with bounding-box overlay, or mask display), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
 
 All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no interfaces/modports, no classes) for Icarus Verilog 12 compatibility.
 
@@ -30,12 +30,16 @@ make run-pipeline SOURCE="synthetic:gradient" MODE=binary SIMULATOR=verilator
 
 # Control flow selection (default: motion)
 make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
-make run-pipeline CTRL_FLOW=motion TOLERANCE=10000    # motion detect + bbox overlay
+make run-pipeline CTRL_FLOW=motion                    # motion detect + bbox overlay
+make run-pipeline CTRL_FLOW=mask                      # raw motion mask, B/W output
 
-# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW to dv/data/config.mk.
+# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/ALPHA_SHIFT to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
 make prepare SOURCE="synthetic:gradient" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
 make sim                     # uses saved options
+
+# EMA background model tuning (ALPHA_SHIFT is a compile-time Verilator parameter)
+make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
 
 # Other targets
 make lint                    # Verilator lint
@@ -64,6 +68,7 @@ make setup                   # One-time setup (install deps)
 - `py/models/` — Control-flow reference models for pixel-accurate verification
 - `py/models/passthrough.py` — Passthrough model (identity)
 - `py/models/motion.py` — Motion pipeline model (luma, mask, bbox, overlay)
+- `py/models/mask.py` — Mask display model (luma, mask, B/W expansion)
 - `py/viz/render.py` — Render input/output frames as comparison image grid
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
 - `py/tests/test_models.py` — Unit tests for control-flow reference models
@@ -86,7 +91,7 @@ The single testbench (`dv/sim/tb_sparevideo.sv`) supports two modes:
 
 **SW dry-run** (`+sw_dry_run`): Bypasses RTL entirely. File loopback at zero sim time — reads input, writes output directly. Useful for testing the Python harness flow without waiting for RTL sim.
 
-Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion`, `+sw_dry_run`, `+DUMP_VCD`.
+Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion|mask`, `+sw_dry_run`, `+DUMP_VCD`.
 
 TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 
@@ -100,7 +105,7 @@ TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
 - Text mode (`.txt`) uses space-separated 6-digit hex pixels (RRGGBB), one row per line. No headers.
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
-- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box, moving_box_h, moving_box_v, moving_box_reverse, dark_moving_box, two_boxes).
+- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box, moving_box_h, moving_box_v, moving_box_reverse, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp).
 
 ## Skills
 
@@ -119,7 +124,7 @@ Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant 
 - Keep makefiles up-to-date
 - Keep requirements.txt up-to-date
 - Clean up large files (e.g. VCDs, simulation outputs, binaries), don't upload them to git
-- After implementing a plan, move it to plans/old/ and put a date timestamp on it to have a history on what has been implemented.
+- After implementing a plan, move it to docs/plans/old/ and put a date timestamp on it to have a history on what has been implemented.
 
 ## General guidelines
 
@@ -180,6 +185,20 @@ The SVAs `assert_fifo_in_not_full` and `assert_fifo_out_not_full` (in `sparevide
 ### axis_async_fifo depth signals
 
 `s_status_depth` (write-clock domain) and `m_status_depth` (read-clock domain) do NOT include the internal output-pipeline FIFO (~16 entries with default `RAM_PIPELINE=2`). The reported depth can therefore be 0 while up to 16 entries are in-flight on the read side. Keep this in mind when using depth for flow-control thresholds.
+
+### Motion pipeline — lessons learned
+
+These apply to any future motion pipeline block (Gaussian, morphology, CCL, adaptive threshold).
+
+**No first-frame priming.** Writing raw `y_cur` to RAM on frame 0 causes departure ghosts: foreground objects in frame 0 get committed to the background, and when they move, the ghost persists for `~1/alpha` frames. The EMA starts from zero and converges naturally. The bbox is already suppressed for the first 2 frames, so the convergence cost is acceptable.
+
+**Compile-time RTL parameters must propagate through the full Makefile chain.** Any new `-G` parameter (e.g., KERNEL_SIZE, MAX_LABELS) needs: top Makefile `?=` default → SIM_VARS → dv/sim/Makefile `?=` default → VLT_FLAGS `-G` → tb_sparevideo.sv parameter → DUT. The config stamp in dv/sim/Makefile must include it so parameter changes trigger recompilation.
+
+**Synthetic test patterns must exercise the feature meaningfully.** Rule of thumb for noise patterns: `2 × noise_amplitude > THRESH` for EMA to demonstrate value over raw differencing. The `noisy_moving_box` pattern uses `noise_amplitude=10` vs `THRESH=16`.
+
+**Departure ghosts are inherent to EMA.** When an object moves, pixels at its old position show as motion until the background converges back (~`1/alpha` frames). This is the trade-off for noise suppression, not a bug.
+
+**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 3 control flows (passthrough, motion, mask) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple sources at TOLERANCE=0.
 
 ### Python environment
 
