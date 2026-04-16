@@ -31,7 +31,17 @@ No `tvalid`/`tready` — the module has no flow control; it always produces an o
 
 ---
 
-## 4. Datapath Description
+## 4. Concept Description
+
+Color space conversion from RGB to YCrCb separates a pixel's brightness (luma, Y) from its color information (chrominance, Cb and Cr). This separation is fundamental to video processing because many algorithms — motion detection, edge detection, compression — operate primarily on brightness and benefit from ignoring chrominance.
+
+The ITU-R BT.601 standard defines the conversion as a weighted linear combination of R, G, and B channels. The luma weights (0.299R + 0.587G + 0.114B) reflect human visual sensitivity: green contributes most to perceived brightness, then red, then blue. The chrominance components Cb and Cr represent the blue-difference and red-difference signals respectively, centered at 128 for unsigned representation.
+
+In this design, the Rec.601 floating-point coefficients are approximated as 8-bit integers (77, 150, 29 for Y) and the multiply-accumulate is performed in 17-bit unsigned arithmetic. A constant offset of 32768 (= 128 << 8) is added to Cb and Cr before the divide-by-256, ensuring all intermediate values remain non-negative and eliminating the need for signed arithmetic or saturation logic.
+
+---
+
+## 5. Internal Architecture
 
 ### Coefficient equations
 
@@ -55,6 +65,10 @@ The `+32768` offset for Cb/Cr keeps intermediate sums non-negative for all valid
 - `cb_o <= cb_sum_c[15:8]`
 - `cr_o <= cr_sum_c[15:8]`
 
+### Resource cost
+
+The module uses 9 constant-coefficient multiplications (3 channels × 3 outputs). A synthesis tool typically infers these as DSP block primitives or optimized LUT-based multipliers. No RAM is consumed. The single pipeline register stage adds 24 flip-flops (3 × 8-bit outputs).
+
 ### Verified corner cases
 
 | RGB | Y | Cb | Cr |
@@ -70,13 +84,13 @@ Unit testbench (`hw/ip/rgb2ycrcb/tb/tb_rgb2ycrcb.sv`) checks all 6 cases with ±
 
 ---
 
-## 5. Control Logic
+## 6. Control Logic and State Machines
 
 No control logic or FSM. Outputs are updated every cycle unconditionally (when `rst_n_i=1`).
 
 ---
 
-## 6. Timing
+## 7. Timing
 
 | Event | Latency |
 |-------|---------|
@@ -85,15 +99,22 @@ No control logic or FSM. Outputs are updated every cycle unconditionally (when `
 
 ---
 
-## 7. Shared Types
+## 8. Shared Types
 
 None from `sparevideo_pkg`.
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
 - **Rec.601 approximation**: coefficients are hand-tuned 8-bit approximations, not exact Rec.601. Maximum error vs. full-precision Rec.601 is ±1 LSB on Y, ±2 LSB on Cb/Cr.
 - **Full-swing only**: no studio-swing (16–235 range) support. All 256 input/output codes are used.
 - **`Cb`/`Cr` currently unused**: only `y_o` is consumed by `axis_motion_detect`. The other outputs are available for future pipeline stages.
 - **No vendor primitives**: multipliers map to generic logic. A synthesis tool may infer DSP blocks; no pragmas are applied.
+
+---
+
+## 10. References
+
+- [ITU-R BT.601 — Studio encoding parameters of digital television](https://www.itu.int/rec/R-REC-BT.601/)
+- [RGB to YCbCr color conversion — Wikipedia](https://en.wikipedia.org/wiki/YCbCr#ITU-R_BT.601_conversion)

@@ -48,21 +48,25 @@ pixel address counter, manages the RGB→Y stall mux, and wires the memory ports
 |--------|-----------|-------|-------------|
 | `clk_i` | input | 1 | DSP clock (`clk_dsp`) |
 | `rst_n_i` | input | 1 | Active-low synchronous reset |
+| **AXI4-Stream input (RGB888)** | | | |
 | `s_axis_tdata_i` | input | 24 | RGB888 pixel input |
 | `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
 | `s_axis_tready_o` | output | 1 | AXI4-Stream ready (= `NOT tvalid_pipe OR both_done`) |
 | `s_axis_tlast_i` | input | 1 | End-of-line |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame |
+| **AXI4-Stream output — video passthrough (RGB888)** | | | |
 | `m_axis_vid_tdata_o` | output | 24 | RGB888 video passthrough |
 | `m_axis_vid_tvalid_o` | output | 1 | Video stream valid |
 | `m_axis_vid_tready_i` | input | 1 | Video stream ready |
 | `m_axis_vid_tlast_o` | output | 1 | Video end-of-line |
 | `m_axis_vid_tuser_o` | output | 1 | Video start-of-frame |
+| **AXI4-Stream output — mask (1 bit)** | | | |
 | `m_axis_msk_tdata_o` | output | 1 | Motion mask bit |
 | `m_axis_msk_tvalid_o` | output | 1 | Mask stream valid |
 | `m_axis_msk_tready_i` | input | 1 | Mask stream ready |
 | `m_axis_msk_tlast_o` | output | 1 | Mask end-of-line |
 | `m_axis_msk_tuser_o` | output | 1 | Mask start-of-frame |
+| **Memory port (to shared RAM port A)** | | | |
 | `mem_rd_addr_o` | output | `$clog2(RGN_BASE+RGN_SIZE)` | RAM read address |
 | `mem_rd_data_i` | input | 8 | RAM read data (valid 1 cycle after address) |
 | `mem_wr_addr_o` | output | `$clog2(RGN_BASE+RGN_SIZE)` | RAM write address |
@@ -71,9 +75,35 @@ pixel address counter, manages the RGB→Y stall mux, and wires the memory ports
 
 ---
 
-## 4. Datapath Description
+## 4. Concept Description
 
-### Algorithm (per accepted pixel)
+Background subtraction is a fundamental technique in video surveillance and motion detection. It maintains a model of the static background scene and detects motion by comparing each incoming pixel against this model. Pixels that differ significantly from the background are classified as foreground (motion).
+
+The simplest background model stores the previous frame's raw pixel values. However, raw frame differencing is sensitive to sensor noise — random ±2–5 luma jitter between consecutive frames on a static scene triggers false positives when the threshold is set low enough to detect real motion.
+
+This module uses an Exponential Moving Average (EMA) as the background model. The EMA updates the background estimate with a weighted blend of the old estimate and the new observation:
+
+```
+bg[n] = bg[n-1] + α · (y[n] - bg[n-1])
+      = (1 - α) · bg[n-1] + α · y[n]
+```
+
+where `α = 1 / (1 << ALPHA_SHIFT)` is the adaptation rate. The EMA acts as a first-order IIR low-pass filter with time constant `τ ≈ 1/α` frames. This provides two key benefits over raw frame differencing:
+
+1. **Noise suppression**: sensor noise is averaged out over `1/α` frames, keeping `|y[n] - bg[n]|` well below the detection threshold for static pixels.
+2. **Gradual lighting adaptation**: slow brightness changes (clouds, time of day) are tracked by the EMA, preventing full-frame false positives from illumination drift.
+
+The motion threshold comparison uses absolute difference (`|y_cur - bg| > THRESH`), making it **polarity-agnostic**: both arrival pixels (where a moving object now is) and departure pixels (where it was) are flagged as motion. This ensures correct detection regardless of the brightness relationship between object and background (bright-on-dark, dark-on-bright, or colour scenes). The trade-off is that the downstream bounding box encompasses both old and new object positions, making it slightly larger than the object by approximately one frame of displacement.
+
+In hardware, the EMA multiplication by `α = 1/(1 << ALPHA_SHIFT)` is implemented as an arithmetic right-shift, requiring no multiplier. When `ALPHA_SHIFT = 0`, the EMA degenerates to raw frame write-back (`bg_new = y_cur`).
+
+**Why not raw-frame priming?** Writing raw `y_cur` to RAM on frame 0 was evaluated but rejected. While it fills the background model instantly, any foreground object present in frame 0 gets its luma committed to the background. When the object moves, the departure ghost persists for `~1/alpha` frames — much worse than the EMA warm-up from zero. With EMA from zero, the background only moves `y_cur >> ALPHA_SHIFT` toward the object per frame, so departure ghosts from the initial convergence clear quickly.
+
+---
+
+## 5. Internal Architecture
+
+### Per-pixel algorithm
 
 ```
 Y_cur  = rgb2ycrcb(R, G, B).y         // 1-cycle pipeline inside rgb2ycrcb
@@ -93,14 +123,6 @@ mem_wr_en_o   = tvalid && tready       // only on actual acceptance
 
 When `ALPHA_SHIFT = 0`, `ema_step = delta` and `ema_update = Y_cur`, so the module reduces to raw previous-frame write-back.
 
-### EMA background model
-
-The RAM stores a temporally smoothed estimate of each pixel's luma rather than the raw value from the last frame. This provides two benefits over raw frame differencing:
-
-1. **Noise suppression:** Sensor noise causes pixel values to jitter ±2-5 luma levels between consecutive frames on a static scene. With EMA (alpha=1/8), the background converges to the mean of the jitter, keeping `|Y_cur - bg|` well below threshold for static pixels.
-
-2. **Gradual lighting adaptation:** Slow brightness changes (clouds, time of day) are tracked by the EMA. The background drifts toward the new lighting level over `~1/alpha` frames, preventing full-frame false positives from sudden illumination transitions.
-
 ### EMA computation signals (`motion_core`)
 
 The threshold comparison and EMA update are encapsulated in `motion_core` (`hw/ip/motion/rtl/`), a pure-combinational module:
@@ -118,12 +140,6 @@ logic        [7:0] ema_update_o = y_bg_i + ema_step[7:0];
 ```
 
 These signals are evaluated after the pipeline register stage where both `y_cur` and `mem_rd_data_i` are valid. The write-back `mem_wr_data_o <= ema_update` stores the EMA-smoothed background value.
-
-### Polarity-agnostic mask
-
-The mask uses a pure frame-difference condition (`diff > THRESH`) with no brightness-polarity filter. Both arrival pixels (where the object now is) and departure pixels (where the object was) are flagged. This makes the mask work correctly for all scene types: bright-on-dark, dark-on-bright, gradients, and colour scenes.
-
-The trade-off is that the bounding box produced by `axis_bbox_reduce` encompasses both old and new object positions, making it slightly larger than the object by approximately one frame of displacement in each axis.
 
 ### Pixel address counter
 
@@ -167,9 +183,13 @@ The `a_accepted` / `b_accepted` registers reset to 0 on the cycle that `beat_don
 - `mem_rd_addr_o` is held via a registered hold address (`pix_addr_hold`).
 - `mem_wr_en_o` is driven by `beat_done_o`, ensuring exactly one write per pixel.
 
+### Resource cost
+
+The module consumes one `rgb2ycrcb` instance (9 multipliers + 24 FFs), the `motion_core` combinational logic (one 8-bit subtractor, one absolute-value, one comparator, one 9-bit arithmetic shift, one 8-bit adder), and the `axis_fork_pipe` pipeline registers (~50 bits of sideband + 2 acceptance FFs). RAM consumption is external (shared `ram` module). The pixel address counter adds `$clog2(H_ACTIVE × V_ACTIVE)` bits of registered state.
+
 ---
 
-## 5. State / Control Logic
+## 6. State / Control Logic
 
 There is no explicit FSM. Fork acceptance tracking and pipeline stall logic live inside `axis_fork_pipe`. `axis_motion_detect` owns the pixel address counter, stall mux, memory address hold, and write-back gating.
 
@@ -185,7 +205,7 @@ There is no explicit FSM. Fork acceptance tracking and pipeline stall logic live
 
 ---
 
-## 6. Timing
+## 7. Timing
 
 | Operation | Latency |
 |-----------|---------|
@@ -198,17 +218,15 @@ Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every
 
 EMA convergence: After a step change in a pixel's value, the background converges toward the new value over approximately `1/alpha = 1 << ALPHA_SHIFT` frames. With the default `ALPHA_SHIFT=3` (alpha=1/8), a pixel that steps from 100 to 200 will have its background reach ~200 after ~16 frames. Motion is detected (mask=1) for the first several frames until `|Y_cur - bg|` drops below `THRESH`. This is the intended behavior — transient objects are detected, then absorbed into the background.
 
-**Why not raw-frame priming?** Writing raw `y_cur` to RAM on frame 0 was evaluated but rejected. While it fills the background model instantly, any foreground object present in frame 0 gets its luma written into the background. When the object moves, the departure ghost persists for `~1/alpha` frames — much worse than the EMA warm-up from zero. With EMA from zero, the background only moves `y_cur >> ALPHA_SHIFT` toward the object per frame, so departure ghosts from the initial convergence clear quickly.
-
 ---
 
-## 7. Shared Types
+## 8. Shared Types
 
 None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_ACTIVE`) match the package values when instantiated from `sparevideo_top`.
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
 - **No spatial smoothing**: a single noisy pixel produces a mask=1 bit. Erode/dilate filtering is deferred.
 - **Fixed THRESH**: compile-time parameter. Runtime control requires promoting to an input port and a `sparevideo_csr` AXI-Lite register.
@@ -217,3 +235,11 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 - **Single-buffered**: no double-buffering. Mid-frame RAM corruption by port B clients accessing the background model region during an active frame will produce incorrect mask bits. See the host-responsibility rule in [ram-arch.md](ram-arch.md).
 - **Bbox oversizing**: the polarity-agnostic mask flags both arrival and departure pixels, so the bbox is slightly larger than the object by approximately the per-frame displacement. This is a deliberate trade-off for scene-type independence.
 - **EMA rounding bias**: the arithmetic right-shift truncates toward negative infinity, introducing a small systematic bias. For typical video luma values this is negligible (sub-LSB after a few frames).
+
+---
+
+## 10. References
+
+- [Background subtraction — Wikipedia](https://en.wikipedia.org/wiki/Background_subtraction)
+- [Exponential moving average — Wikipedia](https://en.wikipedia.org/wiki/Exponential_smoothing)
+- [OpenCV Background Subtraction tutorial](https://docs.opencv.org/4.x/d1/dc5/tutorial_background_subtraction.html)

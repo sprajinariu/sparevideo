@@ -74,6 +74,9 @@ For multi-clock top-level modules, use `clk_pix_i`/`clk_dsp_i` and `rst_pix_n_i`
 
 ## Key Rules
 
+**Style**
+- write decoupled code where possible for reusability and maintainability
+
 **Signals**
 - `logic` only — never `wire` or `reg`
 - All signals declared at the top, grouped in order: constants → structs → state registers → combinational → submodule signals

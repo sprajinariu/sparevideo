@@ -33,7 +33,7 @@ The Gaussian is implemented as a new submodule `axis_gauss3x3` instantiated inte
 
 ## RTL Changes
 
-### New file: `hw/ip/motion/rtl/axis_gauss3x3.sv`
+### New file: `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv`
 
 A standalone combinational+registered module (not a full AXIS stage with its own handshake — it is a synchronous pipeline element controlled by `axis_motion_detect`'s existing handshake logic).
 
@@ -251,13 +251,13 @@ The external interface of `axis_motion_detect` is unchanged. `GAUSS_EN` can opti
 
 ### FuseSoC / core file
 
-Add `hw/ip/motion/rtl/axis_gauss3x3.sv` to `hw/ip/motion/motion.core` (files_rtl list, before `axis_motion_detect.sv`). Also add it to `dv/sim/Makefile` in both `IP_MOTION_RTL` and the `test-ip-motion-detect` target.
+Create `hw/ip/gauss3x3/gauss3x3.core` (FuseSoC core `sparevideo:ip:gauss3x3`) containing `rtl/axis_gauss3x3.sv`. Add `sparevideo:ip:gauss3x3` as a dependency of `hw/ip/motion/motion.core`. Also add the RTL file to `dv/sim/Makefile` in both `IP_MOTION_RTL` and the `test-ip-motion-detect` target.
 
 ---
 
 ## SV Testbench Plan
 
-### New file: `hw/ip/motion/tb/tb_axis_gauss3x3.sv`
+### New file: `hw/ip/gauss3x3/tb/tb_axis_gauss3x3.sv`
 
 A standalone unit testbench for the `axis_gauss3x3` module in isolation, testing the convolution and line buffer logic without the complexity of the full motion detector.
 
@@ -311,7 +311,7 @@ A standalone unit testbench for the `axis_gauss3x3` module in isolation, testing
 
 ### File: `hw/ip/motion/tb/tb_axis_motion_detect.sv` (existing — extend)
 
-Add a test that exercises the Gaussian within the full motion detector:
+Add tests that exercise the Gaussian within the full motion detector:
 
 #### Test 7: Motion detect with Gaussian enabled (end-to-end)
 
@@ -451,17 +451,18 @@ Add model-level tests:
 
 ## Integration Checklist
 
-- [ ] Create `hw/ip/motion/rtl/axis_gauss3x3.sv` with line buffer + window + adder tree
+- [ ] Create `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv` with line buffer + window + adder tree
+- [ ] Create `hw/ip/gauss3x3/gauss3x3.core` (FuseSoC core `sparevideo:ip:gauss3x3`)
 - [ ] Add `GAUSS_EN` parameter to `axis_motion_detect` (default 1)
 - [ ] Increase `PIPE_STAGES` dynamically based on `GAUSS_EN` (passed to `axis_fork_pipe`)
 - [ ] Add `gauss_pixel_valid` / `gauss_sof` control registers in `axis_motion_detect`
 - [ ] Instantiate `axis_gauss3x3` inside `axis_motion_detect` (generate block, gated by `GAUSS_EN`)
 - [ ] Wire `y_smooth` to `motion_core.y_cur_i` instead of `y_cur` (no changes to `motion_core.sv`)
 - [ ] Adjust memory read address timing (delay by `GAUSS_LATENCY` cycles via `idx_pipe`)
-- [ ] Add `axis_gauss3x3.sv` to `hw/ip/motion/motion.core` and `dv/sim/Makefile`
+- [ ] Add `sparevideo:ip:gauss3x3` dependency to `hw/ip/motion/motion.core`; add RTL to `dv/sim/Makefile`
 - [ ] No changes to `sparevideo_top`, `axis_fork_pipe`, `motion_core`, or `sparevideo_pkg` needed
 - [ ] No changes to `ram`, `axis_bbox_reduce`, or `axis_overlay_bbox` needed
-- [ ] Create `hw/ip/motion/tb/tb_axis_gauss3x3.sv` with tests 1-6
+- [ ] Create `hw/ip/gauss3x3/tb/tb_axis_gauss3x3.sv` with tests 1-6; add `test-ip-gauss3x3` target to `dv/sim/Makefile`
 - [ ] Extend `hw/ip/motion/tb/tb_axis_motion_detect.sv` with tests 7-8
 - [ ] Add `_gauss3x3()` to `py/models/motion.py`
 - [ ] Add `gauss_en` parameter to `py/models/motion.py` and `py/models/mask.py`

@@ -35,16 +35,20 @@ sparevideo_top (top level)
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
+| **Clocks and resets** | | | |
 | `clk_pix_i` | input | 1 | 25 MHz pixel clock — input path and VGA output domain |
 | `clk_dsp_i` | input | 1 | 100 MHz DSP clock — motion pipeline domain |
 | `rst_pix_n_i` | input | 1 | Active-low synchronous reset, `clk_pix` domain |
 | `rst_dsp_n_i` | input | 1 | Active-low synchronous reset, `clk_dsp` domain |
+| **AXI4-Stream video input (clk_pix domain)** | | | |
 | `s_axis_tdata_i` | input | 24 | AXI4-Stream pixel payload `{R[7:0], G[7:0], B[7:0]}` |
 | `s_axis_tvalid_i` | input | 1 | AXI4-Stream producer valid |
 | `s_axis_tready_o` | output | 1 | AXI4-Stream sink ready (back-pressures producer) |
 | `s_axis_tlast_i` | input | 1 | End-of-line marker (last pixel of each row) |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame marker (first pixel of frame) |
+| **Control flow** | | | |
 | `ctrl_flow_i` | input | 2 | Control flow select: 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask |
+| **VGA output (clk_pix domain)** | | | |
 | `vga_hsync_o` | output | 1 | Horizontal sync, active-low |
 | `vga_vsync_o` | output | 1 | Vertical sync, active-low |
 | `vga_r_o` | output | 8 | Red channel (0 during blanking) |
@@ -70,7 +74,22 @@ sparevideo_top (top level)
 
 ---
 
-## 4. Datapath Description
+## 4. Concept Description
+
+The sparevideo pipeline implements real-time video processing using a **dual-clock-domain** architecture. The pixel clock (25 MHz) matches the VGA output timing standard (640x480 @ 60 Hz), while the DSP clock (100 MHz) provides 4× computation headroom for the processing pipeline. This clock ratio ensures that the processing pipeline can always sustain 1 pixel per `clk_pix` cycle without backpressure, even though the pipeline operates at `clk_dsp` granularity.
+
+The key architectural concept is **control-flow-selectable processing**: a single pipeline front-end (CDC → motion detection) is shared across multiple output modes, selected at runtime by a 2-bit sideband signal. This avoids duplicating hardware for each mode while allowing the user to switch between:
+- **Passthrough**: raw video with no processing — for baseline comparison.
+- **Motion overlay**: the full motion detection pipeline with bounding-box overlay — the primary use case.
+- **Mask display**: the raw binary motion mask expanded to black/white — for algorithm tuning and debugging.
+
+Clock domain crossing (CDC) is handled by asynchronous FIFOs at the pipeline boundaries (`u_fifo_in` at entry, `u_fifo_out` at exit). This decouples the input pixel rate from the DSP processing rate and the VGA output rate, with the FIFOs absorbing burst mismatches during blanking intervals. The 4:1 clock ratio means the DSP domain processes pixels faster than they arrive, so the input FIFO drains quickly and the output FIFO stays well below capacity during normal operation.
+
+The processing pipeline itself (motion detection → bbox reduction → overlay) is documented in the individual module architecture documents. At the top level, the concern is how these modules are interconnected, how control flow selects between them, and how CDC and timing constraints are satisfied.
+
+---
+
+## 5. Internal Architecture
 
 ```
 clk_pix domain                   clk_dsp domain                                           clk_pix domain
@@ -89,6 +108,8 @@ The control-flow mux selects between:
 - **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. This is the default path.
 - **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure.
 
+### Submodule roles
+
 1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
 2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the per-pixel background model from `u_ram` port A, computes `|Y_cur − bg|`, and emits a 1-bit motion mask plus the original RGB video with matched latency. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes an EMA-updated background value back to RAM on acceptance: `bg_new = bg + ((Y_cur - bg) >>> ALPHA_SHIFT)`. This temporally smooths the background model, suppressing sensor noise and adapting to gradual lighting changes. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md) §4 for the EMA algorithm details.
 3. **u_ram**: dual-port byte RAM (port A for motion detect background model, port B reserved). Zero-initialized so frame 0 reads all-motion (background starts at 0, converges via EMA over subsequent frames).
@@ -98,7 +119,7 @@ The control-flow mux selects between:
 7. **vga_rst_n gating**: the VGA controller is held in reset until the first `tuser=1` pixel exits `u_fifo_out`. This aligns the VGA scan to a frame boundary regardless of FIFO fill time.
 8. **u_vga**: drives horizontal/vertical counters, asserts `pixel_ready_o` during the active region, gates RGB output to 0 during blanking.
 
-### AXI4-Stream Protocol
+### AXI4-Stream protocol
 
 - `tdata[23:0]` = `{R[7:0], G[7:0], B[7:0]}`, RGB888.
 - `tuser[0]` = SOF — asserted only on pixel `(0, 0)` of each frame.
@@ -109,7 +130,7 @@ The control-flow mux selects between:
 
 ---
 
-## 5. Clock Domains
+## 6. Clock Domains
 
 | Domain | Clock | Modules |
 |--------|-------|---------|
@@ -120,7 +141,7 @@ CDC crossings use vendored `axis_async_fifo` from [alexforencich/verilog-axis](h
 
 ---
 
-## 6. Region Descriptor Model
+## 7. Region Descriptor Model
 
 The shared RAM is partitioned into named regions with `{BASE, SIZE}` descriptors. Descriptors are compile-time localparams in `sparevideo_top.sv`, structured for future migration to SW-writable CSRs.
 
@@ -141,7 +162,7 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 ---
 
-## 7. Assertions (SVA, Verilator only)
+## 8. Assertions (SVA, Verilator only)
 
 | Assertion | Clock | Description |
 |-----------|-------|-------------|
@@ -156,7 +177,7 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
 - **Simulation-only RAM**: `ram.sv` is a behavioral model. FPGA synthesis requires a vendor BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`).
 - **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box spans the full frame and the overlay draws a border around the image edge. This is a known cosmetic artifact. `axis_bbox_reduce` suppresses the bbox for the first 2 frames.
@@ -165,3 +186,11 @@ When runtime configurability is needed, the descriptor table and control knobs (
 - **No AXI-Lite control**: `MOTION_THRESH` and `BBOX_COLOR` are compile-time parameters. Runtime override requires a simulation plusarg and recompile for RTL.
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
 - **Single pixel clock**: both the input source and VGA output share `clk_pix`. Independent source/display clocks would need a third clock domain.
+
+---
+
+## 10. References
+
+- [AMBA AXI4-Stream Protocol Specification — Arm](https://developer.arm.com/documentation/ihi0051/latest/)
+- [alexforencich/verilog-axis — GitHub (MIT)](https://github.com/alexforencich/verilog-axis)
+- [VGA signal timing — TinyVGA](http://www.tinyvga.com/vga-timing)

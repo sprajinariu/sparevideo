@@ -27,11 +27,13 @@
 |--------|-----------|-------|-------------|
 | `clk_i` | input | 1 | DSP clock |
 | `rst_n_i` | input | 1 | Active-low synchronous reset |
+| **AXI4-Stream input — mask (1 bit)** | | | |
 | `s_axis_tdata_i` | input | 1 | Mask pixel (1 = motion) |
 | `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
 | `s_axis_tready_o` | output | 1 | Always 1 — this module never back-pressures |
 | `s_axis_tlast_i` | input | 1 | End-of-line |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame |
+| **Sideband output — latched bbox** | | | |
 | `bbox_min_x_o` | output | `$clog2(H_ACTIVE)` | Minimum X coordinate of motion region |
 | `bbox_max_x_o` | output | `$clog2(H_ACTIVE)` | Maximum X coordinate of motion region |
 | `bbox_min_y_o` | output | `$clog2(V_ACTIVE)` | Minimum Y coordinate of motion region |
@@ -41,7 +43,19 @@
 
 ---
 
-## 4. Datapath Description
+## 4. Concept Description
+
+Bounding box reduction is a streaming min/max aggregation algorithm. Given a binary mask where each pixel is either 0 (background) or 1 (foreground), the algorithm computes the axis-aligned bounding box (AABB) of all foreground pixels by tracking four extremes: the minimum and maximum column (x) and row (y) indices where a foreground pixel appears.
+
+This is an online algorithm — each pixel is processed exactly once as it arrives in raster order, requiring no frame buffer or random access to the image. The min/max accumulators are initialized to sentinel values at the start of each frame (`min` to the maximum possible value, `max` to 0), and updated whenever a foreground pixel is accepted. At end-of-frame, the accumulators are latched into output registers where they remain stable for the entire subsequent frame.
+
+Mathematically, the algorithm computes: `min(x)`, `max(x)`, `min(y)`, `max(y)` over the set `{(x,y) : mask(x,y) = 1}`. Since the stream arrives in raster order (left-to-right, top-to-bottom), `min_y` is always the row of the first foreground pixel and `max_y` is the row of the last. The column extremes require running comparisons across all rows.
+
+The result is a single bounding rectangle per frame. Multiple disjoint foreground regions are merged into the AABB of their union — for example, two separate moving objects produce one large bbox encompassing both.
+
+---
+
+## 5. Internal Architecture
 
 Two sets of registers operate in parallel:
 
@@ -50,7 +64,7 @@ Two sets of registers operate in parallel:
 - `sc_min_y`, `sc_max_y`: track topmost and bottommost motion row seen so far.
 - `sc_any`: 1 if at least one mask=1 pixel has been seen this frame.
 
-On SOF (`tuser=1`) the scratch is initialised in one of two ways (see §5).
+On SOF (`tuser=1`) the scratch is initialised in one of two ways (see §6).
 
 **Output registers** (latch one cycle after EOF):
 - `bbox_{min,max}_{x,y}_o` and `bbox_empty_o` snapshot the scratch accumulators one cycle after EOF (i.e. one cycle after `s_axis_tlast_i && s_axis_tvalid_i && row == V_ACTIVE−1`). The one-cycle delay is necessary because the EOF pixel's scratch update is an NBA assignment that commits at end-of-cycle; reading the scratch in the *same* cycle would capture stale values.
@@ -61,9 +75,13 @@ On SOF (`tuser=1`) the scratch is initialised in one of two ways (see §5).
 - On `tuser` (SOF), `col` is set to **1** — not 0. The SOF pixel itself is always at image column 0 and reads `col` before the register update, so it correctly sees `col=0`. Setting the register to 1 ensures that the *next* pixel (image column 1) also sees `col=1`. Without this correction the entire first row would have its column indices shifted by 1.
 - `row` increments on `tlast`; resets to 0 on `tuser`.
 
+### Resource cost
+
+The module uses four min/max accumulator registers (each `$clog2(H_ACTIVE)` or `$clog2(V_ACTIVE)` bits wide), two position counters, and a set of comparators for the per-pixel min/max updates. No RAM or DSP resources are used.
+
 ---
 
-## 5. Control Logic
+## 6. Control Logic and State Machines
 
 No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no ready check needed since `tready` is hardwired 1).
 
@@ -79,7 +97,7 @@ No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no
 
 | Condition | Action |
 |-----------|--------|
-| `tvalid && tuser` | `col <= 1`, `row <= 0` (see §4 for why col is set to 1, not 0) |
+| `tvalid && tuser` | `col <= 1`, `row <= 0` (see §5 for why col is set to 1, not 0) |
 | `tvalid && tlast` | `col <= 0`, `row <= row + 1` |
 | `tvalid && !tuser && !tlast` | `col <= col + 1` |
 
@@ -93,7 +111,7 @@ No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no
 
 ---
 
-## 6. Timing
+## 7. Timing
 
 | Event | Latency |
 |-------|---------|
@@ -105,13 +123,13 @@ The output bbox is stable for the entire duration of the *next* frame, making it
 
 ---
 
-## 7. Shared Types
+## 8. Shared Types
 
 None from `sparevideo_pkg`.
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
 - **No hysteresis or minimum-size filter**: a single isolated motion pixel produces a 1×1 bbox. The overlay will draw a 1×1 green dot, which may flicker on noisy inputs.
 - **Single-object**: only one bbox is maintained. Multiple disjoint motion regions are merged into the axis-aligned bounding box of their union (e.g. `synthetic:two_boxes` produces one large bbox encompassing both objects).
@@ -119,3 +137,9 @@ None from `sparevideo_pkg`.
 - **Bbox oversizing**: the upstream mask is polarity-agnostic (`diff > THRESH` only), flagging both arrival and departure pixels. The bbox is slightly larger than the object by approximately the per-frame displacement. This is a deliberate trade-off for scene-type independence.
 - **RAM priming**: the first 2 frames after reset are suppressed (`bbox_empty` forced high) via an internal `PrimeFrames` counter, preventing false full-frame bboxes caused by the zeroed Y-prev RAM.
 - **`bbox_valid_o` unused at top level**: `sparevideo_top` ties this signal off. It is available for future debug or CDC logic.
+
+---
+
+## 10. References
+
+- [Bounding box — Wikipedia](https://en.wikipedia.org/wiki/Minimum_bounding_box)

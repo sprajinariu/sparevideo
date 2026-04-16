@@ -58,10 +58,17 @@ A table for every port on the top-level module:
 
 Repeat for every submodule's interface that is non-obvious.
 
-**4. Datapath Description**
-Describe how data flows through the module. 
+**4. Concept Description**
+Describe the high level algorithm/protocol implemented in the module.
+Focus on concept, mathematical algorithm (if applicable), without too much coupling to the actual implementation.
+Give theoretical context on what the module does, and why is it useful in the overall function of the design.
 
-**5. Control logic and State Machines**
+**5. Internal architecture**
+Describe how data flows through the module.
+Anything related to resource cost, placement, implementation decisions.
+In case of the top-level architecture document, write about each submodule in the context of the larger top-level.
+
+**6. Control logic and State Machines**
 For every FSM in the module, document:
 - States (name + meaning)
 - Transitions (condition → next state)
@@ -69,15 +76,19 @@ For every FSM in the module, document:
 
 Use a table or DOT diagram.
 
-**6. Timing**
+**7. Timing**
 State the number of clock cycles each operation takes. In case of pipeline modules, state latency in clock cycles.
 
-**7. Shared Types**
+**8. Shared Types**
 List every type from `sparevideo_pkg` used in this module and what each field means.
 
-**8. Known Limitations**
+**9. Known Limitations**
 Anything the current implementation does not handle that a future implementation will address.
-Any assumption how signals and data should behave outside of this module, that is required for the normal operation of the module. 
+Any assumption on how signals and data should behave outside of this module, that is required for the normal operation of the module. 
+
+**10. References**
+Link online links that were used as reference for this module.
+
 
 ## Style Rules
 

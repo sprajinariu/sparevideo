@@ -28,16 +28,19 @@
 |--------|-----------|-------|-------------|
 | `clk_i` | input | 1 | DSP clock |
 | `rst_n_i` | input | 1 | Active-low synchronous reset |
+| **AXI4-Stream input — video (RGB888)** | | | |
 | `s_axis_tdata_i` | input | 24 | RGB888 input pixel |
 | `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
 | `s_axis_tready_o` | output | 1 | AXI4-Stream ready (tied to `m_axis_tready_i`) |
 | `s_axis_tlast_i` | input | 1 | End-of-line |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame |
+| **AXI4-Stream output — video (RGB888)** | | | |
 | `m_axis_tdata_o` | output | 24 | RGB888 output pixel (overlaid or pass-through) |
 | `m_axis_tvalid_o` | output | 1 | AXI4-Stream valid |
 | `m_axis_tready_i` | input | 1 | AXI4-Stream ready |
 | `m_axis_tlast_o` | output | 1 | End-of-line |
 | `m_axis_tuser_o` | output | 1 | Start-of-frame |
+| **Sideband input — bbox from axis_bbox_reduce** | | | |
 | `bbox_min_x_i` | input | `$clog2(H_ACTIVE)` | Left edge of bbox |
 | `bbox_max_x_i` | input | `$clog2(H_ACTIVE)` | Right edge of bbox |
 | `bbox_min_y_i` | input | `$clog2(V_ACTIVE)` | Top edge of bbox |
@@ -46,7 +49,17 @@
 
 ---
 
-## 4. Datapath Description
+## 4. Concept Description
+
+Video overlay is the process of compositing graphical elements onto a live video stream in real time. In the simplest form — conditional pixel substitution — each pixel passes through unchanged unless a spatial predicate is satisfied, in which case the pixel value is replaced with a fixed overlay colour.
+
+This module implements rectangle-edge overlay: for each pixel in the raster-order stream, a combinational predicate determines whether the pixel lies on one of the four edges of a bounding rectangle defined by `{min_x, max_x, min_y, max_y}`. The edge predicate is the union of four line segments (left, right, top, bottom). Pixels matching the predicate are replaced with `BBOX_COLOR`; all others pass through unmodified.
+
+The approach requires zero frame buffering — the overlay is applied in a single pass through the streaming pixel data with purely combinational logic on the data path. This makes it suitable for real-time video pipelines with strict latency and resource requirements. The bbox coordinates are provided as stable sideband inputs (latched once per frame by `axis_bbox_reduce`), so there is no synchronization hazard.
+
+---
+
+## 5. Internal Architecture
 
 ### Column/row counters
 
@@ -78,15 +91,19 @@ m_axis_tdata_o = on_rect ? BBOX_COLOR : s_axis_tdata_i
 
 All sideband signals (`tvalid`, `tlast`, `tuser`) pass through unchanged. `s_axis_tready_o = m_axis_tready_i` — backpressure propagates directly.
 
+### Resource cost
+
+The module uses two counters (`$clog2(H_ACTIVE)` + `$clog2(V_ACTIVE)` bits), six comparators for the edge predicate, and one 24-bit 2:1 MUX for the output pixel selection. No RAM, DSP, or pipeline registers on the data path — the overlay is purely combinational with zero added latency.
+
 ---
 
-## 5. Control Logic
+## 6. Control Logic and State Machines
 
 No FSM. The module is fully combinational on the pixel data path; `col` and `row` are the only registered state.
 
 ---
 
-## 6. Timing
+## 7. Timing
 
 | Operation | Latency |
 |-----------|---------|
@@ -97,15 +114,21 @@ The bbox sideband signals are stable for the full duration of a frame (latched a
 
 ---
 
-## 7. Shared Types
+## 8. Shared Types
 
 None from `sparevideo_pkg`.
 
 ---
 
-## 8. Known Limitations
+## 9. Known Limitations
 
 - **1-frame bbox latency**: the bbox inputs reflect the previous frame's motion, so the rectangle drawn on frame N encloses the motion region from frame N−1. The upstream mask is polarity-agnostic (flags both arrival and departure pixels), so the bbox is slightly larger than the object by approximately the per-frame displacement, plus the 1-frame positional lag.
 - **1-pixel-thick rectangle only**: no fill, no anti-aliasing, no corner rounding.
 - **Single rectangle**: only one bbox can be drawn per frame.
 - **No alpha blending**: the overlay is opaque — `BBOX_COLOR` fully replaces the underlying pixel on the edge.
+
+---
+
+## 10. References
+
+- [AMBA AXI4-Stream Protocol Specification — Arm](https://developer.arm.com/documentation/ihi0051/latest/)
