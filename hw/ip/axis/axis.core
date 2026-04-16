@@ -1,0 +1,14 @@
+CAPI=2:
+name: "sparevideo:ip:axis"
+description: "Reusable AXI4-Stream utilities — axis_fork_pipe"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_fork_pipe.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

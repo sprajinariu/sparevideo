@@ -1,6 +1,8 @@
 RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/top/ram.sv \
            ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
+           ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
+           ../../hw/ip/motion/rtl/motion_core.sv \
            ../../hw/ip/motion/rtl/axis_motion_detect.sv \
            ../../hw/ip/motion/rtl/axis_bbox_reduce.sv \
            ../../hw/ip/motion/rtl/axis_overlay_bbox.sv \
@@ -111,6 +113,8 @@ endif
 IP_RGB2YCRCB_RTL = ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv
 IP_MOTION_RTL    = ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
                    ../../hw/top/ram.sv \
+                   ../../hw/ip/motion/rtl/motion_core.sv \
+                   ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
                    ../../hw/ip/motion/rtl/axis_motion_detect.sv \
                    ../../hw/ip/motion/rtl/axis_bbox_reduce.sv \
                    ../../hw/ip/motion/rtl/axis_overlay_bbox.sv
@@ -133,7 +137,10 @@ test-ip-rgb2ycrcb:
 # --- axis_motion_detect ---
 test-ip-motion-detect:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_motion_detect --Mdir obj_tb_axis_motion_detect \
-	  $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv ../../hw/ip/motion/rtl/axis_motion_detect.sv \
+	  $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv \
+	  ../../hw/ip/motion/rtl/motion_core.sv \
+	  ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
+	  ../../hw/ip/motion/rtl/axis_motion_detect.sv \
 	  ../../hw/ip/motion/tb/tb_axis_motion_detect.sv
 	obj_tb_axis_motion_detect/Vtb_axis_motion_detect
 

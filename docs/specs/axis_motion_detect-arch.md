@@ -10,8 +10,22 @@
 
 ```
 axis_motion_detect (u_motion_detect)
-└── rgb2ycrcb  (u_rgb2ycrcb)   — RGB888 → Y8, 1-cycle pipeline
+├── axis_fork_pipe (u_fork)    — AXI4-Stream 1-to-2 fork with sideband pipeline
+├── rgb2ycrcb      (u_rgb2y)   — RGB888 → Y8, 1-cycle pipeline
+└── motion_core    (u_core)    — Combinational: abs-diff threshold + EMA update
 ```
+
+`axis_fork_pipe` (in `hw/ip/axis/rtl/`) is a reusable module that manages per-output
+acceptance tracking, pipeline stall gating, and sideband registers. It exports
+`pipe_stall_o` and `beat_done_o` so the parent can gate the stall mux, memory
+address hold, and write-back enable.
+
+`motion_core` (in `hw/ip/motion/rtl/`) is a pure-combinational module with no
+clock or state. It takes `y_cur` and `y_bg` as inputs and produces `mask_bit`
+and `ema_update` as outputs.
+
+`axis_motion_detect` is the glue: it instantiates the three submodules, owns the
+pixel address counter, manages the RGB→Y stall mux, and wires the memory ports.
 
 ---
 
@@ -36,7 +50,7 @@ axis_motion_detect (u_motion_detect)
 | `rst_n_i` | input | 1 | Active-low synchronous reset |
 | `s_axis_tdata_i` | input | 24 | RGB888 pixel input |
 | `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
-| `s_axis_tready_o` | output | 1 | AXI4-Stream ready (= `vid_ready AND msk_ready`) |
+| `s_axis_tready_o` | output | 1 | AXI4-Stream ready (= `NOT tvalid_pipe OR both_done`) |
 | `s_axis_tlast_i` | input | 1 | End-of-line |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame |
 | `m_axis_vid_tdata_o` | output | 24 | RGB888 video passthrough |
@@ -87,19 +101,23 @@ The RAM stores a temporally smoothed estimate of each pixel's luma rather than t
 
 2. **Gradual lighting adaptation:** Slow brightness changes (clouds, time of day) are tracked by the EMA. The background drifts toward the new lighting level over `~1/alpha` frames, preventing full-frame false positives from sudden illumination transitions.
 
-### EMA computation signals
+### EMA computation signals (`motion_core`)
+
+The threshold comparison and EMA update are encapsulated in `motion_core` (`hw/ip/motion/rtl/`), a pure-combinational module:
 
 ```systemverilog
-logic signed [8:0] ema_delta;     // Y_cur - bg, signed 9-bit
-logic signed [8:0] ema_step;      // delta >>> ALPHA_SHIFT (arithmetic right-shift)
-logic        [7:0] ema_update;    // new background value
+// motion_core ports:
+//   y_cur_i, y_bg_i  →  mask_bit_o, ema_update_o
 
-assign ema_delta  = {1'b0, y_cur} - {1'b0, mem_rd_data_i};
-assign ema_step   = ema_delta >>> ALPHA_SHIFT;
-assign ema_update = mem_rd_data_i + ema_step[7:0];
+// Internal signals:
+logic [7:0]        diff       = abs(y_cur_i - y_bg_i);
+logic              mask_bit_o = (diff > THRESH);
+logic signed [8:0] ema_delta  = {1'b0, y_cur_i} - {1'b0, y_bg_i};
+logic signed [8:0] ema_step   = ema_delta >>> ALPHA_SHIFT;
+logic        [7:0] ema_update_o = y_bg_i + ema_step[7:0];
 ```
 
-These signals are combinational, computed after the pipeline register stage where both `y_cur` and `mem_rd_data_i` are valid. The write-back `mem_wr_data_o <= ema_update` stores the EMA-smoothed background value.
+These signals are evaluated after the pipeline register stage where both `y_cur` and `mem_rd_data_i` are valid. The write-back `mem_wr_data_o <= ema_update` stores the EMA-smoothed background value.
 
 ### Polarity-agnostic mask
 
@@ -126,25 +144,44 @@ Cycle C+1 : y_cur registered; mem_rd_data_i arrives → diff computed → mask, 
 
 Total latency: **1 clock cycle** from accepted pixel to emitted pixel on vid/msk outputs.
 
-### Backpressure
+### Backpressure — AXI4-Stream 1-to-2 fork (`axis_fork_pipe`)
 
-`s_axis_tready_o = m_axis_vid_tready_i AND m_axis_msk_tready_i`. A pipeline stall register (`pipe_stall`) is set when the output pipeline holds valid data but at least one downstream consumer deasserts ready. During stall:
-- All pipeline registers are frozen (gated with `!pipe_stall`).
-- `rgb2ycrcb` is fed from the held pipeline register rather than live `s_axis_tdata_i`.
-- `mem_rd_addr_o` is held via a registered hold address.
-- `mem_wr_en_o` is gated to zero — no repeat writes during stall.
+The fork logic is encapsulated in `axis_fork_pipe` (`hw/ip/axis/rtl/`), a reusable module implementing **per-output acceptance tracking** (pattern from verilog-axis `axis_broadcast`). Each output's `tvalid` is independently gated: once a consumer accepts the current beat, its `tvalid` deasserts while the other consumer's `tvalid` remains asserted until it also accepts. The pipeline advances only when both outputs have been consumed (either in the same cycle or across separate cycles).
+
+```
+a_done    = a_accepted OR m_a_tready_i
+b_done    = b_accepted OR m_b_tready_i
+both_done = a_done AND b_done
+
+m_a_tvalid_o    = pipe_valid AND NOT a_accepted
+m_b_tvalid_o    = pipe_valid AND NOT b_accepted
+
+s_axis_tready_o = NOT pipe_valid OR both_done
+pipe_stall_o    = pipe_valid AND NOT both_done
+beat_done_o     = pipe_valid AND both_done
+```
+
+The `a_accepted` / `b_accepted` registers reset to 0 on the cycle that `beat_done` is asserted (the beat is fully consumed and the pipeline advances). `axis_motion_detect` uses the exported control signals during a stall:
+- All pipeline registers are frozen (gated with `!pipe_stall_o` inside `axis_fork_pipe`).
+- `rgb2ycrcb` is fed from the held pipeline data (`pipe_tdata_o`) rather than live `s_axis_tdata_i`.
+- `mem_rd_addr_o` is held via a registered hold address (`pix_addr_hold`).
+- `mem_wr_en_o` is driven by `beat_done_o`, ensuring exactly one write per pixel.
 
 ---
 
 ## 5. State / Control Logic
 
-There is no explicit FSM. Control is combinational backpressure logic (`pipe_stall`, `both_ready`), a pixel address counter, and gated pipeline registers.
+There is no explicit FSM. Fork acceptance tracking and pipeline stall logic live inside `axis_fork_pipe`. `axis_motion_detect` owns the pixel address counter, stall mux, memory address hold, and write-back gating.
 
-| Signal | Meaning |
-|--------|---------|
-| `both_ready` | `m_axis_vid_tready_i && m_axis_msk_tready_i` |
-| `pipe_stall` | `tvalid_pipe AND NOT both_ready` — pipeline has valid data but can't advance |
-| `pix_addr` | Frame-relative pixel index, 0…`H_ACTIVE×V_ACTIVE−1` |
+| Signal | Location | Meaning |
+|--------|----------|---------|
+| `a_accepted` | `axis_fork_pipe` | Registered flag — output A accepted the current beat in a prior cycle |
+| `b_accepted` | `axis_fork_pipe` | Registered flag — output B accepted the current beat in a prior cycle |
+| `pipe_stall_o` | `axis_fork_pipe` | `pipe_valid AND NOT both_done` — pipeline stalled |
+| `beat_done_o` | `axis_fork_pipe` | `pipe_valid AND both_done` — beat fully consumed |
+| `pix_addr` | `axis_motion_detect` | Frame-relative pixel index, 0…`H_ACTIVE×V_ACTIVE−1` |
+| `pix_addr_hold` | `axis_motion_detect` | Registered hold address — keeps `mem_rd_addr_o` stable during stall |
+| `idx_pipe` | `axis_motion_detect` | Pixel address pipeline — tracks address through stages for write-back |
 
 ---
 

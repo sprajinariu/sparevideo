@@ -55,6 +55,8 @@ make setup                   # One-time setup (install deps)
 
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
+- `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork_pipe: 1-to-2 fork with sideband pipeline)
+- `hw/ip/motion/rtl/` — Motion detection pipeline (axis_motion_detect, motion_core, axis_bbox_reduce, axis_overlay_bbox)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library
@@ -73,7 +75,7 @@ make setup                   # One-time setup (install deps)
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
 - `py/tests/test_models.py` — Unit tests for control-flow reference models
 - `py/tests/test_vga.py` — Cocotb VGA timing tests (requires VGA IP)
-- FuseSoC core files: `sparevideo_top.core`, `hw/ip/vga/vga.core`, `verilog-axis.core`
+- FuseSoC core files: `sparevideo_top.core`, `hw/ip/axis/axis.core`, `hw/ip/motion/motion.core`, `hw/ip/vga/vga.core`, `verilog-axis.core`
 
 ## RTL Conventions
 
@@ -160,7 +162,7 @@ Claude can't view GTKWave, but VCD is plain text and fully debuggable from the t
 When adding a backpressure (`tready`)-capable pipeline stage, three things must all be held simultaneously during a stall; missing any one corrupts data silently:
 
 **1. Sideband pipeline registers must be gated.**
-Add `pipe_stall = tvalid_pipe[PIPE_STAGES-1] && !both_ready`. Gate every pipeline `always_ff` with `else if (!pipe_stall)` so the registers don't overwrite valid data when the downstream isn't ready.
+Add `pipe_stall = tvalid_pipe[PIPE_STAGES-1] && !both_done`. Gate every pipeline `always_ff` with `else if (!pipe_stall)` so the registers don't overwrite valid data when the downstream isn't ready.
 
 **2. Combinational signals fed from the live input must be re-sourced from held registers.**
 In `axis_motion_detect`, `rgb2ycrcb` takes `s_axis_tdata` as input (1-cycle latency). The upstream source is free to change `tdata` immediately after acceptance (AXI spec). If the source presents the next pixel before the stall clears, `y_cur` reflects the wrong pixel by the next cycle. Fix: MUX the rgb2ycrcb input — use `tdata_pipe[PIPE_STAGES-1]` (held) when `pipe_stall=1`, and `s_axis_tdata` when `pipe_stall=0`.
@@ -169,10 +171,13 @@ In `axis_motion_detect`, `rgb2ycrcb` takes `s_axis_tdata` as input (1-cycle late
 `pix_addr_reg` advances (and may wrap to 0) as soon as the last pixel of a frame is accepted, even if the pipeline is still stalled on that pixel. The combinational `mem_rd_addr = pix_addr` then reads a different address, changing `mem_rd_data`. Fix: register `pix_addr_hold` with enable `!pipe_stall`; drive `mem_rd_addr` from `pix_addr_hold` when stalled.
 
 **4. Memory write-back must be gated on the actual handshake.**
-`mem_wr_en` must be `tvalid_pipe[PIPE_STAGES-1] && both_ready` — not just `tvalid_pipe[PIPE_STAGES-1]`. Without the gate, the RAM write fires every cycle a pixel is stalled at the output, duplicating writes (idempotent but incorrect for any non-idempotent future write path).
+`mem_wr_en` must be `tvalid_pipe[PIPE_STAGES-1] && both_done` — not just `tvalid_pipe[PIPE_STAGES-1]`. Without the gate, the RAM write fires every cycle a pixel is stalled at the output, duplicating writes (idempotent but incorrect for any non-idempotent future write path).
 
-**5. Unit-test consumer stalls explicitly.**
-The default TB wires `vid_tready = 1'b1`. Add a test frame that periodically deasserts ready (e.g. 10 cycles off / 3 cycles on) and verifies the mask output matches expectations. Without this, all four bugs above go undetected.
+**5. 1-to-N output forks must use per-output acceptance tracking.**
+When a module has multiple AXI4-Stream outputs driven from the same pipeline (e.g. `axis_motion_detect`'s vid + mask), simply ANDing all `tready` signals for `both_ready` is insufficient. If only one consumer stalls, the other sees `tvalid && tready` every cycle and re-accepts the same beat — corrupting data and desyncing position counters. Fix: track per-output acceptance with registered flags (`vid_accepted`, `msk_accepted`), gate each output's `tvalid` with `!accepted`, and advance the pipeline only when all outputs are done. Pattern from verilog-axis `axis_broadcast`. See `axis_motion_detect.sv` for the implementation.
+
+**6. Unit-test consumer stalls explicitly — including asymmetric stalls.**
+The default TB wires `vid_tready = 1'b1`. Add test frames that (a) periodically deassert both readies (symmetric stall), and (b) stall only one consumer while the other stays ready (asymmetric stall). Verify data correctness in both cases. Without asymmetric stall tests, fork desync bugs go undetected.
 
 ### Input/output rate mismatch — blanking
 

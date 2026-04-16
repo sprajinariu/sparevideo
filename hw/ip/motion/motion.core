@@ -5,12 +5,14 @@ description: "Motion detection pipeline — axis_motion_detect, axis_bbox_reduce
 filesets:
   files_rtl:
     files:
+      - rtl/motion_core.sv
       - rtl/axis_motion_detect.sv
       - rtl/axis_bbox_reduce.sv
       - rtl/axis_overlay_bbox.sv
     file_type: systemVerilogSource
     depend:
       - sparevideo:ip:rgb2ycrcb
+      - sparevideo:ip:axis
 
 targets:
   default:
