@@ -19,10 +19,9 @@ axis_motion_detect (u_motion_detect)
 
 `axis_gauss3x3` (in `hw/ip/gauss3x3/rtl/`) is a synchronous pipeline element (not a
 full AXIS stage). It applies a 3x3 Gaussian blur `[1 2 1; 2 4 2; 1 2 1] / 16` to the
-Y channel using two line buffers and column shift registers. Instantiated inside a
-`generate` block gated by `GAUSS_EN`; when `GAUSS_EN=0` the module is not instantiated
-and `y_smooth = y_cur` (bypass). See [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md)
-for full details.
+Y channel with a 2-cycle latency. Instantiated inside a `generate` block gated by
+`GAUSS_EN`; when `GAUSS_EN=0` the module is not instantiated and `y_smooth = y_cur`
+(bypass). See [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) for full details.
 
 `motion_core` (in `hw/ip/motion/rtl/`) is a pure-combinational module with no
 clock or state. It takes `y_cur` (or `y_smooth` when Gaussian is enabled) and `y_bg`
@@ -342,7 +341,7 @@ When the mask consumer stalls (`msk_tready=0`):
 
 ### Resource cost
 
-The module consumes one `rgb2ycrcb` instance (9 multipliers + 24 FFs), optionally one `axis_gauss3x3` instance when `GAUSS_EN=1` (2 line buffers of `H_ACTIVE` x 8 bits + 6 column shift FFs + 8-adder tree — see [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md)), the `motion_core` combinational logic (one 8-bit subtractor, one absolute-value, one comparator, one 9-bit arithmetic shift, one 8-bit adder), and the sideband pipeline registers (~3 bits × `PIPE_STAGES`). RAM consumption is external (shared `ram` module). The pixel address counter adds `$clog2(H_ACTIVE × V_ACTIVE)` bits of registered state.
+The module consumes one `rgb2ycrcb` instance (9 multipliers + 24 FFs), optionally one `axis_gauss3x3` instance when `GAUSS_EN=1` (see [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) §5 for its internal resource breakdown), the `motion_core` combinational logic (one 8-bit subtractor, one absolute-value, one comparator, one 9-bit arithmetic shift, one 8-bit adder), and the sideband pipeline registers (~3 bits × `PIPE_STAGES`). RAM consumption is external (shared `ram` module). The pixel address counter adds `$clog2(H_ACTIVE × V_ACTIVE)` bits of registered state.
 
 ---
 
