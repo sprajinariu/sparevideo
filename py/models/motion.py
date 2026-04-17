@@ -25,6 +25,43 @@ BBOX_COLOR = np.array([0x00, 0xFF, 0x00], dtype=np.uint8)
 PRIME_FRAMES = 2
 
 
+def _gauss3x3(y_frame):
+    """3x3 Gaussian blur matching RTL causal streaming filter.
+
+    Kernel: [1 2 1; 2 4 2; 1 2 1] / 16.
+
+    The RTL uses a causal streaming architecture (2-deep line buffers +
+    2-deep column shift registers) that centers the convolution at (r-1, c-1)
+    relative to scan position (r, c). To match this, the model computes
+    a standard centered convolution, then shifts the result by (-1, -1) —
+    i.e., for output pixel (r, c), the Gaussian is centered at (r-1, c-1).
+    Edge replication (np.pad mode='edge') handles border pixels, matching
+    the RTL's clamp-at-edge behavior.
+
+    Integer arithmetic with >>4 truncation, not floating-point.
+    """
+    h, w = y_frame.shape
+
+    # Pad by 2 on each side: 1 for the kernel radius, 1 for the causal offset.
+    # After convolution on the padded array, the causal-offset output for pixel
+    # (r, c) is at padded position (r, c) — i.e., kernel centered at (r-1, c-1)
+    # in the original image coordinates.
+    padded = np.pad(y_frame, 2, mode='edge')
+
+    # Convolution centered at (r-1, c-1) for each output pixel (r, c):
+    # padded[r-1+dr, c-1+dc] with dr,dc in {0,1,2} → padded[r+1+dr, c+1+dc]
+    # after accounting for the pad=2 offset.
+    # But since we want center=(r-1,c-1), that's padded index (r-1+2, c-1+2)
+    # for the center, so the 3x3 window starts at padded[r, c].
+    result = np.zeros((h, w), dtype=np.uint16)
+    for dr in range(3):
+        for dc in range(3):
+            weight = [1, 2, 1][dr] * [1, 2, 1][dc]
+            result += weight * padded[dr:dr+h, dc:dc+w].astype(np.uint16)
+
+    return (result >> 4).astype(np.uint8)
+
+
 def _rgb_to_y(frame):
     """Extract luma using project fixed-point coefficients.
 
@@ -96,7 +133,7 @@ def _draw_bbox(frame, min_x, max_x, min_y, max_y, empty):
     return out
 
 
-def run(frames, thresh=16, alpha_shift=3, **kwargs):
+def run(frames, thresh=16, alpha_shift=3, gauss_en=True, **kwargs):
     """Motion pipeline reference model.
 
     Processes frames online with state, matching the streaming RTL behavior.
@@ -105,6 +142,7 @@ def run(frames, thresh=16, alpha_shift=3, **kwargs):
         frames: List of numpy arrays (H, W, 3), dtype uint8, RGB order.
         thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
         alpha_shift: EMA smoothing factor (default 3, alpha=1/8).
+        gauss_en: Enable 3x3 Gaussian pre-filter on Y channel (default True).
 
     Returns:
         List of numpy arrays — the expected output frames.
@@ -129,8 +167,14 @@ def run(frames, thresh=16, alpha_shift=3, **kwargs):
         # Step 1: RGB -> Y
         y_cur = _rgb_to_y(frame)
 
-        # Step 2: Motion mask
-        mask = _compute_mask(y_cur, y_ref, thresh)
+        # Step 1b: Optional Gaussian pre-filter
+        if gauss_en:
+            y_cur_filt = _gauss3x3(y_cur)
+        else:
+            y_cur_filt = y_cur
+
+        # Step 2: Motion mask (uses filtered Y)
+        mask = _compute_mask(y_cur_filt, y_ref, thresh)
 
         # Step 3: Overlay bbox from PREVIOUS frame onto current frame
         # (1-frame delay: bbox is computed at EOF of frame N, applied to frame N+1)
@@ -156,8 +200,8 @@ def run(frames, thresh=16, alpha_shift=3, **kwargs):
         if not primed:
             frame_cnt += 1
 
-        # Step 6: Update reference buffer (EMA write-back)
-        y_ref = _ema_update(y_cur, y_ref, alpha_shift)
+        # Step 6: Update reference buffer (EMA write-back, uses filtered Y)
+        y_ref = _ema_update(y_cur_filt, y_ref, alpha_shift)
 
         outputs.append(out)
 

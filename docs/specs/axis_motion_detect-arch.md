@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Scope
 
-`axis_motion_detect` computes a 1-bit per-pixel motion mask by comparing the current frame's luma (Y8) against a per-pixel background model stored in the shared RAM. The background model is maintained as an exponential moving average (EMA) — each pixel's stored value tracks the temporal mean of that pixel's luma, smoothing out sensor noise and gradual lighting changes. It simultaneously passes the original RGB888 video through with latency-matched timing. It does **not** perform spatial filtering or morphological operations. Color-space conversion is delegated to an instantiated `rgb2ycrcb` submodule. The Y8 frame buffer lives in an external shared RAM connected via the module's memory port.
+`axis_motion_detect` computes a 1-bit per-pixel motion mask by comparing the current frame's luma (Y8) against a per-pixel background model stored in the shared RAM. The background model is maintained as an exponential moving average (EMA) — each pixel's stored value tracks the temporal mean of that pixel's luma, smoothing out sensor noise and gradual lighting changes. When `GAUSS_EN=1`, a 3x3 Gaussian pre-filter (`axis_gauss3x3`) smooths the luma spatially before the threshold comparison, reducing salt-and-pepper noise in the motion mask. It simultaneously passes the original RGB888 video through with latency-matched timing. It does **not** perform morphological operations on the binary mask. Color-space conversion is delegated to an instantiated `rgb2ycrcb` submodule; spatial filtering is delegated to `axis_gauss3x3`. The Y8 frame buffer lives in an external shared RAM connected via the module's memory port.
 
 ---
 
@@ -12,6 +12,7 @@
 axis_motion_detect (u_motion_detect)
 ├── axis_fork_pipe (u_fork)    — AXI4-Stream 1-to-2 fork with sideband pipeline
 ├── rgb2ycrcb      (u_rgb2y)   — RGB888 → Y8, 1-cycle pipeline
+├── axis_gauss3x3  (u_gauss)   — Optional 3x3 Gaussian pre-filter (GAUSS_EN=1), 2-cycle pipeline
 └── motion_core    (u_core)    — Combinational: abs-diff threshold + EMA update
 ```
 
@@ -20,12 +21,99 @@ acceptance tracking, pipeline stall gating, and sideband registers. It exports
 `pipe_stall_o` and `beat_done_o` so the parent can gate the stall mux, memory
 address hold, and write-back enable.
 
-`motion_core` (in `hw/ip/motion/rtl/`) is a pure-combinational module with no
-clock or state. It takes `y_cur` and `y_bg` as inputs and produces `mask_bit`
-and `ema_update` as outputs.
+`axis_gauss3x3` (in `hw/ip/gauss3x3/rtl/`) is a synchronous pipeline element (not a
+full AXIS stage). It applies a 3x3 Gaussian blur `[1 2 1; 2 4 2; 1 2 1] / 16` to the
+Y channel using two line buffers and column shift registers. Instantiated inside a
+`generate` block gated by `GAUSS_EN`; when `GAUSS_EN=0` the module is not instantiated
+and `y_smooth = y_cur` (bypass). See [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md)
+for full details.
 
-`axis_motion_detect` is the glue: it instantiates the three submodules, owns the
-pixel address counter, manages the RGB→Y stall mux, and wires the memory ports.
+`motion_core` (in `hw/ip/motion/rtl/`) is a pure-combinational module with no
+clock or state. It takes `y_cur` (or `y_smooth` when Gaussian is enabled) and `y_bg`
+as inputs and produces `mask_bit` and `ema_update` as outputs.
+
+`axis_motion_detect` is the glue: it instantiates the four submodules, owns the
+pixel address counter, manages the RGB→Y stall mux, derives Gaussian control signals,
+and wires the memory ports.
+
+### Datapath overview
+
+```
+                          axis_motion_detect
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │  s_axis (RGB888 + tlast + tuser)                                        │
+  │  ─────────┬────────────────────────────────────────────────────────     │
+  │           │                                                             │
+  │           │               axis_fork_pipe (u_fork)                       │
+  │           │    ┌───────────────────────────────────────────────────┐    │
+  │           │    │  acceptance tracking: a_done, b_done, both_done   │    │
+  │           │    │  pipe_stall_o ──► freeze all regs                 │    │
+  │           │    │  beat_done_o  ──► gate mem_wr_en                  │    │
+  │           │    │                                                   │    │
+  │           │    │  ┌────────────────────────────────────────────┐   │    │
+  │           │    │  │  RGB sideband pipeline (PIPE_STAGES deep)  │   │    │
+  │           │    │  │                                            │   │    │
+  │           │    │  │  [0]           [1]           [2]           │   │    │
+  │           ├───►│  │  RGB,tlast ──► RGB,tlast ──► RGB,tlast     │   │    │
+  │           │    │  │  tuser         tuser          tuser        │   │    │
+  │           │    │  │  26 bits       26 bits        26 bits      │   │    │
+  │           │    │  │                                            │   │    │
+  │           │    │  │  GAUSS_EN=0: stage [0] only   (1 deep)     │   │    │
+  │           │    │  │  GAUSS_EN=1: stages [0]-[2]   (3 deep)     │   │    │
+  │           │    │  └─────────────────────────────────┬──────────┘   │    │
+  │           │    │                                    │              │    │
+  │           │    └────────────────────────────────────┼──────────────┘    │
+  │           │                                         │                   │
+  │           │    Y extraction path                    │  RGB passthrough  │
+  │           │    ─────────────────                    │  ───────────────  │
+  │           ▼                                         │                   │
+  │    ┌──────────────┐                                 │                   │
+  │    │  rgb2ycrcb    │◄── stall mux                   │                   │
+  │    │  (u_rgb2y)    │    (live vs held)              │                   │
+  │    │  1-cycle pipe │                                │                   │
+  │    └──────┬────────┘                                │                   │
+  │           │ y_cur [7:0]                             │                   │
+  │           ▼                                         │                   │
+  │    ┌──────────────────┐                             │                   │
+  │    │  axis_gauss3x3   │  +2 cycles (EN=1)           │                   │
+  │    │  (u_gauss)       │  or bypass  (EN=0)          │                   │
+  │    └──────┬───────────┘                             │                   │
+  │           │ y_smooth [7:0]                          │                   │
+  │           │                                         │                   │
+  │           │          Shared RAM                     │                   │
+  │           │    ┌─────────────────┐                  │                   │
+  │           │    │  Background     │                  │                   │
+  │           │    │  Model (Y8)     │                  │                   │
+  │           │    │  H×V bytes      │                  │                   │
+  │           │    └──┬──────────┬───┘                  │                   │
+  │           │       ▼ rd_data  ▲ wr_data              │                   │
+  │           ▼       │          │ (ema)                │                   │
+  │    ┌──────────────┴──────────┴──┐                   │                   │
+  │    │     motion_core            │                   │                   │
+  │    │     (combinational)        │                   │                   │
+  │    │                            │                   │                   │
+  │    │  diff = |y_smooth-bg|      │                   │                   │
+  │    │  mask = diff > THRESH      │                   │                   │
+  │    │  ema  = bg + Δ>>>α         │                   │                   │
+  │    └────────────┬───────────────┘                   │                   │
+  │                 │ mask_bit                          │                   │
+  │                 │                                   │                   │
+  │                 │          arrives same cycle       │                   │
+  │                 ▼          ◄─────────────────►      ▼                   │
+  │          ┌────────────┐                     ┌──────────────┐            │
+  │          │ m_axis_msk │                     │  m_axis_vid  │            │
+  │          │  (1-bit)   │                     │  (RGB888)    │            │
+  │          └────────────┘                     └──────────────┘            │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+```
+
+The RGB passthrough and Y extraction paths are independent after the fork. The left
+path extracts luma and processes it (1 or 3 cycles depending on `GAUSS_EN`). The right
+path shifts the original RGB through sideband register stages inside `axis_fork_pipe`,
+arriving at the video output on the same cycle as the mask. `PIPE_STAGES` sizes the
+sideband depth automatically to match the active `GAUSS_EN` mode.
 
 ---
 
@@ -39,6 +127,7 @@ pixel address counter, manages the RGB→Y stall mux, and wires the memory ports
 | `V_ACTIVE` | 240 | Active lines per frame |
 | `THRESH` | 16 | Unsigned luma-difference threshold; also serves as the minimum current-luma floor (see §4) |
 | `ALPHA_SHIFT` | 3 | EMA smoothing factor as a bit-shift: alpha = 1 / (1 << ALPHA_SHIFT). Default 3 → alpha = 1/8. Higher values = slower background adaptation. When 0, the EMA reduces to raw-frame write-back (bg_new = Y_cur) |
+| `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (2-cycle latency, `PIPE_STAGES=3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
 | `RGN_BASE` | 0 | Base byte-address of the background model region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the background model region (sanity-checked at elaboration) |
 
@@ -106,13 +195,14 @@ In hardware, the EMA multiplication by `α = 1/(1 << ALPHA_SHIFT)` is implemente
 ### Per-pixel algorithm
 
 ```
-Y_cur  = rgb2ycrcb(R, G, B).y         // 1-cycle pipeline inside rgb2ycrcb
-bg     = mem_rd_data_i                 // RAM read, 1-cycle latency after mem_rd_addr_o
-diff   = abs(Y_cur − bg)
+Y_cur    = rgb2ycrcb(R, G, B).y       // 1-cycle pipeline inside rgb2ycrcb
+Y_smooth = gauss3x3(Y_cur)            // 2-cycle pipeline (GAUSS_EN=1) or bypass (GAUSS_EN=0)
+bg       = mem_rd_data_i              // RAM read, 1-cycle latency after mem_rd_addr_o
+diff     = abs(Y_smooth − bg)
 mask   = (diff > THRESH)
 
 // EMA background update — write smoothed estimate back to RAM
-delta      = Y_cur − bg               // signed 9-bit
+delta      = Y_smooth − bg            // signed 9-bit
 ema_step   = delta >>> ALPHA_SHIFT     // arithmetic right-shift (sign-preserving)
 ema_update = bg + ema_step[7:0]        // new background value
 
@@ -151,14 +241,49 @@ These signals are evaluated after the pipeline register stage where both `y_cur`
 
 The RAM uses read-first semantics on port A. When motion detect reads and writes the same address in the same cycle (the current pixel's address), port A returns the **old** value (previous frame's background estimate). No external bypass logic is needed.
 
+### Gaussian control signals
+
+When `GAUSS_EN=1`, two registered signals derive the Gaussian's `valid_i` and `sof_i` from the acceptance handshake:
+
+```
+gauss_pixel_valid <= s_axis_tvalid_i && s_axis_tready_o   (gated by !fork_stall)
+gauss_sof         <= s_axis_tuser_i                        (gated by !fork_stall)
+```
+
+These are 1-cycle delayed to align with `y_cur` from `rgb2ycrcb`. The Gaussian's `stall_i` is wired to `fork_stall`.
+
 ### Pipeline stages
+
+**`GAUSS_EN=0` (PIPE_STAGES=1):**
 
 ```
 Cycle C   : pixel N accepted; rgb2ycrcb MACs computed combinationally; mem_rd_addr_o issued
 Cycle C+1 : y_cur registered; mem_rd_data_i arrives → diff computed → mask, vid registered
 ```
 
-Total latency: **1 clock cycle** from accepted pixel to emitted pixel on vid/msk outputs.
+Total latency: **1 clock cycle**.
+
+**`GAUSS_EN=1` (PIPE_STAGES=3):**
+
+```
+Cycle C   : pixel N accepted; rgb2ycrcb MACs computed; gauss control signals registered
+Cycle C+1 : y_cur registered; Gaussian line buffer read + column shift stage 1
+Cycle C+2 : Gaussian column shift stage 2 + adder tree (combinational)
+Cycle C+3 : y_smooth registered; mem_rd_data_i arrives → diff computed → mask, vid registered
+```
+
+Total latency: **3 clock cycles**. The sideband pipeline inside `axis_fork_pipe` grows automatically via `PIPE_STAGES`.
+
+`PIPE_STAGES` is computed dynamically:
+
+```
+GAUSS_LATENCY = (GAUSS_EN != 0) ? 2 : 0
+PIPE_STAGES   = 1 + GAUSS_LATENCY
+```
+
+### Memory read address timing
+
+The RAM read address must be issued 1 cycle before the comparison stage. With `GAUSS_EN=1`, the comparison happens at pipeline stage 3, so the read address uses `idx_pipe[PIPE_STAGES-2]` (delayed by 2 cycles from acceptance). With `GAUSS_EN=0`, it uses `pix_addr` (combinational, same cycle). During stall, a registered `pix_addr_hold` keeps the address stable.
 
 ### Backpressure — AXI4-Stream 1-to-2 fork (`axis_fork_pipe`)
 
@@ -185,7 +310,7 @@ The `a_accepted` / `b_accepted` registers reset to 0 on the cycle that `beat_don
 
 ### Resource cost
 
-The module consumes one `rgb2ycrcb` instance (9 multipliers + 24 FFs), the `motion_core` combinational logic (one 8-bit subtractor, one absolute-value, one comparator, one 9-bit arithmetic shift, one 8-bit adder), and the `axis_fork_pipe` pipeline registers (~50 bits of sideband + 2 acceptance FFs). RAM consumption is external (shared `ram` module). The pixel address counter adds `$clog2(H_ACTIVE × V_ACTIVE)` bits of registered state.
+The module consumes one `rgb2ycrcb` instance (9 multipliers + 24 FFs), optionally one `axis_gauss3x3` instance when `GAUSS_EN=1` (2 line buffers of `H_ACTIVE` x 8 bits + 6 column shift FFs + 8-adder tree — see [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md)), the `motion_core` combinational logic (one 8-bit subtractor, one absolute-value, one comparator, one 9-bit arithmetic shift, one 8-bit adder), and the `axis_fork_pipe` pipeline registers (~50 bits of sideband × `PIPE_STAGES` + 2 acceptance FFs). RAM consumption is external (shared `ram` module). The pixel address counter adds `$clog2(H_ACTIVE × V_ACTIVE)` bits of registered state.
 
 ---
 
@@ -210,8 +335,10 @@ There is no explicit FSM. Fork acceptance tracking and pipeline stall logic live
 | Operation | Latency |
 |-----------|---------|
 | RGB → Y8 (`rgb2ycrcb`) | 1 clock cycle |
+| Gaussian pre-filter (`axis_gauss3x3`, `GAUSS_EN=1`) | 2 clock cycles |
 | RAM read | 1 clock cycle |
-| Total pixel input → mask/vid output | 1 clock cycle |
+| Total pixel input → mask/vid output (`GAUSS_EN=0`) | 1 clock cycle |
+| Total pixel input → mask/vid output (`GAUSS_EN=1`) | 3 clock cycles |
 | Throughput | 1 pixel / cycle (when `both_ready=1`) |
 
 Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame bbox. `axis_bbox_reduce` suppresses bbox output for the first 2 frames (priming period) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.
@@ -228,7 +355,7 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 
 ## 9. Known Limitations
 
-- **No spatial smoothing**: a single noisy pixel produces a mask=1 bit. Erode/dilate filtering is deferred.
+- **No morphological post-filtering**: the binary mask is not cleaned up with erode/dilate. A single noisy pixel that survives the Gaussian pre-filter still produces a mask=1 bit. Morphological opening is deferred.
 - **Fixed THRESH**: compile-time parameter. Runtime control requires promoting to an input port and a `sparevideo_csr` AXI-Lite register.
 - **Fixed ALPHA_SHIFT**: compile-time parameter. Different scenes may benefit from different adaptation rates; runtime control would require the same CSR promotion as THRESH.
 - **`Cr`/`Cb` unused**: `rgb2ycrcb` outputs `cb_o` and `cr_o`; only `y_o` is used. Lint waivers suppress `PINCONNECTEMPTY`/`UNUSEDSIGNAL`.

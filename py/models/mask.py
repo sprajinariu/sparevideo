@@ -14,10 +14,10 @@ Algorithm (online, frame-by-frame with state):
 
 import numpy as np
 
-from models.motion import _rgb_to_y, _compute_mask, _ema_update
+from models.motion import _rgb_to_y, _compute_mask, _ema_update, _gauss3x3
 
 
-def run(frames, thresh=16, alpha_shift=3, **kwargs):
+def run(frames, thresh=16, alpha_shift=3, gauss_en=True, **kwargs):
     """Mask display reference model.
 
     Same motion detection front-end as motion.py (luma, frame-diff mask),
@@ -27,6 +27,7 @@ def run(frames, thresh=16, alpha_shift=3, **kwargs):
         frames: List of numpy arrays (H, W, 3), dtype uint8, RGB order.
         thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
         alpha_shift: EMA smoothing factor (default 3, alpha=1/8).
+        gauss_en: Enable 3x3 Gaussian pre-filter on Y channel (default True).
 
     Returns:
         List of numpy arrays — the expected output frames (B/W only).
@@ -45,15 +46,21 @@ def run(frames, thresh=16, alpha_shift=3, **kwargs):
         # Step 1: RGB -> Y
         y_cur = _rgb_to_y(frame)
 
-        # Step 2: Motion mask
-        mask = _compute_mask(y_cur, y_ref, thresh)
+        # Step 1b: Optional Gaussian pre-filter
+        if gauss_en:
+            y_cur_filt = _gauss3x3(y_cur)
+        else:
+            y_cur_filt = y_cur
+
+        # Step 2: Motion mask (uses filtered Y)
+        mask = _compute_mask(y_cur_filt, y_ref, thresh)
 
         # Step 3: Expand 1-bit mask to 24-bit RGB
         out = np.zeros((h, w, 3), dtype=np.uint8)
         out[mask] = 255
 
-        # Step 4: Update reference buffer (EMA write-back)
-        y_ref = _ema_update(y_cur, y_ref, alpha_shift)
+        # Step 4: Update reference buffer (EMA write-back, uses filtered Y)
+        y_ref = _ema_update(y_cur_filt, y_ref, alpha_shift)
 
         outputs.append(out)
 

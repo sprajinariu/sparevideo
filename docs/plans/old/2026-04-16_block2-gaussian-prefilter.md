@@ -451,6 +451,15 @@ Add model-level tests:
 
 ## Integration Checklist
 
+Steps are ordered — complete each phase before starting the next. Load this checklist into a todo list at the start of implementation so every item is tracked. If deviating from the plan (e.g. skipping a test because frame size is too small), update this checklist with the rationale before moving on.
+
+### Phase 0: Documentation (blocking — do not write RTL until complete)
+
+- [ ] Create architecture doc `docs/specs/axis_gauss3x3-arch.md` (invoke `hardware-arch-doc` skill)
+- [ ] Update `docs/specs/axis_motion_detect-arch.md` to document the Gaussian submodule and `GAUSS_EN` parameter
+
+### Phase 1: RTL implementation
+
 - [ ] Create `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv` with line buffer + window + adder tree
 - [ ] Create `hw/ip/gauss3x3/gauss3x3.core` (FuseSoC core `sparevideo:ip:gauss3x3`)
 - [ ] Add `GAUSS_EN` parameter to `axis_motion_detect` (default 1)
@@ -462,13 +471,27 @@ Add model-level tests:
 - [ ] Add `sparevideo:ip:gauss3x3` dependency to `hw/ip/motion/motion.core`; add RTL to `dv/sim/Makefile`
 - [ ] No changes to `sparevideo_top`, `axis_fork_pipe`, `motion_core`, or `sparevideo_pkg` needed
 - [ ] No changes to `ram`, `axis_bbox_reduce`, or `axis_overlay_bbox` needed
+- [ ] `make lint` passes with no new warnings
+
+### Phase 2: Testbenches
+
 - [ ] Create `hw/ip/gauss3x3/tb/tb_axis_gauss3x3.sv` with tests 1-6; add `test-ip-gauss3x3` target to `dv/sim/Makefile`
 - [ ] Extend `hw/ip/motion/tb/tb_axis_motion_detect.sv` with tests 7-8
+
+### Phase 3: Python model + harness
+
 - [ ] Add `_gauss3x3()` to `py/models/motion.py`
 - [ ] Add `gauss_en` parameter to `py/models/motion.py` and `py/models/mask.py`
-- [ ] Add `GAUSS_EN` to Makefile parameter propagation chain (top Makefile → SIM_VARS → dv/sim/Makefile → VLT_FLAGS → tb parameter)
 - [ ] Add `--gauss-en` to `py/harness.py`
 - [ ] Add Gaussian model tests to `py/tests/test_models.py`
-- [ ] Run `make run-pipeline` with all control flow × GAUSS_EN × ALPHA_SHIFT combinations
-- [ ] Create architecture doc `docs/specs/axis_gauss3x3-arch.md` before implementation (invoke `hardware-arch-doc` skill)
-- [ ] Update `docs/specs/axis_motion_detect-arch.md` to document the Gaussian submodule and `GAUSS_EN` parameter
+- [ ] Add `GAUSS_EN` to Makefile parameter propagation chain (top Makefile → SIM_VARS → dv/sim/Makefile → VLT_FLAGS → tb parameter)
+
+### Phase 4: Verification matrix
+
+- [ ] Run `make run-pipeline` with all control flow × GAUSS_EN × ALPHA_SHIFT combinations at TOLERANCE=0
+
+### Phase 5: Documentation updates (blocking — do not merge/commit final until complete)
+
+- [ ] Update `README.md` with GAUSS_EN option and Gaussian feature description
+- [ ] Update Makefile help text with `GAUSS_EN` option and `test-ip-gauss3x3` entry
+- [ ] Move this plan to `docs/plans/old/` with date stamp

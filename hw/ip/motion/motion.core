@@ -13,6 +13,7 @@ filesets:
     depend:
       - sparevideo:ip:rgb2ycrcb
       - sparevideo:ip:axis
+      - sparevideo:ip:gauss3x3
 
 targets:
   default:

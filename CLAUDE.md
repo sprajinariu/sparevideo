@@ -56,6 +56,7 @@ make setup                   # One-time setup (install deps)
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
 - `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork_pipe: 1-to-2 fork with sideband pipeline)
+- `hw/ip/gauss3x3/rtl/` — 3x3 Gaussian pre-filter on Y channel (axis_gauss3x3: line buffers + adder tree)
 - `hw/ip/motion/rtl/` — Motion detection pipeline (axis_motion_detect, motion_core, axis_bbox_reduce, axis_overlay_bbox)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)

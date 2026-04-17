@@ -12,12 +12,16 @@
 // Architecture:
 //   axis_fork_pipe — AXI4-Stream 1-to-2 fork with sideband pipeline
 //   rgb2ycrcb      — RGB → luma conversion (1-cycle latency)
+//   axis_gauss3x3  — optional 3x3 Gaussian pre-filter (2-cycle latency, GAUSS_EN=1)
 //   motion_core    — combinational: abs-diff threshold + EMA update
 //
-// Pipeline timing (1-cycle total latency):
+// Pipeline timing (GAUSS_EN=0: 1-cycle, GAUSS_EN=1: 3-cycle total latency):
 //   Cycle C  : pixel N accepted → MAC sums computed combinationally in rgb2ycrcb,
 //              mem_rd_addr issued combinationally
-//   Cycle C+1: y_cur registered (rgb2ycrcb output), mem_rd_data arrives from RAM
+//   Cycle C+1: y_cur registered (rgb2ycrcb output)
+//   [GAUSS_EN=1 only]
+//   Cycle C+2: Gaussian line buffer read + column shift stage 1
+//   Cycle C+3: Gaussian output registered (y_smooth), mem_rd_data arrives
 //              → compare & emit
 //
 // Mask logic: a pixel is flagged as motion when abs(Y_cur - Y_prev) > THRESH.
@@ -32,6 +36,7 @@ module axis_motion_detect #(
     parameter int V_ACTIVE    = 240,
     parameter int THRESH      = 16,
     parameter int ALPHA_SHIFT = 3,    // EMA alpha = 1 / (1 << ALPHA_SHIFT), default 1/8
+    parameter int GAUSS_EN    = 1,    // 1 = Gaussian pre-filter enabled, 0 = bypass (raw Y)
     parameter int RGN_BASE    = 0,
     parameter int RGN_SIZE    = H_ACTIVE * V_ACTIVE
 ) (
@@ -67,7 +72,8 @@ module axis_motion_detect #(
     output logic                                    mem_wr_en_o
 );
 
-    localparam int PIPE_STAGES = 1;
+    localparam int GAUSS_LATENCY = (GAUSS_EN != 0) ? 2 : 0;
+    localparam int PIPE_STAGES   = 1 + GAUSS_LATENCY;  // 1 (rgb2ycrcb) + 2 (gauss) = 3
 
     // ---- AXI4-Stream 1-to-2 fork + sideband pipeline ----
     logic [23:0] fork_tdata;
@@ -169,21 +175,74 @@ module axis_motion_detect #(
         .cr_o    (cr_unused)
     );
 
-    // ---- Memory read: issue combinationally at cycle C, data arrives at C+1 ----
+    // ---- Gaussian control signals (1-cycle delayed acceptance) ----
+    logic gauss_pixel_valid;
+    logic gauss_sof;
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i) begin
+            gauss_pixel_valid <= 1'b0;
+            gauss_sof         <= 1'b0;
+        end else if (!fork_stall) begin
+            gauss_pixel_valid <= s_axis_tvalid_i && s_axis_tready_o;
+            gauss_sof         <= s_axis_tuser_i;
+        end
+    end
+
+    // ---- Optional Gaussian pre-filter on Y channel ----
+    logic [7:0] y_smooth;
+
+    generate
+        if (GAUSS_EN != 0) begin : gen_gauss
+            axis_gauss3x3 #(
+                .H_ACTIVE (H_ACTIVE),
+                .V_ACTIVE (V_ACTIVE)
+            ) u_gauss (
+                .clk_i   (clk_i),
+                .rst_n_i (rst_n_i),
+                .valid_i (gauss_pixel_valid),
+                .sof_i   (gauss_sof),
+                .stall_i (fork_stall),
+                .y_i     (y_cur),
+                .y_o     (y_smooth),
+                .valid_o ()
+            );
+        end else begin : gen_no_gauss
+            assign y_smooth = y_cur;
+        end
+    endgenerate
+
+    // ---- Memory read: issue address 1 cycle before data is needed ----
+    // RAM has 1-cycle registered read latency. The motion_core comparison
+    // happens at pipeline stage PIPE_STAGES (when y_smooth and fork outputs
+    // are ready). So the read address must be issued at stage PIPE_STAGES-1:
+    //   GAUSS_EN=0 (PIPE_STAGES=1): pix_addr (combinational, same cycle as acceptance)
+    //   GAUSS_EN=1 (PIPE_STAGES=3): idx_pipe[PIPE_STAGES-2] (2 cycles after acceptance)
+    //
     // During a stall, pix_addr_reg may advance (e.g. wrapping after the last
     // pixel). Register the last non-stall address and re-issue it so
     // mem_rd_data_i stays stable.
+    logic [$clog2(H_ACTIVE * V_ACTIVE)-1:0] mem_rd_idx;
+
+    generate
+        if (GAUSS_EN != 0) begin : gen_rd_idx
+            assign mem_rd_idx = idx_pipe[PIPE_STAGES - 2];
+        end else begin : gen_rd_idx_bypass
+            assign mem_rd_idx = pix_addr;
+        end
+    endgenerate
+
     logic [$clog2(H_ACTIVE * V_ACTIVE)-1:0] pix_addr_hold;
 
     always_ff @(posedge clk_i) begin
         if (!rst_n_i)
             pix_addr_hold <= '0;
         else if (!fork_stall)
-            pix_addr_hold <= pix_addr;
+            pix_addr_hold <= mem_rd_idx;
     end
 
     assign mem_rd_addr_o = ($bits(mem_rd_addr_o))'(RGN_BASE) +
-                           (fork_stall ? pix_addr_hold : pix_addr);
+                           (fork_stall ? pix_addr_hold : mem_rd_idx);
 
     // ---- Motion core (combinational: threshold + EMA) ----
     logic       mask_bit;
@@ -193,7 +252,7 @@ module axis_motion_detect #(
         .THRESH      (THRESH),
         .ALPHA_SHIFT (ALPHA_SHIFT)
     ) u_core (
-        .y_cur_i      (y_cur),
+        .y_cur_i      (y_smooth),   // smoothed Y when GAUSS_EN=1, raw Y when 0
         .y_bg_i       (mem_rd_data_i),
         .mask_bit_o   (mask_bit),
         .ema_update_o (ema_update)

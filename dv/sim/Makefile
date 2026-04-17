@@ -32,7 +32,9 @@ SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
            +CTRL_FLOW=$(CTRL_FLOW)
 
 .PHONY: compile sim sim-waves sw-dry-run clean \
-       test-ip test-ip-rgb2ycrcb test-ip-motion-detect test-ip-bbox-reduce test-ip-overlay-bbox
+       test-ip test-ip-rgb2ycrcb test-ip-gauss3x3 \
+       test-ip-motion-detect test-ip-motion-detect-gauss \
+       test-ip-bbox-reduce test-ip-overlay-bbox
 
 # ---------------------------------------------------------------------------
 # Icarus Verilog — NOT MAINTAINED. Kept for reference only; will likely fail.
@@ -111,6 +113,7 @@ endif
 # Per-block unit testbenches (test-ip)
 # ---------------------------------------------------------------------------
 IP_RGB2YCRCB_RTL = ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv
+IP_GAUSS3X3_RTL  = ../../hw/ip/gauss3x3/rtl/axis_gauss3x3.sv
 IP_MOTION_RTL    = ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
                    ../../hw/top/ram.sv \
                    ../../hw/ip/motion/rtl/motion_core.sv \
@@ -125,7 +128,7 @@ VLT_TB_FLAGS = --binary -sv --timing \
                -Wno-WIDTHTRUNC -Wno-SELRANGE -Wno-WIDTHCONCAT \
                -Wno-UNUSEDSIGNAL -Wno-UNDRIVEN
 
-test-ip: test-ip-rgb2ycrcb test-ip-motion-detect test-ip-bbox-reduce test-ip-overlay-bbox
+test-ip: test-ip-rgb2ycrcb test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-bbox-reduce test-ip-overlay-bbox
 	@echo "All block testbenches passed."
 
 # --- rgb2ycrcb ---
@@ -134,15 +137,32 @@ test-ip-rgb2ycrcb:
 	  $(IP_RGB2YCRCB_RTL) ../../hw/ip/rgb2ycrcb/tb/tb_rgb2ycrcb.sv
 	obj_tb_rgb2ycrcb/Vtb_rgb2ycrcb
 
-# --- axis_motion_detect ---
-test-ip-motion-detect:
-	verilator $(VLT_TB_FLAGS) --top-module tb_axis_motion_detect --Mdir obj_tb_axis_motion_detect \
-	  $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv \
+# Sources shared by both motion detect TB targets
+IP_MOTION_DETECT_SRCS = $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv \
 	  ../../hw/ip/motion/rtl/motion_core.sv \
 	  ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
 	  ../../hw/ip/motion/rtl/axis_motion_detect.sv \
 	  ../../hw/ip/motion/tb/tb_axis_motion_detect.sv
+
+# --- axis_motion_detect (GAUSS_EN=0) ---
+test-ip-motion-detect:
+	verilator $(VLT_TB_FLAGS) -GGAUSS_EN=0 \
+	  --top-module tb_axis_motion_detect --Mdir obj_tb_axis_motion_detect \
+	  $(IP_MOTION_DETECT_SRCS)
 	obj_tb_axis_motion_detect/Vtb_axis_motion_detect
+
+# --- axis_motion_detect (GAUSS_EN=1) ---
+test-ip-motion-detect-gauss:
+	verilator $(VLT_TB_FLAGS) -GGAUSS_EN=1 \
+	  --top-module tb_axis_motion_detect --Mdir obj_tb_axis_motion_detect_gauss \
+	  $(IP_GAUSS3X3_RTL) $(IP_MOTION_DETECT_SRCS)
+	obj_tb_axis_motion_detect_gauss/Vtb_axis_motion_detect
+
+# --- gauss3x3 ---
+test-ip-gauss3x3:
+	verilator $(VLT_TB_FLAGS) --top-module tb_axis_gauss3x3 --Mdir obj_tb_axis_gauss3x3 \
+	  $(IP_GAUSS3X3_RTL) ../../hw/ip/gauss3x3/tb/tb_axis_gauss3x3.sv
+	obj_tb_axis_gauss3x3/Vtb_axis_gauss3x3
 
 # --- axis_bbox_reduce ---
 test-ip-bbox-reduce:
@@ -160,5 +180,6 @@ test-ip-overlay-bbox:
 
 clean:
 	rm -f *.vvp *.vcd *.bin *.vpi
-	rm -rf $(VOBJ_DIR) obj_tb_rgb2ycrcb obj_tb_axis_motion_detect \
+	rm -rf $(VOBJ_DIR) obj_tb_rgb2ycrcb obj_tb_axis_gauss3x3 \
+	       obj_tb_axis_motion_detect obj_tb_axis_motion_detect_gauss \
 	       obj_tb_axis_bbox_reduce obj_tb_axis_overlay_bbox

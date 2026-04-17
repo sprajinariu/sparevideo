@@ -31,7 +31,10 @@ module sparevideo_top #(
     parameter int MOTION_THRESH = 16,
     // EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
     // Default 3 → alpha = 1/8. Higher = slower adaptation.
-    parameter int ALPHA_SHIFT   = 3
+    parameter int ALPHA_SHIFT   = 3,
+    // Gaussian pre-filter: 1 = enabled (3x3 Gaussian on Y before motion compare),
+    // 0 = bypass (raw Y). Default enabled.
+    parameter int GAUSS_EN      = 1
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
@@ -238,6 +241,7 @@ module sparevideo_top #(
         .V_ACTIVE    (V_ACTIVE),
         .THRESH      (MOTION_THRESH),
         .ALPHA_SHIFT (ALPHA_SHIFT),
+        .GAUSS_EN    (GAUSS_EN),
         .RGN_BASE    (RGN_Y_PREV_BASE),
         .RGN_SIZE    (RGN_Y_PREV_SIZE)
     ) u_motion_detect (

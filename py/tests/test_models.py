@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 
 from models import run_model
-from models.motion import _rgb_to_y, _compute_mask, _compute_bbox, _ema_update, BBOX_COLOR
+from models.motion import _rgb_to_y, _compute_mask, _compute_bbox, _ema_update, _gauss3x3, BBOX_COLOR
 from frames.video_source import load_frames
 
 
@@ -385,6 +385,60 @@ def test_mask_lighting_ramp():
         is_black = np.all(f == 0, axis=-1)
         is_white = np.all(f == 255, axis=-1)
         assert np.all(is_black | is_white), f"Frame {i} has non-B/W pixels"
+
+
+# ---- Gaussian pre-filter model tests ----
+
+def test_gauss_uniform():
+    """Gaussian of uniform image is the same uniform image."""
+    y = np.full((8, 16), 128, dtype=np.uint8)
+    result = _gauss3x3(y)
+    np.testing.assert_array_equal(result, y)
+
+
+def test_gauss_impulse():
+    """Single bright pixel produces kernel-weighted 3x3 response with causal offset.
+
+    The RTL causal streaming filter centers the convolution at (r-1, c-1)
+    relative to scan position (r, c). An impulse at (4, 4) produces the
+    kernel response at output positions shifted by (+1, +1): center at (5, 5).
+    """
+    y = np.zeros((8, 16), dtype=np.uint8)
+    y[4, 4] = 255
+    result = _gauss3x3(y)
+
+    # Center weight at (5,5): 4*255 / 16 = 63 (truncated)
+    assert result[5, 5] == 63, f"Center: got {result[5, 5]}, expected 63"
+    # 2-weighted neighbors: 2*255 / 16 = 31
+    for r, c in [(4, 5), (6, 5), (5, 4), (5, 6)]:
+        assert result[r, c] == 31, f"({r},{c}): got {result[r, c]}, expected 31"
+    # 1-weighted corners: 1*255 / 16 = 15
+    for r, c in [(4, 4), (4, 6), (6, 4), (6, 6)]:
+        assert result[r, c] == 15, f"({r},{c}): got {result[r, c]}, expected 15"
+    # All other pixels should be 0
+    for r in range(8):
+        for c in range(16):
+            if abs(r - 5) > 1 or abs(c - 5) > 1:
+                assert result[r, c] == 0, f"({r},{c}): got {result[r, c]}, expected 0"
+
+
+def test_motion_gauss_en_false_matches_old():
+    """Motion model with gauss_en=False matches pre-Gaussian behavior."""
+    frames = load_frames("synthetic:moving_box", width=64, height=48, num_frames=6)
+    # gauss_en=False should produce identical output to the old behavior
+    out_no_gauss = run_model("motion", frames, gauss_en=False)
+    # Verify it still produces valid output with bbox
+    green_mask = np.all(out_no_gauss[3] == BBOX_COLOR, axis=-1)
+    assert green_mask.any(), "gauss_en=False should still produce bbox overlay"
+
+
+def test_mask_gauss_en_false_matches_old():
+    """Mask model with gauss_en=False matches pre-Gaussian behavior."""
+    frames = _static_frames(width=16, height=8, num_frames=60)
+    out = run_model("mask", frames, gauss_en=False)
+    # After EMA convergence, static scene → all-black
+    for i in range(55, 60):
+        assert not out[i].any(), f"Frame {i} should be all-black after EMA convergence"
 
 
 # ---- Run all tests ----

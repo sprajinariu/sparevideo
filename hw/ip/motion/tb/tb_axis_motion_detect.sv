@@ -1,5 +1,9 @@
 // Unit testbench for axis_motion_detect.
 //
+// Parameterized by GAUSS_EN (default 0). Two Makefile targets compile this TB:
+//   test-ip-motion-detect       — GAUSS_EN=0 (raw Y)
+//   test-ip-motion-detect-gauss — GAUSS_EN=1 (Gaussian pre-filter on Y)
+//
 // Tests (in order):
 //   Frame 0 — RAM zero-init → golden mask per pixel, RGB passthrough check
 //   Frame 1 — same pixels, EMA-updated y_prev → golden mask check, RAM EMA verify
@@ -8,6 +12,12 @@
 //   Frame 4 — asymmetric stall: only vid stalls, msk stays ready → verifies no
 //             duplicate transfers on the ready channel (fork desync bug)
 //   Frame 5 — asymmetric stall: only msk stalls, vid stays ready → mirror test
+//   Frame 6 — bright-block pattern → spatial variation for Gaussian edge smoothing
+//   Frame 7 — same bright-block under symmetric stall → Gaussian + stall correctness
+//
+// When GAUSS_EN=0, the golden model uses raw Y for mask/EMA computation.
+// When GAUSS_EN=1, the golden model applies a 3x3 Gaussian with causal streaming
+// offset (kernel centered at (r-1, c-1)) before mask/EMA, matching the RTL.
 //
 // EMA background model: y_prev = y_prev + ((y_cur - y_prev) >>> ALPHA_SHIFT)
 //
@@ -15,10 +25,12 @@
 
 `timescale 1ns / 1ps
 
-module tb_axis_motion_detect;
+module tb_axis_motion_detect #(
+    parameter int GAUSS_EN = 0
+);
 
-    localparam int H           = 4;
-    localparam int V           = 2;
+    localparam int H           = 16;
+    localparam int V           = 8;
     localparam int THRESH      = 16;
     localparam int ALPHA_SHIFT = 3;
     localparam int NUM_PIX     = H * V;
@@ -120,6 +132,7 @@ module tb_axis_motion_detect;
         .V_ACTIVE    (V),
         .THRESH      (THRESH),
         .ALPHA_SHIFT (ALPHA_SHIFT),
+        .GAUSS_EN    (GAUSS_EN),
         .RGN_BASE    (0),
         .RGN_SIZE    (NUM_PIX)
     ) u_dut (
@@ -158,11 +171,14 @@ module tb_axis_motion_detect;
     endfunction
 
     // ---- Pixel arrays ----
-    // frame_pixels: base pixel set (used for frames 0 and 1)
+    // frame_pixels: base pixel set (used for frames 0-5)
     logic [23:0] frame_pixels [NUM_PIX];
-    // mixed_pixels: crafted for threshold boundary (frame 2 and 3)
+    // mixed_pixels: crafted for threshold boundary (frames 2-5)
     logic [23:0] mixed_pixels [NUM_PIX];
-    // y_prev: Y8 values from the previously driven frame (updated by TB)
+    // block_pixels: bright block on dark background (frames 6-7)
+    logic [23:0] block_pixels [NUM_PIX];
+    // y_prev: Y8 values from the previously driven frame (updated by TB).
+    // Stored as 1D flat array, but for Gaussian computation we index as [r*H+c].
     logic [7:0]  y_prev [NUM_PIX];
 
     // ---- Capture arrays ----
@@ -170,6 +186,49 @@ module tb_axis_motion_detect;
     logic        cap_msk [NUM_PIX];
 
     integer num_errors = 0;
+
+    // ---- Gaussian golden model ----
+    // 3x3 Gaussian with causal streaming offset: kernel centered at (r-1, c-1).
+    // Edge replication (clamp to image bounds). Integer >>4 truncation.
+    // When GAUSS_EN=0, returns raw Y unchanged.
+    function automatic logic [7:0] gauss_at(
+        input logic [7:0] y_flat [NUM_PIX],
+        input int r, input int c
+    );
+        int cr, cc, sum, wr, wc;
+        if (GAUSS_EN == 0)
+            return y_flat[r * H + c];
+        sum = 0;
+        for (int dr = 0; dr < 3; dr++) begin
+            for (int dc = 0; dc < 3; dc++) begin
+                // Window centered at (r-1, c-1): rows r-2..r, cols c-2..c
+                cr = r - 2 + dr;
+                cc = c - 2 + dc;
+                if (cr < 0) cr = 0;
+                else if (cr >= V) cr = V - 1;
+                if (cc < 0) cc = 0;
+                else if (cc >= H) cc = H - 1;
+                // Separable kernel: [1,2,1] x [1,2,1]
+                wr = (dr == 1) ? 2 : 1;
+                wc = (dc == 1) ? 2 : 1;
+                sum = sum + wr * wc * int'({24'b0, y_flat[cr * H + cc]});
+            end
+        end
+        return 8'(sum >> 4);
+    endfunction
+
+    // Compute effective Y (raw or Gaussian-filtered) for a full frame.
+    // Returns result in y_eff[].
+    logic [7:0] y_eff [NUM_PIX];
+
+    task automatic compute_y_eff(input logic [23:0] pixels [NUM_PIX]);
+        logic [7:0] y_raw [NUM_PIX];
+        for (int i = 0; i < NUM_PIX; i++)
+            y_raw[i] = y_of(pixels[i]);
+        for (int r = 0; r < V; r++)
+            for (int c = 0; c < H; c++)
+                y_eff[r * H + c] = gauss_at(y_raw, r, c);
+    endtask
 
     // ---- Tasks ----
 
@@ -193,11 +252,11 @@ module tb_axis_motion_detect;
     task automatic wait_frame_captured;
         integer timeout;
         timeout = 0;
-        while ((vid_cap_cnt < NUM_PIX || msk_cap_cnt < NUM_PIX) && timeout < 10000) begin
+        while ((vid_cap_cnt < NUM_PIX || msk_cap_cnt < NUM_PIX) && timeout < 50000) begin
             @(posedge clk);
             timeout = timeout + 1;
         end
-        if (timeout >= 10000) begin
+        if (timeout >= 50000) begin
             $display("FAIL: capture timed out (vid=%0d msk=%0d)", vid_cap_cnt, msk_cap_cnt);
             num_errors = num_errors + 1;
         end
@@ -216,20 +275,19 @@ module tb_axis_motion_detect;
         $display("%s: vid passthrough check done", label);
     endtask
 
-    // Check mask bits against golden per-pixel expected array.
-    task automatic check_mask_golden(input logic [7:0] y_p [NUM_PIX],
-                                     input logic [23:0] pixels [NUM_PIX],
-                                     input string label);
+    // Check mask bits against golden model (uses y_eff[] — must call compute_y_eff first).
+    task automatic check_mask_golden(input logic [23:0] pixels [NUM_PIX], input string label);
         integer i;
-        logic [7:0] y_c, diff;
+        logic [7:0] yc, diff;
         logic exp_msk;
+        compute_y_eff(pixels);
         for (i = 0; i < NUM_PIX; i = i + 1) begin
-            y_c     = y_of(pixels[i]);
-            diff    = (y_c > y_p[i]) ? (y_c - y_p[i]) : (y_p[i] - y_c);
+            yc      = y_eff[i];
+            diff    = (yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc);
             exp_msk = (diff > THRESH[7:0]);
             if (cap_msk[i] !== exp_msk) begin
-                $display("FAIL %s msk px%0d: got=%0b exp=%0b y_cur=%0d y_prev=%0d diff=%0d",
-                         label, i, cap_msk[i], exp_msk, y_c, y_p[i], diff);
+                $display("FAIL %s msk px%0d (%0d,%0d): got=%0b exp=%0b yeff=%0d yprev=%0d d=%0d",
+                         label, i, i/H, i%H, cap_msk[i], exp_msk, yc, y_prev[i], diff);
                 num_errors = num_errors + 1;
             end
         end
@@ -256,37 +314,46 @@ module tb_axis_motion_detect;
         $display("%s: RAM EMA check done", label);
     endtask
 
-    // Update y_prev[] using EMA: bg_new = bg + ((y_cur - bg) >>> ALPHA_SHIFT)
+    // Update y_prev[] using EMA on effective Y (raw or Gaussian-filtered).
+    // Must call compute_y_eff before this (y_eff[] is used).
     task automatic update_y_prev(input logic [23:0] pixels [NUM_PIX]);
-        integer i;
-        logic [7:0] y_c;
         logic signed [8:0] delta, step;
-        for (i = 0; i < NUM_PIX; i = i + 1) begin
-            y_c   = y_of(pixels[i]);
-            delta = {1'b0, y_c} - {1'b0, y_prev[i]};
-            step  = delta >>> ALPHA_SHIFT;
+        compute_y_eff(pixels);
+        for (int i = 0; i < NUM_PIX; i++) begin
+            delta     = {1'b0, y_eff[i]} - {1'b0, y_prev[i]};
+            step      = delta >>> ALPHA_SHIFT;
             y_prev[i] = y_prev[i] + step[7:0];
         end
     endtask
 
     // Build mixed_pixels relative to current y_prev (EMA state).
-    // Pixels are crafted so y_of(mixed_pixels[i]) = y_prev[i] + delta.
-    // Deltas cycle: THRESH-1, THRESH, THRESH+1, 0.
+    // Pixels are crafted so the effective Y produces a known diff vs y_prev.
+    // For GAUSS_EN=0, y_of(gray_pixel) = v exactly (since 77+150+29 = 256).
+    // For GAUSS_EN=1, the Gaussian smooths neighbors, so we use a uniform-value
+    // frame per row-band where the Gaussian has no spatial effect (all neighbors
+    // are identical → Gaussian output = input).
+    //
+    // Deltas cycle per row: THRESH-1 (mask=0), THRESH (mask=0, strict >),
+    //                       THRESH+1 (mask=1), 0 (mask=0).
     task automatic build_mixed_pixels;
-        integer i;
-        logic [7:0] yp;
+        integer i, row;
+        logic [7:0] yp_center;
         integer delta, target_y;
         for (i = 0; i < NUM_PIX; i = i + 1) begin
-            yp = y_prev[i];
-            case (i % 4)
+            // Use the center-of-row y_prev as baseline. For GAUSS_EN=1, all pixels
+            // in the same row get the same value, so the Gaussian has no spatial
+            // effect (uniform row → gauss output = input).
+            row = i / H;
+            yp_center = y_prev[row * H + H / 2];
+            case (row % 4)
                 0:       delta = THRESH - 1;  // expect mask=0
                 1:       delta = THRESH;       // expect mask=0 (strict >)
                 2:       delta = THRESH + 1;   // expect mask=1
                 default: delta = 0;            // expect mask=0
             endcase
-            target_y = yp + delta;
+            target_y = yp_center + delta;
             if (target_y > 255) target_y = 255;
-            // Gray pixel R=G=B=v gives Y=v (since (77+150+29)*v >> 8 = v)
+            // Gray pixel R=G=B=v gives Y=v
             mixed_pixels[i] = {8'(target_y), 8'(target_y), 8'(target_y)};
         end
     endtask
@@ -316,15 +383,33 @@ module tb_axis_motion_detect;
     integer j;
 
     initial begin
-        // Initialise pixel arrays
-        frame_pixels[0] = 24'hFF_00_00;  // red
-        frame_pixels[1] = 24'h00_FF_00;  // green
-        frame_pixels[2] = 24'h00_00_FF;  // blue
-        frame_pixels[3] = 24'hFF_FF_00;  // yellow
-        frame_pixels[4] = 24'h80_80_80;  // gray
-        frame_pixels[5] = 24'hFF_FF_FF;  // white
-        frame_pixels[6] = 24'h40_80_C0;
-        frame_pixels[7] = 24'hC0_40_80;
+        // Initialise frame_pixels: use varied colors across the 16x8 frame.
+        // Row 0-1: reds/greens/blues/yellows (repeating 4-pixel pattern)
+        // Row 2-3: grays at different intensities
+        // Row 4-5: same as rows 0-1 (tests spatial variation across rows)
+        // Row 6-7: bright colors
+        for (j = 0; j < NUM_PIX; j = j + 1) begin
+            case (j % 8)
+                0:       frame_pixels[j] = 24'hFF_00_00;  // red
+                1:       frame_pixels[j] = 24'h00_FF_00;  // green
+                2:       frame_pixels[j] = 24'h00_00_FF;  // blue
+                3:       frame_pixels[j] = 24'hFF_FF_00;  // yellow
+                4:       frame_pixels[j] = 24'h80_80_80;  // gray
+                5:       frame_pixels[j] = 24'hFF_FF_FF;  // white
+                6:       frame_pixels[j] = 24'h40_80_C0;
+                default: frame_pixels[j] = 24'hC0_40_80;
+            endcase
+        end
+
+        // Initialise block_pixels: bright block at rows 2-5, cols 4-11; dark elsewhere.
+        // Gray pixels R=G=B=v → Y=v (since 77+150+29 = 256).
+        // Provides spatial variation for Gaussian edge smoothing tests.
+        for (j = 0; j < NUM_PIX; j = j + 1) begin
+            if (j / H >= 2 && j / H <= 5 && j % H >= 4 && j % H <= 11)
+                block_pixels[j] = 24'hC8_C8_C8;  // Y=200
+            else
+                block_pixels[j] = 24'h00_00_00;  // Y=0
+        end
 
         // y_prev starts at 0 (RAM zero-init)
         for (j = 0; j < NUM_PIX; j = j + 1)
@@ -349,7 +434,7 @@ module tb_axis_motion_detect;
         join
         repeat (5) @(posedge clk);
         check_vid_passthrough(frame_pixels, "frame0");
-        check_mask_golden(y_prev, frame_pixels, "frame0");
+        check_mask_golden(frame_pixels, "frame0");
         // y_prev stays 0 for checking frame 0; update after checks
         update_y_prev(frame_pixels);
 
@@ -364,7 +449,7 @@ module tb_axis_motion_detect;
         join
         repeat (5) @(posedge clk);
         check_vid_passthrough(frame_pixels, "frame1");
-        check_mask_golden(y_prev, frame_pixels, "frame1");
+        check_mask_golden(frame_pixels, "frame1");
         update_y_prev(frame_pixels);
         // Wait a few extra cycles for last RAM write-back to settle
         repeat (5) @(posedge clk);
@@ -384,13 +469,14 @@ module tb_axis_motion_detect;
         join
         repeat (5) @(posedge clk);
         check_vid_passthrough(mixed_pixels, "frame2");
-        check_mask_golden(y_prev, mixed_pixels, "frame2");
+        check_mask_golden(mixed_pixels, "frame2");
         update_y_prev(mixed_pixels);
 
         // ================================================================
         // Frame 3: same mixed-motion under consumer stall
         // ================================================================
         $display("=== Frame 3 (mixed-motion + stall) ===");
+        build_mixed_pixels();
         reset_capture();
         stall_active = 1'b1;
         fork
@@ -400,7 +486,7 @@ module tb_axis_motion_detect;
         stall_active = 1'b0;
         repeat (5) @(posedge clk);
         check_vid_passthrough(mixed_pixels, "frame3");
-        check_mask_golden(y_prev, mixed_pixels, "frame3");
+        check_mask_golden(mixed_pixels, "frame3");
         update_y_prev(mixed_pixels);
         // RAM should now hold EMA-updated values from frame 3
         repeat (5) @(posedge clk);
@@ -431,7 +517,7 @@ module tb_axis_motion_detect;
             num_errors = num_errors + 1;
         end
         check_vid_passthrough(mixed_pixels, "frame4");
-        check_mask_golden(y_prev, mixed_pixels, "frame4");
+        check_mask_golden(mixed_pixels, "frame4");
         update_y_prev(mixed_pixels);
 
         // ================================================================
@@ -455,16 +541,54 @@ module tb_axis_motion_detect;
             num_errors = num_errors + 1;
         end
         check_vid_passthrough(mixed_pixels, "frame5");
-        check_mask_golden(y_prev, mixed_pixels, "frame5");
+        check_mask_golden(mixed_pixels, "frame5");
         update_y_prev(mixed_pixels);
+
+        // ================================================================
+        // Frame 6: bright block on dark background — spatial variation
+        // for Gaussian edge smoothing (mask at block boundaries changes
+        // with GAUSS_EN=1 vs 0). No stall.
+        // ================================================================
+        $display("=== Frame 6 (bright block, spatial Gaussian test) ===");
+        reset_capture();
+        fork
+            drive_frame(block_pixels);
+            wait_frame_captured();
+        join
+        repeat (5) @(posedge clk);
+        check_vid_passthrough(block_pixels, "frame6");
+        check_mask_golden(block_pixels, "frame6");
+        update_y_prev(block_pixels);
+        repeat (5) @(posedge clk);
+        check_ram_ema("frame6");
+
+        // ================================================================
+        // Frame 7: same bright block under symmetric stall — verifies
+        // Gaussian + pipeline stall interaction doesn't corrupt data.
+        // ================================================================
+        $display("=== Frame 7 (bright block + stall) ===");
+        reset_capture();
+        stall_active = 1'b1;
+        fork
+            drive_frame(block_pixels);
+            wait_frame_captured();
+        join
+        stall_active = 1'b0;
+        repeat (5) @(posedge clk);
+        check_vid_passthrough(block_pixels, "frame7");
+        check_mask_golden(block_pixels, "frame7");
+        update_y_prev(block_pixels);
+        repeat (5) @(posedge clk);
+        check_ram_ema("frame7");
 
         // ================================================================
         // Summary
         // ================================================================
         if (num_errors > 0) begin
-            $fatal(1, "tb_axis_motion_detect FAILED with %0d errors", num_errors);
+            $fatal(1, "tb_axis_motion_detect (GAUSS_EN=%0d) FAILED: %0d errors",
+                   GAUSS_EN, num_errors);
         end else begin
-            $display("tb_axis_motion_detect PASSED — 6 frames OK");
+            $display("tb_axis_motion_detect (GAUSS_EN=%0d) PASSED — 8 frames OK", GAUSS_EN);
             $finish;
         end
     end

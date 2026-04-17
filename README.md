@@ -12,6 +12,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 |----------|--------|
 | [`sparevideo-top-arch.md`](docs/specs/sparevideo-top-arch.md) | Top-level pipeline, clock domains, FIFO sizing, SVAs |
 | [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
+| [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
 | [`axis_bbox_reduce-arch.md`](docs/specs/axis_bbox_reduce-arch.md) | Mask → bounding-box reduction |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | Rectangle overlay on RGB video |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
@@ -33,6 +34,9 @@ hw/ip/rgb2ycrcb/rtl/
 
 hw/ip/axis/rtl/
 └── axis_fork_pipe.sv          Reusable AXI4-Stream 1-to-2 fork with sideband pipeline
+
+hw/ip/gauss3x3/rtl/
+└── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (line buffers + adder tree)
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: glue (fork + rgb2ycrcb + core + memory)
@@ -56,6 +60,9 @@ third_party/verilog-axis/rtl/  Vendored alexforencich/verilog-axis (MIT)
 ```
 hw/ip/rgb2ycrcb/tb/
 └── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
+
+hw/ip/gauss3x3/tb/
+└── tb_axis_gauss3x3.sv        6 tests: uniform/impulse/gradient/checkerboard/stall/SOF reset
 
 hw/ip/motion/tb/
 ├── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
@@ -174,6 +181,7 @@ make render
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
 | `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `ALPHA_SHIFT` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
+| `GAUSS_EN` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
 | `SOURCE` | ✓ | `prepare` only |
@@ -183,6 +191,7 @@ make render
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
+make test-ip-gauss3x3        # axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF
 make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
 make test-ip-bbox-reduce     # axis_bbox_reduce: 9 tests, edge cases, SOF reset
 make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure
@@ -205,6 +214,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
 | `ALPHA_SHIFT` | `3` | EMA background adaptation rate: `alpha = 1/(1 << N)`. Higher = slower adaptation (more noise suppression, longer departure ghosts). 0 = raw frame differencing (no EMA). Compile-time RTL parameter propagated to Verilator via `-G`. |
+| `GAUSS_EN` | `1` | Gaussian pre-filter on Y channel: `1` = enabled (3x3 blur before motion threshold), `0` = disabled (raw Y). Reduces salt-and-pepper noise in the motion mask. Compile-time RTL parameter propagated to Verilator via `-G`. |
 
 ### Synthetic Sources
 
