@@ -19,14 +19,15 @@ The module does **not** include: camera input (MIPI CSI-2), AXI-Lite register ac
 
 ```
 sparevideo_top (top level)
-├── axis_async_fifo  (u_fifo_in)    — CDC clk_pix → clk_dsp, vendored verilog-axis
-├── ram              (u_ram)        — dual-port byte RAM, Y8 prev-frame buffer
-├── axis_motion_detect (u_motion_detect)
-│   └── rgb2ycrcb    (u_rgb2ycrcb)  — RGB888 → Y8 (1-cycle pipeline)
-├── axis_bbox_reduce (u_bbox_reduce) — mask → {min_x,max_x,min_y,max_y}
-├── axis_overlay_bbox (u_overlay_bbox) — draw bbox rectangle on RGB video
-├── axis_async_fifo  (u_fifo_out)   — CDC clk_dsp → clk_pix, vendored verilog-axis
-└── vga_controller   (u_vga)        — streaming pixel → VGA timing + RGB output
+├── axis_async_fifo    (u_fifo_in)       — CDC clk_pix → clk_dsp, vendored verilog-axis
+├── ram                (u_ram)           — dual-port byte RAM, Y8 prev-frame buffer
+├── axis_fork          (u_fork)          — 1-to-2 broadcast: fork_a → motion detect, fork_b → overlay
+├── axis_motion_detect (u_motion_detect) — mask-only producer
+│   └── rgb2ycrcb      (u_rgb2ycrcb)    — RGB888 → Y8 (1-cycle pipeline)
+├── axis_bbox_reduce   (u_bbox_reduce)   — mask → {min_x,max_x,min_y,max_y}
+├── axis_overlay_bbox  (u_overlay_bbox)  — draw bbox rectangle on RGB video
+├── axis_async_fifo    (u_fifo_out)      — CDC clk_dsp → clk_pix, vendored verilog-axis
+└── vga_controller     (u_vga)          — streaming pixel → VGA timing + RGB output
 ```
 
 ---
@@ -92,32 +93,85 @@ The processing pipeline itself (motion detection → bbox reduction → overlay)
 ## 5. Internal Architecture
 
 ```
-clk_pix domain                   clk_dsp domain                                           clk_pix domain
-─────────────────                ──────────────────────────────────────────────────         ─────────────────
-                                  ┌─► u_motion_detect ─ vid ─► u_overlay_bbox ─► ovl ─┐
-s_axis ──► u_fifo_in ──► dsp_in ─┤                                                    ├─[mux]─► u_fifo_out ──► pix_out ──► u_vga ──► VGA pins
-                                  └──────────── (passthrough bypass) ──────────────────┘   ▲
-                                         │                                ▲            ctrl_flow_i
-                                         └───── msk ──► u_bbox_reduce ───┘ (bbox sideband)
-                                         │
-                                    u_ram (port A, read/write per pixel)
+                         sparevideo_top
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │                                                                              │
+  │  s_axis (RGB888 + tlast + tuser)          clk_pix domain                     │
+  │  ─────────────────────────────────────────────────────────                   │
+  │           │                                                                  │
+  │           ▼                                                                  │
+  │    ┌─────────────┐  CDC: clk_pix → clk_dsp                                   │
+  │    │  u_fifo_in  │                                                           │
+  │    └──────┬──────┘                                                           │
+  │           │  dsp_in (RGB + tlast + tuser)   clk_dsp domain                   │
+  │           │  ──────────────────────────────────────────────                  │
+  │           ▼                                                                  │
+  │    ┌─────────────┐  1-to-2 broadcast (gated tvalid=0 for passthrough)        │
+  │    │   u_fork    │                                                           │
+  │    └──┬───────┬──┘                                                           │
+  │       │       └───────────────────────────────────────────┐                  │
+  │  fork_a (Mask pipe)                                 fork_b (RGB pipe)        │
+  │       │                                                   │                  │
+  │       ▼                                                   │                  │
+  │    ┌──────────────────┐    ┌───────────┐                  │                  │
+  │    │ u_motion_detect  │    │   u_ram   │  BG model        │                  │
+  │    │  rgb2ycrcb       │◄──►│  (port A) │  (Y8, H×V bytes) │                  │
+  │    │  [gauss3x3]      │    └───────────┘                  │                  │
+  │    │  motion_core     │                                   │                  │
+  │    └────────┬─────────┘                                   │                  │
+  │             │  msk (1-bit + tlast + tuser)                │                  │
+  │             ▼                                             │                  │
+  │    ┌──────────────────┐                                   │                  │
+  │    │  u_bbox_reduce   │  accumulates min/max; latches     │                  │
+  │    │                  │  at EOF                           │                  │
+  │    └────────┬─────────┘                                   │                  │
+  │             │  bbox {min_x,max_x,min_y,max_y}             │                  │
+  │             ▼                                             ▼                  │
+  │    ┌────────────────────────────────────────────────────────────┐            │
+  │    │                   u_overlay_bbox                           │            │
+  │    │   draws green rect on bbox edge; pass-through otherwise    │            │
+  │    └────────────────────┬───────────────────────────────────────┘            │
+  │                         │  ovl (RGB + tlast + tuser)                         │
+  │                         │                                                    │
+  │    ┌────────────────────┴─────────────────────────────┐                      │
+  │    │  ctrl_flow mux                                   │                      │
+  │    │  passthrough → dsp_in                            │                      │
+  │    │  motion      → ovl                               │                      │
+  │    │  mask        → msk (Output of u_motion_detect)   │                      │
+  │    └────────────────────┬─────────────────────────────┘                      │
+  │                         │  proc (RGB + tlast + tuser)                        │
+  │                         ▼                                                    │
+  │                 ┌──────────────┐  CDC: clk_dsp → clk_pix                     │
+  │                 │  u_fifo_out  │                                             │
+  │                 └──────┬───────┘                                             │
+  │                        │  pix_out (RGB + tlast + tuser)    clk_pix domain    │
+  │                        ▼                                                     │
+  │                 ┌──────────────┐  held in reset until first tuser=1          │
+  │                 │    u_vga     │                                             │
+  │                 └──────┬───────┘                                             │
+  │                        │                                                     |
+  | ─────────────────────────────────────────────────────────                    │
+  │  VGA pins: hsync, vsync, R[7:0], G[7:0], B[7:0]                              │
+  │                                                                              │
+  └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The control-flow mux selects between:
-- **Passthrough** (`ctrl_flow_i = 2'b00`): `dsp_in` feeds directly into `u_fifo_out`. Motion pipeline input `tvalid` is gated to 0; output `tready` is tied to 1.
-- **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. This is the default path.
+- **Passthrough** (`ctrl_flow_i = 2'b00`): `dsp_in` feeds directly into `u_fifo_out`. `u_fork` input `tvalid` is gated to 0; overlay output `tready` is tied to 1.
+- **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. Both fork outputs are active; `u_fork` provides RGB to the overlay while also feeding `u_motion_detect` for mask/bbox. This is the default path.
 - **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure.
 
 ### Submodule roles
 
 1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
-2. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the per-pixel background model from `u_ram` port A, computes `|Y_cur − bg|`, and emits a 1-bit motion mask plus the original RGB video with matched latency. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes an EMA-updated background value back to RAM on acceptance: `bg_new = bg + ((Y_cur - bg) >>> ALPHA_SHIFT)`. This temporally smooths the background model, suppressing sensor noise and adapting to gradual lighting changes. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md) §4 for the EMA algorithm details.
-3. **u_ram**: dual-port byte RAM (port A for motion detect background model, port B reserved). Zero-initialized so frame 0 reads all-motion (background starts at 0, converges via EMA over subsequent frames).
-4. **u_bbox_reduce**: accumulates `{min_x, max_x, min_y, max_y}` over motion pixels; latches at EOF. The first 2 frames after reset are suppressed (`bbox_empty` forced high) to avoid false full-frame bboxes from zeroed RAM. Drives `msk_tready` tied 1 (always ready).
-5. **u_overlay_bbox**: for each pixel, checks if `(col, row)` is on the bbox rectangle edge; substitutes `BBOX_COLOR` (bright green) when on the edge and `bbox_empty=0`. Pure pass-through otherwise.
-6. **u_fifo_out**: crosses the overlaid RGB stream back to `clk_pix`. Depth 32 entries.
-7. **vga_rst_n gating**: the VGA controller is held in reset until the first `tuser=1` pixel exits `u_fifo_out`. This aligns the VGA scan to a frame boundary regardless of FIFO fill time.
-8. **u_vga**: drives horizontal/vertical counters, asserts `pixel_ready_o` during the active region, gates RGB output to 0 during blanking.
+2. **u_fork**: zero-latency 1-to-2 broadcast fork. Splits the DSP-domain stream so that `fork_b` (RGB) feeds the overlay directly while `fork_a` (RGB) feeds the motion detect mask pipeline. Per-output acceptance tracking prevents duplicate transfers on asymmetric consumer stalls. Instantiated only in the motion pipeline path; the fork input `tvalid` is gated to 0 in passthrough mode.
+3. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the per-pixel background model from `u_ram` port A, computes `|Y_cur − bg|`, and emits a **1-bit motion mask**. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes an EMA-updated background value back to RAM on acceptance: `bg_new = bg + ((Y_cur - bg) >>> ALPHA_SHIFT)`. This temporally smooths the background model, suppressing sensor noise and adapting to gradual lighting changes. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md) §4 for the EMA algorithm details.
+4. **u_ram**: dual-port byte RAM (port A for motion detect background model, port B reserved). Zero-initialized so frame 0 reads all-motion (background starts at 0, converges via EMA over subsequent frames).
+5. **u_bbox_reduce**: accumulates `{min_x, max_x, min_y, max_y}` over motion pixels; latches at EOF. The first 2 frames after reset are suppressed (`bbox_empty` forced high) to avoid false full-frame bboxes from zeroed RAM. Drives `msk_tready` tied 1 (always ready).
+6. **u_overlay_bbox**: receives RGB pixels from `fork_b` and bbox sideband from `u_bbox_reduce`. For each pixel, checks if `(col, row)` is on the bbox rectangle edge; substitutes `BBOX_COLOR` (bright green) when on the edge and `bbox_empty=0`. Pure pass-through otherwise.
+7. **u_fifo_out**: crosses the overlaid RGB stream back to `clk_pix`. Depth 32 entries.
+8. **vga_rst_n gating**: the VGA controller is held in reset until the first `tuser=1` pixel exits `u_fifo_out`. This aligns the VGA scan to a frame boundary regardless of FIFO fill time.
+9. **u_vga**: drives horizontal/vertical counters, asserts `pixel_ready_o` during the active region, gates RGB output to 0 during blanking.
 
 ### AXI4-Stream protocol
 
@@ -135,7 +189,7 @@ The control-flow mux selects between:
 | Domain | Clock | Modules |
 |--------|-------|---------|
 | `clk_pix` | 25 MHz | source driver, `u_fifo_in` write side, `u_fifo_out` read side, `u_vga`, VGA reset gating |
-| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_motion_detect`, `u_ram`, `u_bbox_reduce`, `u_overlay_bbox`, `u_fifo_out` write side |
+| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_bbox_reduce`, `u_overlay_bbox`, `u_fifo_out` write side |
 
 CDC crossings use vendored `axis_async_fifo` from [alexforencich/verilog-axis](https://github.com/alexforencich/verilog-axis) (MIT). Active-high resets are derived at the top level: `rst_pix = ~rst_pix_n_i`, `rst_dsp = ~rst_dsp_n_i`.
 

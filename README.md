@@ -33,13 +33,13 @@ hw/ip/rgb2ycrcb/rtl/
 └── rgb2ycrcb.sv               RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point)
 
 hw/ip/axis/rtl/
-└── axis_fork_pipe.sv          Reusable AXI4-Stream 1-to-2 fork with sideband pipeline
+└── axis_fork.sv               Zero-latency AXI4-Stream 1-to-2 broadcast fork with per-output acceptance tracking
 
 hw/ip/gauss3x3/rtl/
 └── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (line buffers + adder tree)
 
 hw/ip/motion/rtl/
-├── axis_motion_detect.sv      Motion detector: glue (fork + rgb2ycrcb + core + memory)
+├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
 ├── motion_core.sv             Pure-combinational: abs-diff threshold + EMA background update
 ├── axis_bbox_reduce.sv        Mask → bounding-box accumulator
 └── axis_overlay_bbox.sv       Bounding-box rectangle overlay on RGB video

@@ -5,15 +5,12 @@
 //   test-ip-motion-detect-gauss — GAUSS_EN=1 (Gaussian pre-filter on Y)
 //
 // Tests (in order):
-//   Frame 0 — RAM zero-init → golden mask per pixel, RGB passthrough check
+//   Frame 0 — RAM zero-init → golden mask per pixel
 //   Frame 1 — same pixels, EMA-updated y_prev → golden mask check, RAM EMA verify
 //   Frame 2 — mixed-motion: pixels crafted for threshold boundary vs EMA y_prev
-//   Frame 3 — same mixed-motion under consumer stall → verifies stall correctness
-//   Frame 4 — asymmetric stall: only vid stalls, msk stays ready → verifies no
-//             duplicate transfers on the ready channel (fork desync bug)
-//   Frame 5 — asymmetric stall: only msk stalls, vid stays ready → mirror test
-//   Frame 6 — bright-block pattern → spatial variation for Gaussian edge smoothing
-//   Frame 7 — same bright-block under symmetric stall → Gaussian + stall correctness
+//   Frame 3 — same mixed-motion under msk consumer stall → verifies stall correctness
+//   Frame 4 — bright-block pattern → spatial variation for Gaussian edge smoothing
+//   Frame 5 — same bright-block under symmetric stall → Gaussian + stall correctness
 //
 // When GAUSS_EN=0, the golden model uses raw Y for mask/EMA computation.
 // When GAUSS_EN=1, the golden model applies a 3x3 Gaussian with causal streaming
@@ -58,43 +55,33 @@ module tb_axis_motion_detect #(
     end
 
     // ---- DUT outputs ----
-    logic [23:0] vid_tdata;
-    logic        vid_tvalid, vid_tlast, vid_tuser;
     logic        msk_tdata;
     logic        msk_tvalid, msk_tlast, msk_tuser;
 
     // Consumer ready — driven from test
-    logic drv_vid_rdy = 1'b1;
     logic drv_msk_rdy = 1'b1;
-    logic vid_tready, msk_tready;
-    assign vid_tready = drv_vid_rdy;
+    logic msk_tready;
     assign msk_tready = drv_msk_rdy;
 
-    // ---- Stall-pattern generator ----
+    // ---- Stall-pattern generator (symmetric: both directions stall together) ----
     localparam int STALL_LEN = 10;
     localparam int OPEN_LEN  = 3;
 
     logic stall_active = 1'b0;
-    // Asymmetric stall: only one channel stalls, the other stays ready.
-    // 0 = symmetric (both stall), 1 = vid-only stall, 2 = msk-only stall.
-    integer stall_mode = 0;
     integer stall_ctr  = 0;
 
     always_ff @(posedge clk) begin
         if (stall_active) begin
             if (stall_ctr < STALL_LEN - 1) begin
-                drv_vid_rdy <= (stall_mode == 2) ? 1'b1 : 1'b0;
-                drv_msk_rdy <= (stall_mode == 1) ? 1'b1 : 1'b0;
+                drv_msk_rdy <= 1'b0;
                 stall_ctr   <= stall_ctr + 1;
             end else if (stall_ctr < STALL_LEN + OPEN_LEN - 1) begin
-                drv_vid_rdy <= 1'b1;
                 drv_msk_rdy <= 1'b1;
                 stall_ctr   <= stall_ctr + 1;
             end else begin
                 stall_ctr <= 0;
             end
         end else begin
-            drv_vid_rdy <= 1'b1;
             drv_msk_rdy <= 1'b1;
             stall_ctr   <= 0;
         end
@@ -143,11 +130,6 @@ module tb_axis_motion_detect #(
         .s_axis_tready_o     (s_tready),
         .s_axis_tlast_i      (s_tlast),
         .s_axis_tuser_i      (s_tuser),
-        .m_axis_vid_tdata_o  (vid_tdata),
-        .m_axis_vid_tvalid_o (vid_tvalid),
-        .m_axis_vid_tready_i (vid_tready),
-        .m_axis_vid_tlast_o  (vid_tlast),
-        .m_axis_vid_tuser_o  (vid_tuser),
         .m_axis_msk_tdata_o  (msk_tdata),
         .m_axis_msk_tvalid_o (msk_tvalid),
         .m_axis_msk_tready_i (msk_tready),
@@ -171,18 +153,17 @@ module tb_axis_motion_detect #(
     endfunction
 
     // ---- Pixel arrays ----
-    // frame_pixels: base pixel set (used for frames 0-5)
+    // frame_pixels: base pixel set (used for frames 0-3)
     logic [23:0] frame_pixels [NUM_PIX];
-    // mixed_pixels: crafted for threshold boundary (frames 2-5)
+    // mixed_pixels: crafted for threshold boundary (frames 2-3)
     logic [23:0] mixed_pixels [NUM_PIX];
-    // block_pixels: bright block on dark background (frames 6-7)
+    // block_pixels: bright block on dark background (frames 4-5)
     logic [23:0] block_pixels [NUM_PIX];
     // y_prev: Y8 values from the previously driven frame (updated by TB).
     // Stored as 1D flat array, but for Gaussian computation we index as [r*H+c].
     logic [7:0]  y_prev [NUM_PIX];
 
     // ---- Capture arrays ----
-    logic [23:0] cap_vid [NUM_PIX];
     logic        cap_msk [NUM_PIX];
 
     integer num_errors = 0;
@@ -248,31 +229,18 @@ module tb_axis_motion_detect #(
         drv_tuser  = 1'b0;
     endtask
 
-    // Wait until NUM_PIX vid and mask outputs have been captured.
+    // Wait until NUM_PIX mask outputs have been captured.
     task automatic wait_frame_captured;
         integer timeout;
         timeout = 0;
-        while ((vid_cap_cnt < NUM_PIX || msk_cap_cnt < NUM_PIX) && timeout < 50000) begin
+        while (msk_cap_cnt < NUM_PIX && timeout < 50000) begin
             @(posedge clk);
             timeout = timeout + 1;
         end
         if (timeout >= 50000) begin
-            $display("FAIL: capture timed out (vid=%0d msk=%0d)", vid_cap_cnt, msk_cap_cnt);
+            $display("FAIL: capture timed out (msk=%0d)", msk_cap_cnt);
             num_errors = num_errors + 1;
         end
-    endtask
-
-    // Check video passthrough against expected pixel array.
-    task automatic check_vid_passthrough(input logic [23:0] expected [NUM_PIX], input string label);
-        integer i;
-        for (i = 0; i < NUM_PIX; i = i + 1) begin
-            if (cap_vid[i] !== expected[i]) begin
-                $display("FAIL %s vid px%0d: got %06h exp %06h",
-                         label, i, cap_vid[i], expected[i]);
-                num_errors = num_errors + 1;
-            end
-        end
-        $display("%s: vid passthrough check done", label);
     endtask
 
     // Check mask bits against golden model (uses y_eff[] — must call compute_y_eff first).
@@ -359,14 +327,9 @@ module tb_axis_motion_detect #(
     endtask
 
     // ---- Concurrent capture ----
-    integer vid_cap_cnt = 0;
     integer msk_cap_cnt = 0;
 
     always @(posedge clk) begin
-        if (vid_tvalid && vid_tready && vid_cap_cnt < NUM_PIX) begin
-            cap_vid[vid_cap_cnt] = vid_tdata;
-            vid_cap_cnt = vid_cap_cnt + 1;
-        end
         if (msk_tvalid && msk_tready && msk_cap_cnt < NUM_PIX) begin
             cap_msk[msk_cap_cnt] = msk_tdata;
             msk_cap_cnt = msk_cap_cnt + 1;
@@ -375,7 +338,6 @@ module tb_axis_motion_detect #(
 
     // ---- Reset capture counters before each frame ----
     task automatic reset_capture;
-        vid_cap_cnt = 0;
         msk_cap_cnt = 0;
     endtask
 
@@ -426,14 +388,13 @@ module tb_axis_motion_detect #(
         // ================================================================
         // Frame 0: RAM zero-init → y_prev=0, golden mask per pixel
         // ================================================================
-        $display("=== Frame 0 (y_prev=0, golden mask + vid passthrough) ===");
+        $display("=== Frame 0 (y_prev=0, golden mask) ===");
         reset_capture();
         fork
             drive_frame(frame_pixels);
             wait_frame_captured();
         join
         repeat (5) @(posedge clk);
-        check_vid_passthrough(frame_pixels, "frame0");
         check_mask_golden(frame_pixels, "frame0");
         // y_prev stays 0 for checking frame 0; update after checks
         update_y_prev(frame_pixels);
@@ -448,7 +409,6 @@ module tb_axis_motion_detect #(
             wait_frame_captured();
         join
         repeat (5) @(posedge clk);
-        check_vid_passthrough(frame_pixels, "frame1");
         check_mask_golden(frame_pixels, "frame1");
         update_y_prev(frame_pixels);
         // Wait a few extra cycles for last RAM write-back to settle
@@ -468,14 +428,13 @@ module tb_axis_motion_detect #(
             wait_frame_captured();
         join
         repeat (5) @(posedge clk);
-        check_vid_passthrough(mixed_pixels, "frame2");
         check_mask_golden(mixed_pixels, "frame2");
         update_y_prev(mixed_pixels);
 
         // ================================================================
-        // Frame 3: same mixed-motion under consumer stall
+        // Frame 3: same mixed-motion under msk consumer stall
         // ================================================================
-        $display("=== Frame 3 (mixed-motion + stall) ===");
+        $display("=== Frame 3 (mixed-motion + msk stall) ===");
         build_mixed_pixels();
         reset_capture();
         stall_active = 1'b1;
@@ -485,7 +444,6 @@ module tb_axis_motion_detect #(
         join
         stall_active = 1'b0;
         repeat (5) @(posedge clk);
-        check_vid_passthrough(mixed_pixels, "frame3");
         check_mask_golden(mixed_pixels, "frame3");
         update_y_prev(mixed_pixels);
         // RAM should now hold EMA-updated values from frame 3
@@ -493,80 +451,27 @@ module tb_axis_motion_detect #(
         check_ram_ema("frame3");
 
         // ================================================================
-        // Frame 4: asymmetric stall — vid stalls, msk stays ready
-        // If the fork logic is broken, the msk consumer will re-accept
-        // the same pixel during vid stall → msk_cap_cnt > vid_cap_cnt.
-        // ================================================================
-        $display("=== Frame 4 (asymmetric stall: vid stalls, msk ready) ===");
-        // Rebuild mixed_pixels from current y_prev
-        build_mixed_pixels();
-        reset_capture();
-        stall_active = 1'b1;
-        stall_mode   = 1;  // vid-only stall
-        fork
-            drive_frame(mixed_pixels);
-            wait_frame_captured();
-        join
-        stall_active = 1'b0;
-        stall_mode   = 0;
-        repeat (5) @(posedge clk);
-        // Fork desync check: both channels must capture exactly NUM_PIX
-        if (vid_cap_cnt !== msk_cap_cnt) begin
-            $display("FAIL frame4 fork desync: vid_cap_cnt=%0d msk_cap_cnt=%0d (expected %0d each)",
-                     vid_cap_cnt, msk_cap_cnt, NUM_PIX);
-            num_errors = num_errors + 1;
-        end
-        check_vid_passthrough(mixed_pixels, "frame4");
-        check_mask_golden(mixed_pixels, "frame4");
-        update_y_prev(mixed_pixels);
-
-        // ================================================================
-        // Frame 5: asymmetric stall — msk stalls, vid stays ready (mirror)
-        // ================================================================
-        $display("=== Frame 5 (asymmetric stall: msk stalls, vid ready) ===");
-        build_mixed_pixels();
-        reset_capture();
-        stall_active = 1'b1;
-        stall_mode   = 2;  // msk-only stall
-        fork
-            drive_frame(mixed_pixels);
-            wait_frame_captured();
-        join
-        stall_active = 1'b0;
-        stall_mode   = 0;
-        repeat (5) @(posedge clk);
-        if (vid_cap_cnt !== msk_cap_cnt) begin
-            $display("FAIL frame5 fork desync: vid_cap_cnt=%0d msk_cap_cnt=%0d (expected %0d each)",
-                     vid_cap_cnt, msk_cap_cnt, NUM_PIX);
-            num_errors = num_errors + 1;
-        end
-        check_vid_passthrough(mixed_pixels, "frame5");
-        check_mask_golden(mixed_pixels, "frame5");
-        update_y_prev(mixed_pixels);
-
-        // ================================================================
-        // Frame 6: bright block on dark background — spatial variation
+        // Frame 4: bright block on dark background — spatial variation
         // for Gaussian edge smoothing (mask at block boundaries changes
         // with GAUSS_EN=1 vs 0). No stall.
         // ================================================================
-        $display("=== Frame 6 (bright block, spatial Gaussian test) ===");
+        $display("=== Frame 4 (bright block, spatial Gaussian test) ===");
         reset_capture();
         fork
             drive_frame(block_pixels);
             wait_frame_captured();
         join
         repeat (5) @(posedge clk);
-        check_vid_passthrough(block_pixels, "frame6");
-        check_mask_golden(block_pixels, "frame6");
+        check_mask_golden(block_pixels, "frame4");
         update_y_prev(block_pixels);
         repeat (5) @(posedge clk);
-        check_ram_ema("frame6");
+        check_ram_ema("frame4");
 
         // ================================================================
-        // Frame 7: same bright block under symmetric stall — verifies
+        // Frame 5: same bright block under symmetric stall — verifies
         // Gaussian + pipeline stall interaction doesn't corrupt data.
         // ================================================================
-        $display("=== Frame 7 (bright block + stall) ===");
+        $display("=== Frame 5 (bright block + stall) ===");
         reset_capture();
         stall_active = 1'b1;
         fork
@@ -575,11 +480,10 @@ module tb_axis_motion_detect #(
         join
         stall_active = 1'b0;
         repeat (5) @(posedge clk);
-        check_vid_passthrough(block_pixels, "frame7");
-        check_mask_golden(block_pixels, "frame7");
+        check_mask_golden(block_pixels, "frame5");
         update_y_prev(block_pixels);
         repeat (5) @(posedge clk);
-        check_ram_ema("frame7");
+        check_ram_ema("frame5");
 
         // ================================================================
         // Summary
@@ -588,7 +492,7 @@ module tb_axis_motion_detect #(
             $fatal(1, "tb_axis_motion_detect (GAUSS_EN=%0d) FAILED: %0d errors",
                    GAUSS_EN, num_errors);
         end else begin
-            $display("tb_axis_motion_detect (GAUSS_EN=%0d) PASSED — 8 frames OK", GAUSS_EN);
+            $display("tb_axis_motion_detect (GAUSS_EN=%0d) PASSED — 6 frames OK", GAUSS_EN);
             $finish;
         end
     end

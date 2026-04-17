@@ -6,11 +6,11 @@ The current motion pipeline in `sparevideo` uses basic frame differencing: per-p
 
 ### What is the "mask" and what does the pipeline actually produce?
 
-The pipeline processes two parallel streams from the same input video:
+The pipeline processes two parallel streams from the same input video. A top-level `axis_fork` (`u_fork`) broadcasts the input stream to two consumers:
 
-1. **The video path (RGB, 24-bit per pixel):** The original RGB pixels pass through the pipeline unchanged — this is the image the user sees on the VGA output. It is never modified by the motion detection logic itself; it's just carried along with matched latency so it arrives at the overlay stage at the same time as the motion decision.
+1. **The video path (RGB, 24-bit per pixel, `fork_b`):** The original RGB pixels feed directly from the fork to `axis_overlay_bbox`, bypassing `axis_motion_detect` entirely. They are never modified by the motion detection logic. The fork ensures the overlay receives the same pixels with no additional latency.
 
-2. **The mask path (1-bit per pixel):** For every pixel in the video, the pipeline produces a single bit that answers: **"did this pixel change compared to the background?"** A `1` means yes (motion detected at this pixel), a `0` means no (this pixel looks the same as the background model).
+2. **The mask path (1-bit per pixel, `fork_a`):** `axis_motion_detect` receives the second fork output, converts each pixel to Y8, compares against the per-pixel background model, and emits a single bit: **"did this pixel change compared to the background?"** A `1` means yes (motion detected at this pixel), a `0` means no (this pixel looks the same as the background model).
 
 The mask is a binary image the same size as the video (320x240), transmitted as an AXI4-Stream of 1-bit values, one per pixel, in the same raster order as the video. Visually, if you could see the mask, it would look like this:
 
@@ -42,12 +42,14 @@ So the full pipeline's job is: **video in → detect which pixels changed → fi
 **No.** The mask and video paths are consumed by **different modules** that don't synchronize per-pixel with each other:
 
 ```
-axis_motion_detect
-    ├──► vid (RGB, 24-bit AXIS) ──────────────────────────► axis_overlay_bbox ──► RGB out
-    │                                                            ▲
-    └──► msk (1-bit AXIS) ──► [morph, etc.] ──► axis_bbox_reduce
-                                                     │
-                                                     └──► bbox sideband (4 coords, latched at EOF)
+u_fork
+    ├──► fork_b (RGB, 24-bit AXIS) ──────────────────────────────► axis_overlay_bbox ──► RGB out
+    │                                                                     ▲
+    └──► fork_a (RGB, 24-bit AXIS) ──► axis_motion_detect               │
+                                              │                          │
+                                       msk (1-bit AXIS) ──► [morph, etc.] ──► axis_bbox_reduce
+                                                                                     │
+                                                                                     └──► bbox sideband (4 coords, latched at EOF)
 ```
 
 The reason latency doesn't matter:
@@ -57,8 +59,6 @@ The reason latency doesn't matter:
 2. **The bbox is latched at end-of-frame, used during the *next* frame.** When the last pixel of frame N arrives (EOF), `axis_bbox_reduce` latches the accumulated `{min_x, max_x, min_y, max_y}` into its output registers. These registers are stable for the entire duration of frame N+1. `axis_overlay_bbox` reads them as a static sideband while it processes frame N+1's video pixels. So the bbox from frame N is drawn on frame N+1's video — there's an inherent 1-frame delay by design.
 
 3. **Adding stages to the mask path (morphology, CCL) just delays when the EOF-latch happens within the frame.** If morphology adds ~4 lines of latency, the bbox latches ~4 lines later — but still well within the same frame. The bbox is still ready before frame N+1's first pixel arrives at the overlay. The video path doesn't need any compensating delay because it never synchronizes per-pixel with the bbox latch.
-
-**Where latency *does* matter:** Inside `axis_motion_detect` itself, the vid and msk outputs must be cycle-aligned because they share the same backpressure signal (`both_ready = vid_tready && msk_tready`). This is already handled by the internal sideband pipeline (`tdata_pipe`, `tvalid_pipe`). If the Gaussian pre-filter (block 2) is added *internally* to the motion detector, `PIPE_STAGES` must increase to match the Gaussian's latency — but this is internal bookkeeping, not a concern for the external pipeline.
 
 **In summary:** You can freely add stages to the mask path between `axis_motion_detect`'s mask output and `axis_bbox_reduce` (or `axis_ccl`) without touching the video path. The only constraint is that all mask-path stages complete processing within one frame period, which at 320x240 @ 60fps = 16.7ms is easily satisfied (even 100 lines of latency at 100 MHz is only 320 µs).
 

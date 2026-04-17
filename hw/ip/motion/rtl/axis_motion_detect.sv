@@ -2,18 +2,20 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// AXI4-Stream motion detector.
+// AXI4-Stream motion detector — single-input, single-output mask producer.
 //
 // Computes a 1-bit motion mask by comparing the current frame's luma (Y8)
 // against a per-pixel EMA background model stored in an external shared RAM
 // (port A). Writes an EMA-updated background value back to RAM on acceptance.
-// Passes the RGB video stream through unchanged with matched latency.
 //
 // Architecture:
-//   axis_fork_pipe — AXI4-Stream 1-to-2 fork with sideband pipeline
 //   rgb2ycrcb      — RGB → luma conversion (1-cycle latency)
 //   axis_gauss3x3  — optional 3x3 Gaussian pre-filter (2-cycle latency, GAUSS_EN=1)
 //   motion_core    — combinational: abs-diff threshold + EMA update
+//
+// The mask output is the module's only AXI4-Stream output. The RGB video path
+// is handled at the top level via axis_fork, fully decoupled from mask
+// processing.
 //
 // Pipeline timing (GAUSS_EN=0: 1-cycle, GAUSS_EN=1: 3-cycle total latency):
 //   Cycle C  : pixel N accepted → MAC sums computed combinationally in rgb2ycrcb,
@@ -50,13 +52,6 @@ module axis_motion_detect #(
     input  logic        s_axis_tlast_i,
     input  logic        s_axis_tuser_i,
 
-    // AXI4-Stream output — video passthrough (RGB888)
-    output logic [23:0] m_axis_vid_tdata_o,
-    output logic        m_axis_vid_tvalid_o,
-    input  logic        m_axis_vid_tready_i,
-    output logic        m_axis_vid_tlast_o,
-    output logic        m_axis_vid_tuser_o,
-
     // AXI4-Stream output — mask (1 bit)
     output logic        m_axis_msk_tdata_o,
     output logic        m_axis_msk_tvalid_o,
@@ -75,38 +70,42 @@ module axis_motion_detect #(
     localparam int GAUSS_LATENCY = (GAUSS_EN != 0) ? 2 : 0;
     localparam int PIPE_STAGES   = 1 + GAUSS_LATENCY;  // 1 (rgb2ycrcb) + 2 (gauss) = 3
 
-    // ---- AXI4-Stream 1-to-2 fork + sideband pipeline ----
-    logic [23:0] fork_tdata;
-    logic        fork_tlast, fork_tuser;
-    logic        fork_a_tvalid, fork_b_tvalid;
-    logic        fork_stall, fork_beat_done;
+    // ---- Single-output pipeline control ----
+    logic pipe_valid;  // = valid_pipe[PIPE_STAGES-1]
+    logic pipe_stall;  // output stage full and downstream not ready
+    logic beat_done;   // output stage consumed by downstream
 
-    axis_fork_pipe #(
-        .DATA_WIDTH  (24),
-        .PIPE_STAGES (PIPE_STAGES)
-    ) u_fork (
-        .clk_i             (clk_i),
-        .rst_n_i           (rst_n_i),
-        // AXI4-Stream input
-        .s_axis_tdata_i    (s_axis_tdata_i),
-        .s_axis_tvalid_i   (s_axis_tvalid_i),
-        .s_axis_tready_o   (s_axis_tready_o),
-        .s_axis_tlast_i    (s_axis_tlast_i),
-        .s_axis_tuser_i    (s_axis_tuser_i),
-        // Downstream ready (one per fork leg)
-        .m_a_tready_i      (m_axis_vid_tready_i),
-        .m_b_tready_i      (m_axis_msk_tready_i),
-        // Pipeline output stage (shared sidebands)
-        .pipe_tdata_o      (fork_tdata),
-        .pipe_tlast_o      (fork_tlast),
-        .pipe_tuser_o      (fork_tuser),
-        // Per-output acceptance-gated tvalid
-        .m_a_tvalid_o      (fork_a_tvalid),
-        .m_b_tvalid_o      (fork_b_tvalid),
-        // Pipeline control
-        .pipe_stall_o      (fork_stall),
-        .beat_done_o       (fork_beat_done)
-    );
+    assign pipe_stall = pipe_valid && !m_axis_msk_tready_i;
+    assign beat_done  = pipe_valid && m_axis_msk_tready_i;
+
+    // Input ready: accept when no valid data is held, or when it's being consumed
+    assign s_axis_tready_o = !pipe_valid || m_axis_msk_tready_i;
+
+    // ---- Sideband pipeline (tlast, tuser, valid — no tdata needed) ----
+    logic valid_pipe [PIPE_STAGES];
+    logic tlast_pipe [PIPE_STAGES];
+    logic tuser_pipe [PIPE_STAGES];
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i) begin
+            for (int i = 0; i < PIPE_STAGES; i++) begin
+                valid_pipe[i] <= 1'b0;
+                tlast_pipe[i] <= 1'b0;
+                tuser_pipe[i] <= 1'b0;
+            end
+        end else if (!pipe_stall) begin
+            valid_pipe[0] <= s_axis_tvalid_i && s_axis_tready_o;
+            tlast_pipe[0] <= s_axis_tlast_i;
+            tuser_pipe[0] <= s_axis_tuser_i;
+            for (int i = 1; i < PIPE_STAGES; i++) begin
+                valid_pipe[i] <= valid_pipe[i-1];
+                tlast_pipe[i] <= tlast_pipe[i-1];
+                tuser_pipe[i] <= tuser_pipe[i-1];
+            end
+        end
+    end
+
+    assign pipe_valid = valid_pipe[PIPE_STAGES-1];
 
     // ---- Pixel address counter ----
     // pix_addr_reg holds the address of the NEXT expected pixel.
@@ -134,7 +133,7 @@ module axis_motion_detect #(
         if (!rst_n_i) begin
             for (int i = 0; i < PIPE_STAGES; i++)
                 idx_pipe[i] <= '0;
-        end else if (!fork_stall) begin
+        end else if (!pipe_stall) begin
             idx_pipe[0] <= pix_addr;
             for (int i = 1; i < PIPE_STAGES; i++)
                 idx_pipe[i] <= idx_pipe[i-1];
@@ -146,17 +145,26 @@ module axis_motion_detect #(
     logic [7:0] cr_unused;
     logic [7:0] cb_unused;
 
-    // During a stall the upstream source may present the next pixel on
-    // s_axis_tdata_i (AXI permits this after tready goes low).  rgb2ycrcb
+    // During a stall, the upstream source may present the next pixel on
+    // s_axis_tdata_i (AXI permits this after tready goes low). rgb2ycrcb
     // is a registered 1-cycle stage, so if its input changes mid-stall,
-    // y_cur will reflect the wrong pixel.  Fix: feed the held pipeline
-    // data (fork_tdata, stable during stall) so y_cur stays correct.
+    // y_cur will reflect the wrong pixel. Fix: feed held_tdata (the last
+    // accepted pixel, stable during stall) so y_cur stays correct.
+    logic [23:0] held_tdata;
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i)
+            held_tdata <= '0;
+        else if (s_axis_tvalid_i && s_axis_tready_o)
+            held_tdata <= s_axis_tdata_i;
+    end
+
     logic [7:0] in_r, in_g, in_b;
     always_comb begin
-        if (fork_stall) begin
-            in_r = fork_tdata[23:16];
-            in_g = fork_tdata[15:8];
-            in_b = fork_tdata[7:0];
+        if (pipe_stall) begin
+            in_r = held_tdata[23:16];
+            in_g = held_tdata[15:8];
+            in_b = held_tdata[7:0];
         end else begin
             in_r = s_axis_tdata_i[23:16];
             in_g = s_axis_tdata_i[15:8];
@@ -183,7 +191,7 @@ module axis_motion_detect #(
         if (!rst_n_i) begin
             gauss_pixel_valid <= 1'b0;
             gauss_sof         <= 1'b0;
-        end else if (!fork_stall) begin
+        end else if (!pipe_stall) begin
             gauss_pixel_valid <= s_axis_tvalid_i && s_axis_tready_o;
             gauss_sof         <= s_axis_tuser_i;
         end
@@ -202,7 +210,7 @@ module axis_motion_detect #(
                 .rst_n_i (rst_n_i),
                 .valid_i (gauss_pixel_valid),
                 .sof_i   (gauss_sof),
-                .stall_i (fork_stall),
+                .stall_i (pipe_stall),
                 .y_i     (y_cur),
                 .y_o     (y_smooth),
                 .valid_o ()
@@ -214,8 +222,8 @@ module axis_motion_detect #(
 
     // ---- Memory read: issue address 1 cycle before data is needed ----
     // RAM has 1-cycle registered read latency. The motion_core comparison
-    // happens at pipeline stage PIPE_STAGES (when y_smooth and fork outputs
-    // are ready). So the read address must be issued at stage PIPE_STAGES-1:
+    // happens at pipeline stage PIPE_STAGES (when y_smooth is ready). So the
+    // read address must be issued at stage PIPE_STAGES-1:
     //   GAUSS_EN=0 (PIPE_STAGES=1): pix_addr (combinational, same cycle as acceptance)
     //   GAUSS_EN=1 (PIPE_STAGES=3): idx_pipe[PIPE_STAGES-2] (2 cycles after acceptance)
     //
@@ -237,12 +245,12 @@ module axis_motion_detect #(
     always_ff @(posedge clk_i) begin
         if (!rst_n_i)
             pix_addr_hold <= '0;
-        else if (!fork_stall)
+        else if (!pipe_stall)
             pix_addr_hold <= mem_rd_idx;
     end
 
     assign mem_rd_addr_o = ($bits(mem_rd_addr_o))'(RGN_BASE) +
-                           (fork_stall ? pix_addr_hold : mem_rd_idx);
+                           (pipe_stall ? pix_addr_hold : mem_rd_idx);
 
     // ---- Motion core (combinational: threshold + EMA) ----
     logic       mask_bit;
@@ -259,30 +267,23 @@ module axis_motion_detect #(
     );
 
     // ---- Memory write-back: store EMA-updated background ----
-    // Gate on beat_done so the write fires exactly once per pixel,
-    // on the cycle both downstream consumers have accepted.
+    // Gate on beat_done so the write fires exactly once per pixel.
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
             mem_wr_en_o   <= 1'b0;
             mem_wr_addr_o <= '0;
             mem_wr_data_o <= '0;
         end else begin
-            mem_wr_en_o   <= fork_beat_done;
+            mem_wr_en_o   <= beat_done;
             mem_wr_addr_o <= ($bits(mem_wr_addr_o))'(RGN_BASE) + idx_pipe[PIPE_STAGES-1];
             mem_wr_data_o <= ema_update;
         end
     end
 
-    // ---- Output: video passthrough ----
-    assign m_axis_vid_tdata_o  = fork_tdata;
-    assign m_axis_vid_tvalid_o = fork_a_tvalid;
-    assign m_axis_vid_tlast_o  = fork_tlast;
-    assign m_axis_vid_tuser_o  = fork_tuser;
-
     // ---- Output: mask ----
     assign m_axis_msk_tdata_o  = mask_bit;
-    assign m_axis_msk_tvalid_o = fork_b_tvalid;
-    assign m_axis_msk_tlast_o  = fork_tlast;
-    assign m_axis_msk_tuser_o  = fork_tuser;
+    assign m_axis_msk_tvalid_o = pipe_valid;
+    assign m_axis_msk_tlast_o  = tlast_pipe[PIPE_STAGES-1];
+    assign m_axis_msk_tuser_o  = tuser_pipe[PIPE_STAGES-1];
 
 endmodule

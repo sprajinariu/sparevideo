@@ -12,10 +12,10 @@ lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"
 // [15:8] feed the output registers. Bits [16] and [7:0] are intentionally
 // discarded (the >>8 is pure wiring, no saturation needed).
 lint_off -rule UNUSEDSIGNAL    -file "*rgb2ycrcb.sv"
-// rgb2ycrcb and axis_fork_pipe have no `timescale directive; harmless
+// rgb2ycrcb and axis_fork have no `timescale directive; harmless
 // mismatch vs vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*rgb2ycrcb.sv"
-lint_off -rule TIMESCALEMOD    -file "*axis_fork_pipe.sv"
+lint_off -rule TIMESCALEMOD    -file "*axis_fork.sv"
 // axis_gauss3x3 has no `timescale directive.
 lint_off -rule TIMESCALEMOD    -file "*axis_gauss3x3.sv"
 // EMA step is 9-bit signed but only [7:0] feeds the 8-bit write-back.

@@ -12,6 +12,7 @@ filesets:
     depend:
       - opensoc:ip:vga
       - sparevideo:third_party:verilog-axis
+      - sparevideo:ip:axis
       - sparevideo:ip:motion
 
   files_lint:

@@ -1,7 +1,7 @@
 RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/top/ram.sv \
            ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
-           ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
+           ../../hw/ip/axis/rtl/axis_fork.sv \
            ../../hw/ip/gauss3x3/rtl/axis_gauss3x3.sv \
            ../../hw/ip/motion/rtl/motion_core.sv \
            ../../hw/ip/motion/rtl/axis_motion_detect.sv \
@@ -115,13 +115,6 @@ endif
 # ---------------------------------------------------------------------------
 IP_RGB2YCRCB_RTL = ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv
 IP_GAUSS3X3_RTL  = ../../hw/ip/gauss3x3/rtl/axis_gauss3x3.sv
-IP_MOTION_RTL    = ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
-                   ../../hw/top/ram.sv \
-                   ../../hw/ip/motion/rtl/motion_core.sv \
-                   ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
-                   ../../hw/ip/motion/rtl/axis_motion_detect.sv \
-                   ../../hw/ip/motion/rtl/axis_bbox_reduce.sv \
-                   ../../hw/ip/motion/rtl/axis_overlay_bbox.sv
 
 # Common Verilator flags for block TBs (suppress harmless TB warnings)
 VLT_TB_FLAGS = --binary -sv --timing \
@@ -141,7 +134,6 @@ test-ip-rgb2ycrcb:
 # Sources shared by both motion detect TB targets
 IP_MOTION_DETECT_SRCS = $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv \
 	  ../../hw/ip/motion/rtl/motion_core.sv \
-	  ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
 	  ../../hw/ip/motion/rtl/axis_motion_detect.sv \
 	  ../../hw/ip/motion/tb/tb_axis_motion_detect.sv
 

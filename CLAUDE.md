@@ -55,7 +55,7 @@ make setup                   # One-time setup (install deps)
 
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
-- `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork_pipe: 1-to-2 fork with sideband pipeline)
+- `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
 - `hw/ip/gauss3x3/rtl/` — 3x3 Gaussian pre-filter on Y channel (axis_gauss3x3: line buffers + adder tree)
 - `hw/ip/motion/rtl/` — Motion detection pipeline (axis_motion_detect, motion_core, axis_bbox_reduce, axis_overlay_bbox)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
@@ -126,6 +126,7 @@ Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant 
 - Keep CLAUDE.md and README.md up-to-date
 - Keep makefiles up-to-date
 - Keep requirements.txt up-to-date
+- Keep relevant plans/docs/*.md architecture specs up-to-date
 - Clean up large files (e.g. VCDs, simulation outputs, binaries), don't upload them to git
 - After implementing a plan, move it to docs/plans/old/ and put a date timestamp on it to have a history on what has been implemented.
 
@@ -166,19 +167,19 @@ When adding a backpressure (`tready`)-capable pipeline stage, three things must 
 Add `pipe_stall = tvalid_pipe[PIPE_STAGES-1] && !both_done`. Gate every pipeline `always_ff` with `else if (!pipe_stall)` so the registers don't overwrite valid data when the downstream isn't ready.
 
 **2. Combinational signals fed from the live input must be re-sourced from held registers.**
-In `axis_motion_detect`, `rgb2ycrcb` takes `s_axis_tdata` as input (1-cycle latency). The upstream source is free to change `tdata` immediately after acceptance (AXI spec). If the source presents the next pixel before the stall clears, `y_cur` reflects the wrong pixel by the next cycle. Fix: MUX the rgb2ycrcb input — use `tdata_pipe[PIPE_STAGES-1]` (held) when `pipe_stall=1`, and `s_axis_tdata` when `pipe_stall=0`.
+In `axis_motion_detect`, `rgb2ycrcb` takes `s_axis_tdata` as input (1-cycle latency). The upstream source is free to change `tdata` immediately after acceptance (AXI spec). If the source presents the next pixel before the stall clears, `y_cur` reflects the wrong pixel by the next cycle. Fix: capture the last-accepted pixel in a `held_tdata` register; MUX the rgb2ycrcb input — use `held_tdata` when `pipe_stall=1`, and `s_axis_tdata` when `pipe_stall=0`.
 
 **3. RAM read address must be held during stall.**
 `pix_addr_reg` advances (and may wrap to 0) as soon as the last pixel of a frame is accepted, even if the pipeline is still stalled on that pixel. The combinational `mem_rd_addr = pix_addr` then reads a different address, changing `mem_rd_data`. Fix: register `pix_addr_hold` with enable `!pipe_stall`; drive `mem_rd_addr` from `pix_addr_hold` when stalled.
 
 **4. Memory write-back must be gated on the actual handshake.**
-`mem_wr_en` must be `tvalid_pipe[PIPE_STAGES-1] && both_done` — not just `tvalid_pipe[PIPE_STAGES-1]`. Without the gate, the RAM write fires every cycle a pixel is stalled at the output, duplicating writes (idempotent but incorrect for any non-idempotent future write path).
+`mem_wr_en` must be `pipe_valid && m_axis_msk_tready_i` (the real beat-done condition) — not just `pipe_valid`. Without the gate, the RAM write fires every cycle a pixel is stalled at the output, duplicating writes (idempotent but incorrect for any non-idempotent future write path).
 
-**5. 1-to-N output forks must use per-output acceptance tracking.**
-When a module has multiple AXI4-Stream outputs driven from the same pipeline (e.g. `axis_motion_detect`'s vid + mask), simply ANDing all `tready` signals for `both_ready` is insufficient. If only one consumer stalls, the other sees `tvalid && tready` every cycle and re-accepts the same beat — corrupting data and desyncing position counters. Fix: track per-output acceptance with registered flags (`vid_accepted`, `msk_accepted`), gate each output's `tvalid` with `!accepted`, and advance the pipeline only when all outputs are done. Pattern from verilog-axis `axis_broadcast`. See `axis_motion_detect.sv` for the implementation.
+**5. 1-to-N output forks at the top level must use per-output acceptance tracking.**
+`axis_fork` (`u_fork` in `sparevideo_top`) handles broadcast with registered `a_accepted`/`b_accepted` flags. Simply ANDing all `tready` signals is insufficient — if only one consumer stalls, the other re-accepts the same beat every cycle, corrupting data. `axis_fork` already implements this correctly. When writing a new broadcast module, follow the same pattern.
 
-**6. Unit-test consumer stalls explicitly — including asymmetric stalls.**
-The default TB wires `vid_tready = 1'b1`. Add test frames that (a) periodically deassert both readies (symmetric stall), and (b) stall only one consumer while the other stays ready (asymmetric stall). Verify data correctness in both cases. Without asymmetric stall tests, fork desync bugs go undetected.
+**6. Unit-test fork consumer stalls explicitly — including asymmetric stalls.**
+The default TB wires both readies to `1'b1`. Add test frames that (a) periodically deassert both readies (symmetric stall), and (b) stall only one consumer while the other stays ready (asymmetric stall). Verify data correctness in both cases. Without asymmetric stall tests, fork desync bugs go undetected.
 
 ### Input/output rate mismatch — blanking
 

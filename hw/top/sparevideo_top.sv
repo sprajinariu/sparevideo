@@ -5,8 +5,8 @@
 //                                                -> RGB + hsync/vsync
 //
 // Motion detect pipeline (clk_dsp domain):
-//   axis_motion_detect -> axis_overlay_bbox -> output async FIFO
-//   axis_motion_detect -> axis_bbox_reduce  -> sideband bbox -> axis_overlay_bbox
+//   axis_fork -> axis_motion_detect (mask-only) -> axis_bbox_reduce -> bbox sideband
+//   axis_fork -> axis_overlay_bbox <- bbox sideband -> output async FIFO
 //   axis_motion_detect <-> ram port A (Y8 prev-frame buffer)
 //
 // Vendored verilog-axis (MIT) provides the async FIFOs.
@@ -176,17 +176,25 @@ module sparevideo_top #(
 
     // -----------------------------------------------------------------
     // Motion detect pipeline on clk_dsp
-    //   axis_motion_detect: RGB in → vid passthrough + mask stream
+    //   axis_fork:          broadcast dsp_in to motion detect (A) and overlay (B)
+    //   axis_motion_detect: RGB in → mask stream (mask-only, no vid passthrough)
     //   axis_bbox_reduce:   mask → latched {min_x,max_x,min_y,max_y}
-    //   axis_overlay_bbox:  vid + bbox sideband → overlaid RGB out
+    //   axis_overlay_bbox:  fork-B RGB + bbox sideband → overlaid RGB out
     // -----------------------------------------------------------------
 
-    // Video passthrough from motion detect (RGB, latency-matched)
-    logic [23:0] vid_tdata;
-    logic        vid_tvalid;
-    logic        vid_tready;
-    logic        vid_tlast;
-    logic        vid_tuser;
+    // Top-level fork: broadcasts the gated dsp_in to both motion detect and overlay
+    logic        fork_s_tvalid;
+    logic        fork_s_tready;
+    logic [23:0] fork_a_tdata;
+    logic        fork_a_tvalid;
+    logic        fork_a_tready;
+    logic        fork_a_tlast;
+    logic        fork_a_tuser;
+    logic [23:0] fork_b_tdata;
+    logic        fork_b_tvalid;
+    logic        fork_b_tready;
+    logic        fork_b_tlast;
+    logic        fork_b_tuser;
 
     // Motion mask stream (1-bit per pixel)
     logic        msk_tdata;
@@ -218,10 +226,6 @@ module sparevideo_top #(
     logic        ovl_tlast;
     logic        ovl_tuser;
 
-    // Motion detect input gating
-    logic        md_s_tvalid;   // gated tvalid to motion detect
-    logic        md_s_tready;   // motion detect's tready output (separated from dsp_in_tready)
-
     // Processing output mux (feeds u_fifo_out)
     logic [23:0] proc_tdata;
     logic        proc_tvalid;
@@ -229,12 +233,37 @@ module sparevideo_top #(
     logic        proc_tlast;
     logic        proc_tuser;
 
-    // Gate motion detect input: passthrough mode sends no data into the motion pipeline.
+    // Gate fork input: passthrough mode sends no data into the motion pipeline.
     // Both motion and mask modes require the motion detect pipeline to run.
     logic motion_pipe_active;
     assign motion_pipe_active = (ctrl_flow_i == sparevideo_pkg::CTRL_MOTION_DETECT)
                              || (ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY);
-    assign md_s_tvalid = motion_pipe_active ? dsp_in_tvalid : 1'b0;
+    assign fork_s_tvalid = motion_pipe_active ? dsp_in_tvalid : 1'b0;
+
+    axis_fork #(
+        .DATA_WIDTH (24)
+    ) u_fork (
+        .clk_i             (clk_dsp_i),
+        .rst_n_i           (rst_dsp_n_i),
+        // Input: gated dsp_in
+        .s_axis_tdata_i    (dsp_in_tdata),
+        .s_axis_tvalid_i   (fork_s_tvalid),
+        .s_axis_tready_o   (fork_s_tready),
+        .s_axis_tlast_i    (dsp_in_tlast),
+        .s_axis_tuser_i    (dsp_in_tuser),
+        // Output A: to axis_motion_detect (mask-only)
+        .m_a_axis_tdata_o  (fork_a_tdata),
+        .m_a_axis_tvalid_o (fork_a_tvalid),
+        .m_a_axis_tready_i (fork_a_tready),
+        .m_a_axis_tlast_o  (fork_a_tlast),
+        .m_a_axis_tuser_o  (fork_a_tuser),
+        // Output B: to axis_overlay_bbox
+        .m_b_axis_tdata_o  (fork_b_tdata),
+        .m_b_axis_tvalid_o (fork_b_tvalid),
+        .m_b_axis_tready_i (fork_b_tready),
+        .m_b_axis_tlast_o  (fork_b_tlast),
+        .m_b_axis_tuser_o  (fork_b_tuser)
+    );
 
     axis_motion_detect #(
         .H_ACTIVE    (H_ACTIVE),
@@ -245,32 +274,26 @@ module sparevideo_top #(
         .RGN_BASE    (RGN_Y_PREV_BASE),
         .RGN_SIZE    (RGN_Y_PREV_SIZE)
     ) u_motion_detect (
-        .clk_i                (clk_dsp_i),
-        .rst_n_i              (rst_dsp_n_i),
-        // AXI4-Stream input (RGB888)
-        .s_axis_tdata_i       (dsp_in_tdata),
-        .s_axis_tvalid_i      (md_s_tvalid),
-        .s_axis_tready_o      (md_s_tready),
-        .s_axis_tlast_i       (dsp_in_tlast),
-        .s_axis_tuser_i       (dsp_in_tuser),
-        // AXI4-Stream output — video passthrough (RGB888)
-        .m_axis_vid_tdata_o   (vid_tdata),
-        .m_axis_vid_tvalid_o  (vid_tvalid),
-        .m_axis_vid_tready_i  (vid_tready),
-        .m_axis_vid_tlast_o   (vid_tlast),
-        .m_axis_vid_tuser_o   (vid_tuser),
+        .clk_i               (clk_dsp_i),
+        .rst_n_i             (rst_dsp_n_i),
+        // AXI4-Stream input (from fork output A)
+        .s_axis_tdata_i      (fork_a_tdata),
+        .s_axis_tvalid_i     (fork_a_tvalid),
+        .s_axis_tready_o     (fork_a_tready),
+        .s_axis_tlast_i      (fork_a_tlast),
+        .s_axis_tuser_i      (fork_a_tuser),
         // AXI4-Stream output — mask (1 bit)
-        .m_axis_msk_tdata_o   (msk_tdata),
-        .m_axis_msk_tvalid_o  (msk_tvalid),
-        .m_axis_msk_tready_i  (msk_tready),
-        .m_axis_msk_tlast_o   (msk_tlast),
-        .m_axis_msk_tuser_o   (msk_tuser),
+        .m_axis_msk_tdata_o  (msk_tdata),
+        .m_axis_msk_tvalid_o (msk_tvalid),
+        .m_axis_msk_tready_i (msk_tready),
+        .m_axis_msk_tlast_o  (msk_tlast),
+        .m_axis_msk_tuser_o  (msk_tuser),
         // Memory port (to shared RAM port A)
-        .mem_rd_addr_o        (ram_a_rd_addr),
-        .mem_rd_data_i        (ram_a_rd_data),
-        .mem_wr_addr_o        (ram_a_wr_addr),
-        .mem_wr_data_o        (ram_a_wr_data),
-        .mem_wr_en_o          (ram_a_wr_en)
+        .mem_rd_addr_o       (ram_a_rd_addr),
+        .mem_rd_data_i       (ram_a_rd_data),
+        .mem_wr_addr_o       (ram_a_wr_addr),
+        .mem_wr_data_o       (ram_a_wr_data),
+        .mem_wr_en_o         (ram_a_wr_en)
     );
 
     // Mask tready backpressure: in mask display mode, the mask stream must
@@ -309,12 +332,12 @@ module sparevideo_top #(
     ) u_overlay_bbox (
         .clk_i           (clk_dsp_i),
         .rst_n_i         (rst_dsp_n_i),
-        // AXI4-Stream input — video passthrough from axis_motion_detect (RGB888)
-        .s_axis_tdata_i  (vid_tdata),
-        .s_axis_tvalid_i (vid_tvalid),
-        .s_axis_tready_o (vid_tready),
-        .s_axis_tlast_i  (vid_tlast),
-        .s_axis_tuser_i  (vid_tuser),
+        // AXI4-Stream input — from fork output B (RGB888)
+        .s_axis_tdata_i  (fork_b_tdata),
+        .s_axis_tvalid_i (fork_b_tvalid),
+        .s_axis_tready_o (fork_b_tready),
+        .s_axis_tlast_i  (fork_b_tlast),
+        .s_axis_tuser_i  (fork_b_tuser),
         // AXI4-Stream output — video with bbox rectangle overlaid (RGB888)
         .m_axis_tdata_o  (ovl_tdata),
         .m_axis_tvalid_o (ovl_tvalid),
@@ -331,8 +354,8 @@ module sparevideo_top #(
 
     // -----------------------------------------------------------------
     // Control-flow output mux
-    //   Passthrough: dsp_in (raw input) → output FIFO; motion pipeline tready = 1.
-    //   Motion:      ovl (overlay output) → output FIFO; motion pipeline tready from FIFO.
+    //   Passthrough: dsp_in (raw input) → output FIFO; fork inactive (tvalid=0).
+    //   Motion:      ovl (overlay output) → output FIFO; fork drives both paths.
     //   Mask:        msk_rgb (B/W mask) → output FIFO; overlay path drained.
     // -----------------------------------------------------------------
     always_comb begin
@@ -343,22 +366,22 @@ module sparevideo_top #(
                 proc_tlast    = dsp_in_tlast;
                 proc_tuser    = dsp_in_tuser;
                 dsp_in_tready = proc_tready;
-                ovl_tready    = 1'b1;
+                ovl_tready    = 1'b1;       // fork inactive, no overlay data
             end
             sparevideo_pkg::CTRL_MASK_DISPLAY: begin
                 proc_tdata    = msk_rgb_tdata;
                 proc_tvalid   = msk_rgb_tvalid;
                 proc_tlast    = msk_rgb_tlast;
                 proc_tuser    = msk_rgb_tuser;
-                dsp_in_tready = md_s_tready;
-                ovl_tready    = 1'b1;       // overlay path unused, don't stall
+                dsp_in_tready = fork_s_tready;
+                ovl_tready    = 1'b1;       // overlay path unused, drain
             end
             default: begin // CTRL_MOTION_DETECT
                 proc_tdata    = ovl_tdata;
                 proc_tvalid   = ovl_tvalid;
                 proc_tlast    = ovl_tlast;
                 proc_tuser    = ovl_tuser;
-                dsp_in_tready = md_s_tready;
+                dsp_in_tready = fork_s_tready;
                 ovl_tready    = proc_tready;
             end
         endcase

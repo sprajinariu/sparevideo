@@ -12,7 +12,6 @@
 
 ```
 axis_motion_detect (u_motion)
-├── axis_fork_pipe (u_fork)
 ├── rgb2ycrcb      (u_rgb2y)
 ├── axis_gauss3x3  (u_gauss)   ← this module (generate-gated by GAUSS_EN)
 └── motion_core    (u_core)
@@ -39,7 +38,7 @@ axis_motion_detect (u_motion)
 | **Control** | | | |
 | `valid_i` | input | 1 | Pixel valid — 1-cycle delayed acceptance from `axis_motion_detect` (aligned with `y_cur` from `rgb2ycrcb`) |
 | `sof_i` | input | 1 | Start-of-frame — resets row/col counters (1-cycle delayed, aligned with `valid_i`) |
-| `stall_i` | input | 1 | Pipeline stall from `axis_fork_pipe` — freezes all internal state when asserted |
+| `stall_i` | input | 1 | Pipeline stall from `axis_motion_detect` — freezes all internal state when asserted |
 | **Data** | | | |
 | `y_i` | input | 8 | Raw luma from `rgb2ycrcb` |
 | `y_o` | output | 8 | Smoothed luma (registered) |
