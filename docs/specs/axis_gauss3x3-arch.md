@@ -2,7 +2,9 @@
 
 ## 1. Purpose and Scope
 
-`axis_gauss3x3` applies a 3x3 Gaussian blur to an 8-bit luma (Y) stream using the kernel `[1 2 1; 2 4 2; 1 2 1] / 16`. It is a synchronous pipeline element controlled by the parent module (`axis_motion_detect`) via `valid_i`, `sof_i`, and `stall_i` signals. It does **not** implement its own AXI4-Stream handshake, process multi-channel data, or support parameterized kernel sizes. All kernel multiplications are bit-shifts (wiring only); no DSP multipliers are used.
+`axis_gauss3x3` applies a 3x3 Gaussian blur to an 8-bit luma (Y) stream using the kernel `[1 2 1; 2 4 2; 1 2 1] / 16`. It is a synchronous pipeline element controlled by the parent module ([`axis_motion_detect`](axis_motion_detect-arch.md)) via `valid_i`, `sof_i`, and `stall_i` signals. It does **not** implement its own AXI4-Stream handshake, process multi-channel data, or support parameterized kernel sizes. All kernel multiplications are bit-shifts (wiring only); no DSP multipliers are used.
+
+For the role of this pre-filter in the motion-detection pipeline (why spatial smoothing, why pre-threshold, why Y-only), see [`axis_motion_detect-arch.md`](axis_motion_detect-arch.md) §4.
 
 ---
 
