@@ -93,7 +93,7 @@ the input to `axis_overlay_bbox` independently of mask processing.
 | `V_ACTIVE` | 240 | Active lines per frame |
 | `THRESH` | 16 | Unsigned luma-difference threshold; motion detected when `diff > THRESH` |
 | `ALPHA_SHIFT` | 3 | EMA smoothing factor as a bit-shift: alpha = 1 / (1 << ALPHA_SHIFT). Default 3 → alpha = 1/8. Higher values = slower background adaptation. When 0, the EMA reduces to raw-frame write-back (bg_new = Y_cur) |
-| `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (2-cycle latency, `PIPE_STAGES=3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
+| `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (H_ACTIVE + 2 cycle latency from rgb2ycrcb, `PIPE_STAGES = H_ACTIVE + 3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
 | `RGN_BASE` | 0 | Base byte-address of the background model region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the background model region (sanity-checked at elaboration) |
 
@@ -299,23 +299,31 @@ Cycle C+1 : y_cur registered; mem_rd_data_i arrives → diff computed → mask r
 
 Total latency: **1 clock cycle**.
 
-**`GAUSS_EN=1` (PIPE_STAGES=3):**
+**`GAUSS_EN=1` (PIPE_STAGES = H_ACTIVE + 3):**
+
+The centered Gaussian (`axis_gauss3x3`) has H_ACTIVE + 1 cycles of fill latency (1 row + 1 column of spatial offset) plus 2 pipeline cycles, giving a total Gaussian latency of H_ACTIVE + 2 cycles from `rgb2ycrcb` output. The pixel address pipeline (`idx_pipe`) must delay the RAM read address by the same amount so that `y_smooth` and `bg[P]` meet at the comparator for the same pixel P:
 
 ```
-Cycle C   : pixel N accepted; rgb2ycrcb MACs computed; gauss control signals registered
-Cycle C+1 : y_cur registered; Gaussian line buffer read + column shift stage 1
-Cycle C+2 : Gaussian column shift stage 2 + adder tree (combinational)
-Cycle C+3 : y_smooth registered; mem_rd_data_i arrives → diff computed → mask registered
+Cycle C            : pixel N accepted; rgb2ycrcb MACs computed; gauss control signals registered
+Cycle C+1          : y_cur registered; Gaussian begins accumulating into line buffers
+Cycle C+2          : Gaussian line buffer read + column shift stage 1
+...
+Cycle C+H_ACTIVE+2 : Gaussian output stage 1 (adder tree)
+Cycle C+H_ACTIVE+3 : y_smooth registered; mem_rd_data_i arrives → diff computed → mask registered
 ```
 
-Total latency: **3 clock cycles**.
+Total latency: **H_ACTIVE + 3 clock cycles** (323 cycles at 320px).
 
 `PIPE_STAGES` is computed dynamically:
 
 ```
-GAUSS_LATENCY = (GAUSS_EN != 0) ? 2 : 0
-PIPE_STAGES   = 1 + GAUSS_LATENCY
+GAUSS_LATENCY = (GAUSS_EN != 0) ? (H_ACTIVE + 2) : 0
+PIPE_STAGES   = 1 + GAUSS_LATENCY   // 1 at GAUSS_EN=0; H_ACTIVE+3 at GAUSS_EN=1
 ```
+
+### `idx_pipe` — SRL-inferred shift register
+
+`idx_pipe` is a PIPE_STAGES-deep shift register that tracks the pixel address through the pipeline. At GAUSS_EN=1, PIPE_STAGES = H_ACTIVE + 3 = 323 stages × 17 bits. Synthesis tools infer these as SRL32 primitives on Xilinx 7-series (~170 LUTs) or equivalent SHIFTREG on Intel, provided the data path carries **no reset**. Only `valid_pipe`, `tlast_pipe`, and `tuser_pipe` carry a synchronous reset; `idx_pipe` is reset-free so that SRL inference fires.
 
 ### Memory read address timing
 
@@ -369,7 +377,7 @@ There is no explicit FSM. Pipeline stall logic is purely combinational from `pip
 | Gaussian pre-filter (`axis_gauss3x3`, `GAUSS_EN=1`) | 2 clock cycles |
 | RAM read | 1 clock cycle |
 | Total pixel input → mask output (`GAUSS_EN=0`) | 1 clock cycle |
-| Total pixel input → mask output (`GAUSS_EN=1`) | 3 clock cycles |
+| Total pixel input → mask output (`GAUSS_EN=1`) | H_ACTIVE + 3 clock cycles (323 at 320px) |
 | Throughput | 1 pixel / cycle (when `msk_tready=1`) |
 
 Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame bbox. `axis_bbox_reduce` suppresses bbox output for the first 2 frames (priming period) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.

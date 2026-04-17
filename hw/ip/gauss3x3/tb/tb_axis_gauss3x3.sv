@@ -5,12 +5,15 @@
 // Unit testbench for axis_gauss3x3.
 //
 // Tests (in order):
-//   Test 1 — Uniform image (DC pass-through): all 128 → all 128
-//   Test 2 — Single bright pixel (impulse response): verify kernel weights
-//   Test 3 — Horizontal gradient (smoothing verification)
-//   Test 4 — Edge replication (checkerboard pattern, border pixel check)
-//   Test 5 — Stall behavior: output matches no-stall reference
-//   Test 6 — Multi-frame reset via SOF
+//   Test 1  — Uniform image (DC pass-through): all 128 → all 128
+//   Test 2  — Single bright pixel (impulse response): verify kernel weights
+//   Test 3  — Horizontal gradient (smoothing verification)
+//   Test 4  — Edge replication (checkerboard pattern, border pixel check)
+//   Test 5  — Stall behavior: output matches no-stall reference
+//   Test 6  — Multi-frame reset via SOF
+//   Test 7  — Impulse alignment (Phase 0 blocker): verifies CENTERED output;
+//             expected to FAIL on causal RTL, must pass after Phase 1 RTL
+//   Tests 8-11 added in Phase 3 (bottom/right edge, latency, busy_o, min blanking)
 //
 // Conventions: drv_* intermediaries, posedge register, $display/$fatal.
 
@@ -149,6 +152,29 @@ module tb_axis_gauss3x3;
         drv_valid = 1'b0;
         drv_sof   = 1'b0;
         drv_stall = 1'b0;
+    endtask
+
+    // Drive one frame with H_BLANK idle cycles after each row and V_BLANK idle
+    // cycles after the last row. Provides blanking windows for phantom-cycle
+    // drain in the centered Gaussian implementation (Phase 1+).
+    task automatic drive_frame_blanked(
+        input logic [7:0] img [V][H],
+        input int h_blank,
+        input int v_blank
+    );
+        for (int r = 0; r < V; r++) begin
+            for (int c = 0; c < H; c++) begin
+                drv_y     = img[r][c];
+                drv_valid = 1'b1;
+                drv_sof   = (r == 0 && c == 0) ? 1'b1 : 1'b0;
+                drv_stall = 1'b0;
+                @(posedge clk);
+            end
+            drv_valid = 1'b0;
+            drv_sof   = 1'b0;
+            repeat (h_blank) @(posedge clk);
+        end
+        repeat (v_blank) @(posedge clk);
     endtask
 
     // Capture NUM_PIX output pixels.
@@ -340,12 +366,87 @@ module tb_axis_gauss3x3;
         check_frame("test6_sof_reset");
 
         // ================================================================
+        // Test 7: Impulse alignment — Phase 0 blocker
+        //
+        // Verifies CENTERED Gaussian output: the kernel center (weight 4)
+        // must land at the impulse pixel position, not at the causal
+        // offset (row-1, col-1). With the current causal implementation
+        // this test is expected to FAIL, confirming the spatial shift.
+        // After Phase 1 RTL changes (centered Gaussian) it must pass.
+        //
+        // H_BLANK=4 and V_BLANK=H+20 give the centered module enough
+        // blanking to drain all phantom cycles. With the causal module
+        // (no phantom cycles) these blank cycles are inert.
+        // ================================================================
+        $display("=== Test 7: Impulse alignment (centered Gaussian check) ===");
+        for (int r = 0; r < V; r++)
+            for (int c = 0; c < H; c++)
+                frame_img[r][c] = 8'd0;
+        frame_img[4][8] = 8'd255;  // interior impulse, away from all borders
+
+        rst_n = 0;
+        repeat (4) @(posedge clk);
+        rst_n = 1;
+        repeat (2) @(posedge clk);
+
+        fork
+            drive_frame_blanked(frame_img, 4, H + 20);
+            capture_frame();
+        join
+        repeat (5) @(posedge clk);
+
+        // Centered kernel weights for impulse=255:
+        //   center  (4,8) = 4*255 >> 4 = 63
+        //   edge-adjacent: (3,8),(5,8),(4,7),(4,9) = 2*255 >> 4 = 31
+        //   diagonal:      (3,7),(3,9),(5,7),(5,9) = 1*255 >> 4 = 15
+        // Causal implementation puts center at (3,7) instead of (4,8).
+        begin
+            int t7_errors;
+            t7_errors = 0;
+            if (captured[4*H+8] !== 8'd63) begin
+                $display("FAIL test7: center (4,8) got %0d exp 63  [causal center=(3,7) got %0d]",
+                         captured[4*H+8], captured[3*H+7]);
+                t7_errors++;
+            end
+            if (captured[3*H+8] !== 8'd31) begin
+                $display("FAIL test7: (3,8) got %0d exp 31", captured[3*H+8]); t7_errors++;
+            end
+            if (captured[5*H+8] !== 8'd31) begin
+                $display("FAIL test7: (5,8) got %0d exp 31", captured[5*H+8]); t7_errors++;
+            end
+            if (captured[4*H+7] !== 8'd31) begin
+                $display("FAIL test7: (4,7) got %0d exp 31", captured[4*H+7]); t7_errors++;
+            end
+            if (captured[4*H+9] !== 8'd31) begin
+                $display("FAIL test7: (4,9) got %0d exp 31", captured[4*H+9]); t7_errors++;
+            end
+            if (captured[3*H+7] !== 8'd15) begin
+                $display("FAIL test7: (3,7) got %0d exp 15", captured[3*H+7]); t7_errors++;
+            end
+            if (captured[3*H+9] !== 8'd15) begin
+                $display("FAIL test7: (3,9) got %0d exp 15", captured[3*H+9]); t7_errors++;
+            end
+            if (captured[5*H+7] !== 8'd15) begin
+                $display("FAIL test7: (5,7) got %0d exp 15", captured[5*H+7]); t7_errors++;
+            end
+            if (captured[5*H+9] !== 8'd15) begin
+                $display("FAIL test7: (5,9) got %0d exp 15", captured[5*H+9]); t7_errors++;
+            end
+            if (captured[4*H+6] !== 8'd0) begin
+                $display("FAIL test7: outside kernel (4,6) got %0d exp 0", captured[4*H+6]);
+                t7_errors++;
+            end
+            num_errors = num_errors + t7_errors;
+        end
+        $display("Test 7: impulse alignment check done");
+
+        // ================================================================
         // Summary
         // ================================================================
         if (num_errors > 0) begin
             $fatal(1, "tb_axis_gauss3x3 FAILED with %0d errors", num_errors);
         end else begin
-            $display("tb_axis_gauss3x3 PASSED — 6 tests OK");
+            $display("tb_axis_gauss3x3 PASSED — 7 tests OK");
             $finish;
         end
     end

@@ -41,10 +41,11 @@ axis_motion_detect (u_motion)
 | `valid_i` | input | 1 | Pixel valid — 1-cycle delayed acceptance from `axis_motion_detect` (aligned with `y_cur` from `rgb2ycrcb`) |
 | `sof_i` | input | 1 | Start-of-frame — resets row/col counters (1-cycle delayed, aligned with `valid_i`) |
 | `stall_i` | input | 1 | Pipeline stall from `axis_motion_detect` — freezes all internal state when asserted |
+| `busy_o` | output | 1 | Module is executing a phantom cycle and cannot accept a real pixel this cycle. Asserted for 1 cycle per row when no H-blank is available; asserted for up to `H_ACTIVE + 1` cycles after the last row when no V-blank is available. Stays low in standard VGA-timed integration where blanking is always present. |
 | **Data** | | | |
 | `y_i` | input | 8 | Raw luma from `rgb2ycrcb` |
 | `y_o` | output | 8 | Smoothed luma (registered) |
-| `valid_o` | output | 1 | Output valid — follows `valid_i` with 2-cycle delay |
+| `valid_o` | output | 1 | Output valid — follows `valid_i` with `H_ACTIVE + 3` cycle latency during initial fill; 1 pixel/cycle steady-state throughput thereafter |
 
 No `tready` output — the module never back-pressures; stall control is external.
 
@@ -62,29 +63,50 @@ Kernel (integer):        Normalized (/ 16):
   [1  2  1]               [1/16  2/16  1/16]
 ```
 
-For a pixel at position (r, c):
+For a pixel at position (r, c), the centered convolution is:
 
 ```
-Y_out = (1*Y[r-1,c-1] + 2*Y[r-1,c] + 1*Y[r-1,c+1]
-       + 2*Y[r  ,c-1] + 4*Y[r  ,c] + 2*Y[r  ,c+1]
-       + 1*Y[r+1,c-1] + 2*Y[r+1,c] + 1*Y[r+1,c+1]) >> 4
+Y_out[r,c] = (1*Y[r-1,c-1] + 2*Y[r-1,c] + 1*Y[r-1,c+1]
+            + 2*Y[r  ,c-1] + 4*Y[r  ,c] + 2*Y[r  ,c+1]
+            + 1*Y[r+1,c-1] + 2*Y[r+1,c] + 1*Y[r+1,c+1]) >> 4
 ```
 
 All weights are powers of 2: `*1` = identity (wiring), `*2` = `<<1` (wiring), `*4` = `<<2` (wiring). The final `>>4` is also wiring (bit-select `sum[11:4]`). The entire convolution is 9 additions with no multiplier hardware.
 
-This pre-filtering reduces per-pixel sensor noise before the motion threshold comparison in `motion_core`, directly reducing salt-and-pepper speckle in the motion mask. A 3x3 kernel is sufficient for 320x240; a 5x5 would blur away small-object motion at this resolution.
+### Centered streaming Gaussian
 
-### Centered vs. causal Gaussian
+This module implements **true centered convolution**. The output `y_o` for the n-th pixel in scan order is the Gaussian smoothed value at the same spatial position as the n-th input pixel — no diagonal shift. This is the standard convention adopted by MathWorks Vision HDL Toolbox (`floor(K_h/2)` lines of latency) and Xilinx Vitis Vision `Filter2D`/`Window2D`.
 
-The convolution above is defined as *centered* — the kernel is applied around pixel (r, c) using rows {r-1, r, r+1} and columns {c-1, c, c+1}. In a frame buffer architecture where the entire image is available, this is trivial. In a **streaming** architecture, pixels arrive in raster order and row r+1 has not arrived when (r, c) is being processed. A truly centered Gaussian would require buffering one full row of input before the first output can be produced, adding **H_ACTIVE + 1 clock cycles** of latency.
+The cost of centering is latency: pixel (r, c) cannot be output until row r+1 column c+1 has been received (the bottom-right corner of its 3x3 window). For H_ACTIVE pixels per row, this adds one full row + one column = H_ACTIVE + 1 valid input cycles before the first centered output, plus 2 pipeline stages. Total initial latency = **H_ACTIVE + 3 clock cycles**.
 
-This module instead computes a **backward-looking** (causal) Gaussian: for each input pixel at scan position (r, c), the 3x3 window is formed from rows {r-2, r-1, r} and columns {c-2, c-1, c} — all of which are already available from the line buffers and shift registers. The kernel center (weight 4) lands on position **(r-1, c-1)**, not (r, c). The output is a valid Gaussian blur of the image, but **spatially shifted by 1 pixel diagonally** (up and left) relative to the input stream.
+This latency is absorbed in the existing pipeline via `idx_pipe` in `axis_motion_detect`, which delays the pixel address by the same H_ACTIVE + 3 cycles so `y_smooth` and `bg[P]` meet at the comparator for the same pixel P.
 
-This means `y_o[n]` (the output for the n-th pixel in scan order) is the Gaussian smoothed value centered at position (r-1, c-1), while the motion pipeline's pixel address counter associates it with position (r, c). The comparison `|y_smooth - bg[pix_addr]|` therefore compares spatially mismatched positions. For motion detection with `THRESH=16`, this 1-pixel shift is negligible — adjacent pixels in a natural image differ by far less than the threshold. The trade-off is 2-cycle latency instead of H_ACTIVE + 1.
+### Phantom-cycle drain and blanking
 
-### Edge handling
+After all real pixels of a row are consumed, the 3x3 window centered at the **last real column** (c = H_ACTIVE − 1) still needs column c+1 = H_ACTIVE, which does not exist. The module self-clocks one **phantom cycle** at col = H_ACTIVE, using the edge-replicated right-border value. This phantom cycle produces the centered output for the rightmost pixel of that row.
 
-At image borders (first/last row, first/last column), the backward-looking window extends outside the image. Border pixel replication clamps window coordinates at image edges — out-of-bounds positions are replaced with the nearest valid pixel. This is a simple mux on the window inputs controlled by the row/column counters.
+Similarly, after the last real row, the window centered at any pixel in the bottom row needs row V_ACTIVE (which does not exist). The module self-clocks H_ACTIVE + 1 phantom cycles at row = V_ACTIVE, using the edge-replicated bottom-border values, to drain the remaining centered outputs.
+
+Phantom cycles execute **during upstream blanking** (when `valid_i = 0`):
+
+- **Per row**: 1 phantom cycle per row → absorbed in H-blank. Minimum blanking: 1 cycle per row (2 · K_w = 6 cycles per MathWorks spec is conservative but safe).
+- **Per frame**: H_ACTIVE + 1 phantom cycles after the last row → absorbed in V-blank. Minimum: H_ACTIVE + 1 cycles of V-blank.
+- **No blanking available**: `busy_o` is asserted for the phantom cycle. The parent module (`axis_motion_detect`) uses this to deassert `s_axis_tready_o` for one cycle, creating the required blanking window. In standard VGA-timed integration (`H_BLANK = 16`, `V_BLANK = 6 lines`), blanking is always available and `busy_o` stays low.
+
+### Edge replication
+
+At image borders, the 3x3 window extends outside the image. Border pixel replication clamps out-of-bounds coordinates to the nearest valid pixel. All four borders are handled:
+
+| Condition | Override |
+|-----------|----------|
+| `row == 0` (first row) | Top two rows of window replicated from current row |
+| `row == 1` (second row) | Top row replicated from middle row |
+| `row == V_ACTIVE − 1` (last real row) | (Line buffers already hold correct data; no override needed) |
+| `row == V_ACTIVE` (phantom bottom row) | Top and middle rows sourced from line buffers; bottom row replicated |
+| `col == 0` (first column) | Left two columns replicated from current column |
+| `col == 1` (second column) | Left column replicated from middle column |
+| `col == H_ACTIVE − 1` (last real column) | Shift register holds correct data; no override |
+| `col == H_ACTIVE` (phantom right column) | Right two columns replicated from last real column |
 
 ---
 
@@ -100,36 +122,36 @@ y_i ──► [line buffers LB0, LB1] ──► [column shift regs] ──► [e
 
 ### 1. Row/column counters
 
-Registered counters `col` and `row` track position within the frame. Reset on `sof_i`. Frozen during `stall_i`. A combinational `cur_col`/`cur_row` computes the actual position of the pixel being accepted in the current cycle (the registered counter reflects the previous pixel's position).
+Registered counters `col` and `row` track position within the active region, extended to `[0 .. H_ACTIVE]` × `[0 .. V_ACTIVE]` so phantom positions can be represented. On `sof_i` the counters reset to 0. On `!stall_i && valid_i` they advance. On a phantom cycle they advance without consuming a real pixel.
+
+A combinational `cur_col`/`cur_row` computes the actual position of the pixel (real or phantom) being processed in the current cycle.
 
 ### 2. Line buffers (distributed RAM, depth = `H_ACTIVE`, width = 8)
 
-Two line buffers store previous rows. When the input scan position is at row `r`, the three rows available form a window whose *center* is row `r-1` (not `r`):
+Two line buffers store previous rows. When the scan position is at row r:
 
 | Buffer | Contents | Role in 3x3 window |
 |--------|----------|---------------------|
-| `lb0_mem` | Row r-2 (oldest) | Top neighbor of center pixel at r-1 |
-| `lb1_mem` | Row r-1 (middle) | **Center row** (the pixel being filtered) |
-| Live input | Row r (current) | Bottom neighbor of center pixel at r-1 |
+| `lb0_mem` | Row r-2 (oldest) | Top row of window centered at (r-1, c) |
+| `lb1_mem` | Row r-1 (middle) | Middle row of window centered at (r-1, c) |
+| Live input | Row r (current) | Bottom row of window centered at (r-1, c) |
 
-On each valid pixel at column `c`:
+On each real pixel at column c:
 
 ```
-lb0_rd = lb0_mem[cur_col]      // read oldest row
-lb1_rd = lb1_mem[cur_col]      // read middle row
-lb0_mem[cur_col] = lb1_mem[cur_col]  // cascade: middle → oldest
-lb1_mem[cur_col] = y_i              // current → middle
+lb0_rd = lb0_mem[cur_col]
+lb1_rd = lb1_mem[cur_col]
+lb0_mem[cur_col] = lb1_mem[cur_col]   // cascade: middle → oldest
+lb1_mem[cur_col] = y_i                // current → middle
 ```
 
-The cascade reads `lb1_mem[cur_col]` directly from memory (not from the registered `lb1_rd` output) to avoid a column-shifted copy. All reads and writes are registered (1-cycle latency), gated by `!stall_i && valid_i`.
+During phantom cycles, line buffer writes are gated off (no real pixel to store). The cascade reads `lb1_mem[cur_col]` directly from memory (not from the registered `lb1_rd` output) to avoid a column-shifted copy.
 
-A parallel pipeline register captures `y_i`, `cur_col`, and `cur_row` as `y_d1`, `col_d1`, `row_d1` (with `valid_d1`) to stay aligned with the line buffer read outputs.
-
-**Resource cost:** At 320px, each buffer is 320 x 8 = 2,560 bits. Synthesis tools typically infer these as distributed RAM (LUT-RAM) at this depth. Total: ~640 bytes.
+**Resource cost:** At 320px, each buffer is 320 × 8 = 2,560 bits. Synthesis infers distributed RAM (LUT-RAM). Total: ~640 bytes.
 
 ### 3. Column shift registers (6 FFs)
 
-After the line buffer read stage (d1), each row's output feeds a 2-deep shift register. The same spatial offset applies horizontally: when the input is at column `c`, the shift register taps hold columns `c`, `c-1`, `c-2`, making column `c-1` the center:
+After the line buffer read stage (d1), each row's output feeds a 2-deep shift register providing `c`, `c-1`, `c-2` taps:
 
 ```
 r2: lb0_rd → r2_c1 → r2_c2    (top row: c, c-1, c-2)
@@ -137,22 +159,11 @@ r1: lb1_rd → r1_c1 → r1_c2    (center row: c, c-1, c-2)
 r0: y_d1   → r0_c1 → r0_c2    (bottom row: c, c-1, c-2)
 ```
 
-The `_c0` taps are combinational aliases of the current-column values (`lb0_rd`, `lb1_rd`, `y_d1`). So `win[1][1]` = `r1_c1` = row r-1 at column c-1 — the center pixel of the kernel. Shift registers are gated by `!stall_i && valid_d1`.
+The `_c0` taps are combinational aliases. Shift registers are gated by `!stall_i && valid_d1`. During phantom right-edge cycles the shift register is not advanced by new input; the replicated right-border value is injected via the edge mux.
 
 ### 4. Edge replication muxing (combinational)
 
-The 3x3 window `win[row][col]` defaults to the shift register outputs (the interior case). Muxes override based on `col_d1` (`COL_W` bits = `$clog2(H_ACTIVE)`, 9 bits at 320px) and `row_d1` (`ROW_W` bits = `$clog2(V_ACTIVE)`, 8 bits at 240px):
-
-| Condition | Override |
-|-----------|----------|
-| `row_d1 == 0` (first row) | Top and middle rows replicated from bottom row |
-| `row_d1 == 1` (second row) | Top row replicated from middle row |
-| `row_d1 >= 2` (interior/last rows) | No override — shift register outputs used directly |
-| `col_d1 == 0` (first column) | `c-2` and `c-1` replicated from `c` |
-| `col_d1 == 1` (second column) | `c-2` replicated from `c-1` |
-| `col_d1 >= 2` (interior/last columns) | No override — shift register outputs used directly |
-
-Last row / last column need no special handling: the bottom row is always the live input, and previous-column taps naturally hold valid data.
+The 3x3 window `win[row][col]` defaults to shift register outputs. Muxes override based on `col_d1` and `row_d1` according to the table in §4. The mux operates on the d1-stage signals and is purely combinational.
 
 ### 5. Convolution (combinational adder tree)
 
@@ -162,26 +173,25 @@ conv_sum[11:0] = {4'b0, win[0][0]}       + {3'b0, win[0][1], 1'b0} + {4'b0, win[
                + {4'b0, win[2][0]}       + {3'b0, win[2][1], 1'b0} + {4'b0, win[2][2]};
 ```
 
-Each input is 8 bits. Maximum shifted value is 10 bits (`<<2`). Sum of 9 terms fits in 12 bits. Output: `conv_sum[11:4]` (bit-select = `>>4`).
+Maximum shifted value: 10 bits. Sum of 9 terms: 12 bits. Output: `conv_sum[11:4]` (= `>> 4`).
 
 ### 6. Output register
 
-`y_o` and `valid_d2` are registered on the next non-stall cycle, giving the module its total 2-cycle latency.
+`y_o` and `valid_d2` are registered on each non-stall cycle (real or phantom), giving the module its base 2-cycle internal latency. The first valid `valid_o` pulse appears H_ACTIVE + 3 cycles after the first input pixel.
 
-### Spatial offset
+### 7. SOF handling
 
-As explained in §4, this is a **causal (backward-looking) Gaussian**, not a centered one. When the input scan position is at (r, c), the 3x3 window uses rows {r-2, r-1, r} and columns {c-2, c-1, c}. The kernel center (weight 4) is at `win[1][1]` = (r-1, c-1). The output produced 2 cycles after pixel (r, c) is input is the Gaussian smoothed value for position (r-1, c-1).
-
-This 1-pixel diagonal shift is inherent to the causal architecture and applies to all pixels, not just borders. Edge replication at rows 0–1 and cols 0–1 handles the additional boundary case where the backward-looking window extends outside the image.
+On `sof_i`, internal `col`/`row` counters reset to 0. Any in-flight phantom cycles for the previous frame are cancelled (they complete within V-blank before the next SOF arrives in normal operation).
 
 ### Resource cost summary
 
 | Resource | Count |
 |----------|-------|
-| Line buffer memory | 2 x 320 x 8 = 5,120 bits (~640 bytes) |
-| Column shift register FFs | 6 x 8 = 48 bits |
-| Pipeline registers (d1) | 8 (y) + 9 (col) + 8 (row) + 1 (valid) = 26 bits |
+| Line buffer memory | 2 × H_ACTIVE × 8 bits (~640 bytes at 320px) |
+| Column shift register FFs | 6 × 8 = 48 bits |
+| Pipeline registers (d1) | 8 (y) + log2(H_ACTIVE) (col) + log2(V_ACTIVE) (row) + 1 (valid) |
 | Output register | 8 (y_o) + 1 (valid_d2) = 9 bits |
+| Phantom counter + edge mux | ~20 FFs + combinational mux |
 | Adder tree | 8 adders (combinational) |
 | Multipliers | 0 (all shifts are wiring) |
 
@@ -189,13 +199,15 @@ This 1-pixel diagonal shift is inherent to the causal architecture and applies t
 
 ## 6. Control Logic and State Machines
 
-No FSM. All control is combinational gating based on `valid_i`, `stall_i`, and `sof_i`. The row/column counters are the only registered control state, advanced on `!stall_i && valid_i` and reset on `sof_i`.
+No FSM. All control is combinational gating based on `valid_i`, `stall_i`, `sof_i`, and the phantom-cycle trigger logic. Row/column counters are the only registered control state.
 
 | Signal | Condition | Effect |
 |--------|-----------|--------|
-| `sof_i` | `valid_i && !stall_i` | Row/col counters reset to 0 |
+| `sof_i` | `valid_i && !stall_i` | Row/col counters reset to 0; in-flight phantom cycles cancelled |
 | `stall_i` | asserted | All registers frozen (line buffers, shift regs, output) |
-| `valid_i` | `!stall_i` | Pipeline advances: line buffer read/write, shift register shift, output register update |
+| `valid_i` | `!stall_i` | Real pixel consumed; pipeline advances |
+| phantom trigger | `valid_i=0 && phantom_needed` | Phantom cycle fires; pipeline advances without consuming real pixel |
+| `busy_o` | `phantom_needed && valid_i=1` | No blanking available; signal parent to deassert ready |
 
 ---
 
@@ -206,11 +218,16 @@ No FSM. All control is combinational gating based on `valid_i`, `stall_i`, and `
 | `y_i` → line buffer read (`lb0_rd`, `lb1_rd`, `y_d1`) | 1 clock cycle |
 | Shift register + edge mux + adder tree (combinational) | 0 clock cycles |
 | Adder tree output → `y_o` (output register) | 1 clock cycle |
-| **Total: `y_i` → `y_o`** | **2 clock cycles** |
-| `valid_i` → `valid_o` | 2 clock cycles |
-| Throughput | 1 pixel / cycle (when `!stall_i`) |
+| **Total: `y_i` → `y_o` (first output, initial fill)** | **H_ACTIVE + 3 clock cycles** |
+| Steady-state throughput | 1 pixel / cycle (when `!stall_i`) |
+| Phantom cycles per row | 1 (absorbed in H-blank ≥ 1 cycle) |
+| Phantom cycles per frame (bottom row) | H_ACTIVE + 1 (absorbed in V-blank ≥ H_ACTIVE + 1 cycles) |
 
-First pixel of each frame produces valid output immediately (edge-replicated borders), so there is no multi-row fill delay.
+Minimum blanking requirements (MathWorks Vision HDL Toolbox spec for 3×3 filter):
+- H-blank: ≥ 2 × K_w = 6 cycles (conservative; 1 cycle is the true minimum)
+- V-blank: ≥ K_h = 3 lines (conservative; H_ACTIVE + 1 cycles is the true minimum)
+
+Standard VGA-timed TB provides H_BLANK = 16 cycles and V_BLANK = 6 lines — both well above minimum.
 
 ---
 
@@ -222,18 +239,19 @@ None from `sparevideo_pkg`. Frame geometry parameters (`H_ACTIVE`, `V_ACTIVE`) m
 
 ## 9. Known Limitations
 
-- **Causal (backward-looking), not centered**: the output for input pixel at (r, c) is the Gaussian centered at (r-1, c-1) — a 1-pixel diagonal spatial shift. A centered Gaussian would require H_ACTIVE + 1 cycles of latency (buffering a full row before producing output). The 1-pixel shift is negligible for motion detection with `THRESH=16`, but means the RTL does not produce bit-identical output to a standard centered Gaussian (e.g., `scipy.ndimage.gaussian_filter` or `np.pad(mode='edge')` + centered convolution). The Python reference model must replicate the causal window, not the centered one.
+- **H_ACTIVE + 3 initial latency**: first output pixel appears H_ACTIVE + 3 cycles after first input. At 100 MHz this is 3.2 µs at 320px — invisible in a 60 fps pipeline. Steady-state throughput is 1 pixel/cycle.
 - **3x3 only**: no parameterized kernel size. A 5x5 would require 4 line buffers and a 25-element adder tree — a separate module if needed.
-- **Distributed RAM at 320px**: the line buffers infer as distributed RAM (LUT-RAM) at 320 depth. At higher resolutions (e.g., 1920px), BRAM inference would be preferable. No synthesis pragmas are applied.
+- **Distributed RAM at 320px**: at higher resolutions (e.g., 1920px), BRAM inference would be preferable. No synthesis pragmas are applied.
 - **No bypass mode**: when `GAUSS_EN=0` in `axis_motion_detect`, the entire module is not instantiated (generate block). There is no runtime bypass.
-- **Truncation, not rounding**: the `>>4` division truncates toward zero. Maximum error vs. ideal Gaussian is -1 LSB.
-- **Stale line buffer data on first frame**: after reset, `lb0_mem` and `lb1_mem` contain arbitrary data. Edge replication for rows 0-1 hides this; by row 2 the cascade has propagated correct data from the current frame.
-- **SOF does not clear line buffers**: `sof_i` resets the row/col counters but does not zero the line buffer contents. The first two rows of a new frame re-fill the buffers naturally via the cascade, and edge replication masks any stale data.
+- **Truncation, not rounding**: the `>>4` division truncates toward zero. Maximum error vs. ideal Gaussian is −1 LSB.
+- **Stale line buffer data on first frame**: after reset, `lb0_mem`/`lb1_mem` contain arbitrary data. Edge replication for rows 0–1 hides this; by row 2 the cascade propagates correct data.
+- **SOF does not clear line buffers**: `sof_i` resets the row/col counters but does not zero the line buffer contents. The first two rows re-fill the buffers naturally via the cascade.
 
 ---
 
 ## 10. References
 
-- [sistenix.com — 2D Convolution Tutorial](https://sistenix.com/sobel.html) — SystemVerilog sliding window with line buffers
-- [damdoy/fpga_image_processing](https://github.com/damdoy/fpga_image_processing) — Gaussian blur for ice40, Verilator-tested
-- [Gowtham1729/Image-Processing](https://github.com/Gowtham1729/Image-Processing) — 3x3 convolution kernels (Apache 2.0)
+- **MathWorks Vision HDL Toolbox** — `floor(K_h/2)` lines of latency, edge padding with blanking-based drain. Minimum blanking: 2·K_w cycles horizontal, K_h lines vertical. [visionhdl.ImageFilter](https://www.mathworks.com/help/visionhdl/ref/visionhdl.imagefilter-system-object.html), [Edge Padding](https://www.mathworks.com/help/visionhdl/ug/edge-padding.html), [Configure Blanking Intervals](https://www.mathworks.com/help/visionhdl/ug/configure-blanking-intervals.html)
+- **Xilinx Vitis Vision `Filter2D` / `Window2D`** — line buffer depth K_v−1, window buffer, centered SOP. [2D Convolution Tutorial](https://xilinx.github.io/Vitis-Tutorials/2021-1/build/html/docs/Hardware_Acceleration/Design_Tutorials/01-convolution-tutorial/lab2_conv_filter_kernel_design.html)
+- **georgeyhere/FPGA-Video-Processing** — fills three line buffers before streaming; output FIFO is CDC, not alignment. [GitHub](https://github.com/georgeyhere/FPGA-Video-Processing)
+- **AMD/Xilinx UG949 — Coding Shift Registers and Delay Lines** — SRL inference guidance for deep shift registers without reset. [UG949](https://docs.amd.com/r/en-US/ug949-vivado-design-methodology/Coding-Shift-Registers-and-Delay-Lines)
