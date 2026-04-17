@@ -26,11 +26,13 @@
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
 | `clk_i` | input | 1 | Clock (shared by both ports) |
+| **Port A** | | | |
 | `a_rd_addr_i` | input | `ADDR_W` | Port A read address |
 | `a_rd_data_o` | output | 8 | Port A read data (valid 1 cycle after address) |
 | `a_wr_addr_i` | input | `ADDR_W` | Port A write address |
 | `a_wr_data_i` | input | 8 | Port A write data |
 | `a_wr_en_i` | input | 1 | Port A write enable |
+| **Port B** | | | |
 | `b_rd_addr_i` | input | `ADDR_W` | Port B read address |
 | `b_rd_data_o` | output | 8 | Port B read data (valid 1 cycle after address) |
 | `b_wr_addr_i` | input | `ADDR_W` | Port B write address |
@@ -39,15 +41,25 @@
 
 ---
 
-## 4. Datapath Description
+## 4. Concept Description
 
-One `logic [7:0] mem [0:DEPTH-1]` backing store, zero-initialized in an `initial` block.
+A dual-port RAM provides two independent access ports sharing a common memory array. This architecture enables concurrent read/write operations from different pipeline stages without arbitration delays — one client can read while another writes, or both can read simultaneously.
 
-Two independent `always_ff @(posedge clk_i)` blocks, one per port. Each implements **read-first** semantics on the same port: if a port reads and writes the same address in the same cycle, it returns the **old** value. This is the discipline `axis_motion_detect` depends on (it reads the old background value and writes the EMA-updated value at the same address on the same cycle).
+In the sparevideo pipeline, port A serves the motion detection module's per-pixel background model, requiring one read and one write per pixel clock. Port B is reserved for future clients (debug dump, fixed-pattern-noise reference, host CPU access). The dual-port topology allows a future port B client to access the memory without stalling the motion detection pipeline.
+
+The module implements **read-first** semantics: when a port reads and writes the same address in the same cycle, the read returns the old (pre-write) value. This is the discipline required by the EMA background update in `axis_motion_detect`, which reads the current background estimate and writes the EMA-updated estimate at the same address in the same cycle, needing the old value for the difference computation.
+
+The RAM is zero-initialized, which means the background model starts at 0 for all pixels. The EMA converges from zero toward the actual scene luma over the first `~1/alpha` frames rather than being primed from the first frame (see `axis_motion_detect-arch.md` §4 for the rationale).
 
 ---
 
-## 5. Inter-Port Collision Semantics
+## 5. Internal Architecture
+
+One `logic [7:0] mem [0:DEPTH-1]` backing store, zero-initialized in an `initial` block.
+
+Two independent `always_ff @(posedge clk_i)` blocks, one per port. Each implements **read-first** semantics on the same port: if a port reads and writes the same address in the same cycle, it returns the **old** value.
+
+### Inter-port collision semantics
 
 | Scenario | Port A | Port B | Result |
 |----------|--------|--------|--------|
@@ -69,9 +81,7 @@ Any future port B client must obey **at least one** of:
 
 Port B is currently tied off (`b_rd_addr_i='0`, `b_wr_en_i=1'b0`) at the top level.
 
----
-
-## 6. Region Descriptor Model
+### Region descriptor model
 
 Partitioning is handled externally by compile-time localparams in `sparevideo_top.sv`. Each client receives its `{RGN_BASE, RGN_SIZE}` as module parameters and computes physical addresses as `RGN_BASE + local_offset`. The RAM module itself has no knowledge of regions.
 
@@ -79,6 +89,16 @@ Partitioning is handled externally by compile-time localparams in `sparevideo_to
 |--------|-------|------|------|
 | `Y_PREV` | `axis_motion_detect` | `0` | `H_ACTIVE × V_ACTIVE` |
 | (reserved) | port B future client | — | — |
+
+### Resource cost
+
+For the default 320×240 resolution, the RAM stores 76,800 bytes. On FPGA this maps to approximately 19 BRAM36K blocks (assuming Xilinx 7-series: 36 Kb = 4,096 bytes per BRAM in 1-byte-wide mode). The behavioral model infers as distributed RAM or BRAM depending on the synthesis tool's heuristics.
+
+---
+
+## 6. Control Logic and State Machines
+
+No FSM or control logic. Each port's `always_ff` block performs an unconditional read and a conditional write (gated by `wr_en`) every cycle.
 
 ---
 
@@ -94,9 +114,22 @@ Port A utilization by `axis_motion_detect`: ≤ 25% of `clk_dsp` cycles (bounded
 
 ---
 
-## 8. Known Limitations
+## 8. Shared Types
+
+None from `sparevideo_pkg`.
+
+---
+
+## 9. Known Limitations
 
 - **Simulation-only**: the behavioral model is not synthesizable as-is on FPGA. For synthesis, replace with a vendor true-dual-port BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`). The interface already matches the typical BRAM port layout.
 - **No ECC**: single-bit errors are not detected or corrected.
 - **No inter-port arbitration**: concurrent writes to the same address from both ports produce non-deterministic results (host-responsibility rule applies).
 - **No `ADDR_W` override needed**: `ADDR_W` is derived via `$clog2(DEPTH)`. The parameter is exposed for documentation clarity only; overriding it may cause mismatches.
+
+---
+
+## 10. References
+
+- [Xilinx UG573 — UltraScale Memory Resources](https://docs.amd.com/r/en-US/ug573-ultrascale-memory-resources)
+- [Xilinx UG473 — 7 Series Memory Resources](https://docs.amd.com/v/u/en-US/ug473_7Series_Memory_Resources)

@@ -226,3 +226,4 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 dv/sim/obj_tb_rgb2ycrcb/Vtb_rgb2ycrcb__ALL.o
+.claude/settings.local.json

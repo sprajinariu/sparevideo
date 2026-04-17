@@ -3,6 +3,8 @@
 // Empty pin connections in sparevideo_top intentionally tie off unused
 // outputs of vendored verilog-axis modules.
 lint_off -rule PINCONNECTEMPTY -file "*sparevideo_top.sv"
+// axis_motion_detect ties off unused axis_gauss3x3 valid_o output.
+lint_off -rule PINCONNECTEMPTY -file "*axis_motion_detect.sv"
 // vga_controller and pattern_gen lack `timescale; harmless mismatch
 // against vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"
@@ -10,8 +12,15 @@ lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"
 // [15:8] feed the output registers. Bits [16] and [7:0] are intentionally
 // discarded (the >>8 is pure wiring, no saturation needed).
 lint_off -rule UNUSEDSIGNAL    -file "*rgb2ycrcb.sv"
-// rgb2ycrcb has no `timescale directive; harmless mismatch vs vendored files.
+// rgb2ycrcb and axis_fork have no `timescale directive; harmless
+// mismatch vs vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*rgb2ycrcb.sv"
+lint_off -rule TIMESCALEMOD    -file "*axis_fork.sv"
+// axis_gauss3x3 has no `timescale directive.
+lint_off -rule TIMESCALEMOD    -file "*axis_gauss3x3.sv"
 // EMA step is 9-bit signed but only [7:0] feeds the 8-bit write-back.
 // Bit [8] (sign extension) is intentionally unused.
-lint_off -rule UNUSEDSIGNAL    -file "*axis_motion_detect.sv" -match "*ema_step*"
+lint_off -rule UNUSEDSIGNAL    -file "*motion_core.sv" -match "*ema_step*"
+// Gaussian conv_sum is 12 bits; output is sum[11:4] (>>4 divide by 16).
+// Bottom 4 bits are intentionally discarded (truncation, no rounding).
+lint_off -rule UNUSEDSIGNAL    -file "*axis_gauss3x3.sv" -match "*conv_sum*"

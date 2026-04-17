@@ -1,0 +1,14 @@
+CAPI=2:
+name: "sparevideo:ip:gauss3x3"
+description: "3x3 Gaussian pre-filter on Y channel"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_gauss3x3.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl
