@@ -2,6 +2,7 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/top/ram.sv \
            ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
            ../../hw/ip/axis/rtl/axis_fork_pipe.sv \
+           ../../hw/ip/gauss3x3/rtl/axis_gauss3x3.sv \
            ../../hw/ip/motion/rtl/motion_core.sv \
            ../../hw/ip/motion/rtl/axis_motion_detect.sv \
            ../../hw/ip/motion/rtl/axis_bbox_reduce.sv \
