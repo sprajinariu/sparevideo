@@ -88,6 +88,63 @@ Clock domain crossing (CDC) is handled by asynchronous FIFOs at the pipeline bou
 
 The processing pipeline itself (motion detection → bbox reduction → overlay) is documented in the individual module architecture documents. At the top level, the concern is how these modules are interconnected, how control flow selects between them, and how CDC and timing constraints are satisfied.
 
+### Dual-path pipeline: what is the "mask"?
+
+In motion/mask modes, the pipeline processes two parallel streams forked from the same input video. A top-level `axis_fork` (`u_fork`) broadcasts the DSP-domain input to two consumers:
+
+1. **Video path (RGB, 24-bit per pixel, `fork_b`):** The original RGB pixels feed directly from the fork to `u_overlay_bbox`, bypassing `u_motion_detect` entirely. They are never modified by the motion-detection logic. The fork ensures the overlay receives the same pixels with no additional latency.
+2. **Mask path (1-bit per pixel, `fork_a`):** `u_motion_detect` receives the second fork output, converts each pixel to Y8, compares against the per-pixel background model, and emits a single bit: **"did this pixel change compared to the background?"** A `1` means yes (motion detected at this pixel), a `0` means no (this pixel looks the same as the background model).
+
+The mask is a binary image the same size as the video (H_ACTIVE × V_ACTIVE), transmitted as an AXI4-Stream of 1-bit values, one per pixel, in the same raster order as the video. Visually, if you could see the mask, it would look like this:
+
+```
+Original scene:              Motion mask:
+
+  ┌──────────────────┐        ┌──────────────────┐
+  │                  │        │                  │
+  │     ██████       │        │     ░░░░░░       │
+  │     █ cat █      │        │     ░░░░░░       │   ░ = 1 (motion)
+  │     ██████       │        │     ░░░░░░       │   (blank) = 0 (no motion)
+  │           moving→│        │     ░░░░░░       │
+  │                  │        │                  │
+  │  static wall     │        │                  │
+  └──────────────────┘        └──────────────────┘
+```
+
+In motion mode the mask is **not displayed** to the user. It is an intermediate signal consumed by the downstream stages:
+
+- **`u_bbox_reduce`** scans the mask and finds the tightest rectangle that encloses all the `1` pixels — the bounding box. It outputs just 4 numbers: `{min_x, max_x, min_y, max_y}`.
+- **`u_overlay_bbox`** takes those 4 numbers and draws a green rectangle at those coordinates onto the *video* path. This is what the user actually sees on the VGA output — the original video with a green box around the motion.
+
+So the full pipeline's job is: **video in → detect which pixels changed → find the bounding box of those pixels → draw a rectangle on the video → video out**. The mask is the intermediate "which pixels changed" answer that connects the detection step to the bounding-box step.
+
+In mask mode (`ctrl_flow_i = 2'b10`) the 1-bit mask is instead expanded to 24-bit black/white and fed directly to the output FIFO for debug visualization — bypassing both `u_bbox_reduce` and `u_overlay_bbox`.
+
+### Mask/video latency independence
+
+The mask and video paths are consumed by **different modules that do not synchronize per-pixel** with each other, so adding stages to the mask path does not require compensating delay on the video path. Three invariants make this work:
+
+1. **`u_bbox_reduce` is a pure sink** — `tready` is hardwired to 1. It never stalls the mask stream, and it never touches the video stream. It accumulates min/max coordinates internally.
+2. **The bbox is latched at end-of-frame, used during the *next* frame.** When EOF arrives, `u_bbox_reduce` snapshots `{min_x, max_x, min_y, max_y}` into its output registers. These are stable for the entire duration of the next frame. `u_overlay_bbox` reads them as a static sideband while processing that next frame's video.
+3. **Adding stages to the mask path (Gaussian, future morphology, CCL) just delays when the EOF latch happens within the frame.** Even tens of lines of added latency are well inside the same frame period at 320×240 — the bbox is still ready before the next frame's first pixel reaches the overlay.
+
+As a result, any new mask-path stage between `u_motion_detect` and `u_bbox_reduce` can be inserted without touching the video path.
+
+### Design rationale: 1-frame bbox latency
+
+The bbox drawn on frame N is computed from motion observed during frame N−1. This is a deliberate architectural choice, not an accident of the implementation. A same-frame overlay is technically possible but strictly worse at this resolution:
+
+The pipeline is streaming (raster order). The bottommost motion pixel can lie on the last row, so the bbox is not fully known until EOF. But the overlay needs the bbox *while outputting pixels at the top of the frame* — which have already been streamed out long before EOF. To draw a rectangle on the same frame, the video pixels would have to be **held back** until the bbox is known, which requires a full RGB frame buffer (320×240×24 bits ≈ 225 KB) and a true dual-port RAM — roughly 3× the current total RAM budget.
+
+| | Same-frame bbox | 1-frame delayed bbox (current) |
+|---|---|---|
+| RAM cost | +225 KB (frame buffer) | 0 |
+| Visual latency | 16.7 ms (frame buffer delay) | 16.7 ms (bbox from prev frame) |
+| Perceived delay | Identical to human eye at 60 fps | Identical to human eye at 60 fps |
+| Pipeline complexity | Significantly higher | Simple streaming |
+
+At 60 fps, one frame is 16.7 ms — imperceptible. The user-visible result is indistinguishable between the two designs. Same-frame overlay would only matter at very low frame rates (e.g., 1 fps security camera) where a 1-second bbox lag would be noticeable. The current 1-frame delay is the standard approach in streaming video pipelines and is the right trade-off here.
+
 ---
 
 ## 5. Internal Architecture
@@ -235,7 +292,7 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 - **Simulation-only RAM**: `ram.sv` is a behavioral model. FPGA synthesis requires a vendor BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`).
 - **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box spans the full frame and the overlay draws a border around the image edge. This is a known cosmetic artifact. `axis_bbox_reduce` suppresses the bbox for the first 2 frames.
-- **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1.
+- **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §4 "Design rationale: 1-frame bbox latency". Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
 - **No AXI-Lite control**: `MOTION_THRESH` and `BBOX_COLOR` are compile-time parameters. Runtime override requires a simulation plusarg and recompile for RTL.
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
