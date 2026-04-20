@@ -28,12 +28,13 @@
 
 A top-level `ctrl_flow_i` sideband signal (2-bit) selects the active processing path:
 - **Passthrough** (`ctrl_flow_i = 2'b00`): input pixels pass directly to the output FIFO with no processing.
-- **Motion detect** (`ctrl_flow_i = 2'b01`, default): motion-detection and bounding-box overlay pipeline.
-- **Mask display** (`ctrl_flow_i = 2'b10`): raw 1-bit motion mask expanded to black/white RGB. Uses the same motion detection front-end but bypasses bbox/overlay, outputting the mask directly for debugging.
+- **Motion detect** (`ctrl_flow_i = 2'b01`, default): motion-detection → streaming CCL → up-to-`N_OUT` per-component bounding-box overlay pipeline.
+- **Mask display** (`ctrl_flow_i = 2'b10`): raw 1-bit motion mask expanded to black/white RGB. Uses the same motion detection front-end but bypasses CCL/overlay, outputting the mask directly for debugging.
+- **CCL bbox** (`ctrl_flow_i = 2'b11`): debug mode — the 1-bit motion mask is combinationally expanded to a grey canvas (mask=1 → light grey, mask=0 → dark grey) and routed into the overlay. This visualizes the CCL bbox output directly on top of the mask, decoupling CCL verification from the overlay's interaction with live RGB.
 
-When the motion pipeline is bypassed (passthrough), its input `tvalid` is gated to 0 and its output `tready` is tied to 1 to prevent stalling. Both motion and mask modes activate the motion detect pipeline.
+When the motion pipeline is bypassed (passthrough), the fork input `tvalid` is gated to 0 and the overlay output `tready` is tied to 1 to prevent stalling. Motion, mask, and ccl_bbox modes all activate the motion detect + CCL pipeline.
 
-The module does **not** include: camera input (MIPI CSI-2), AXI-Lite register access, multi-clock `clk_pix` sources, or any processing beyond luma-difference motion detection and single-object bounding-box overlay.
+The module does **not** include: camera input (MIPI CSI-2), AXI-Lite register access, multi-clock `clk_pix` sources, or any processing beyond luma-difference motion detection, 8-connected connected-component labeling, and N-way bounding-box overlay.
 
 ---
 
@@ -70,7 +71,7 @@ sparevideo_top (top level)
 | `s_axis_tlast_i` | input | 1 | End-of-line marker (last pixel of each row) |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame marker (first pixel of frame) |
 | **Control flow** | | | |
-| `ctrl_flow_i` | input | 2 | Control flow select: 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask |
+| `ctrl_flow_i` | input | 2 | Control flow select: 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask, 2'b11 = ccl_bbox |
 | **VGA output (clk_pix domain)** | | | |
 | `vga_hsync_o` | output | 1 | Horizontal sync, active-low |
 | `vga_vsync_o` | output | 1 | Vertical sync, active-low |
@@ -92,8 +93,14 @@ sparevideo_top (top level)
 | `V_BACK_PORCH` | pkg | Vertical back porch |
 | `MOTION_THRESH` | 16 | Luma-difference threshold for motion (≈6.25% intensity) |
 | `ALPHA_SHIFT` | 3 | EMA background adaptation rate: alpha = 1/(1 << ALPHA_SHIFT). Propagated to `u_motion_detect`. Default 3 → alpha=1/8 |
+| `GAUSS_EN` | 1 | Enable the 3×3 Gaussian pre-filter inside `u_motion_detect` (0 disables; handy for comparing with/without smoothing) |
+| `CCL_N_LABELS_INT` | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0) |
+| `CCL_N_OUT` | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox` |
+| `CCL_MIN_COMPONENT_PIXELS` | pkg (16) | Minimum component area (in pixels) to promote into the top-N bbox output — filters sensor-noise specks |
+| `CCL_MAX_CHAIN_DEPTH` | pkg (8) | Safety cap on parent-pointer chain walks during the EOF fold phase |
+| `CCL_PRIME_FRAMES` | pkg (2) | Number of frames after reset during which `u_ccl` suppresses all bbox outputs, giving the EMA background model time to converge |
 
-`ctrl_flow_i` is a quasi-static sideband signal (set before simulation, not changed mid-frame). It is driven by the testbench via the `+CTRL_FLOW=passthrough|motion|mask` plusarg. All defaults reference `sparevideo_pkg`.
+`ctrl_flow_i` is a quasi-static sideband signal (set before simulation, not changed mid-frame). It is driven by the testbench via the `+CTRL_FLOW=passthrough|motion|mask|ccl_bbox` plusarg. All defaults reference `sparevideo_pkg`.
 
 ---
 
@@ -101,14 +108,15 @@ sparevideo_top (top level)
 
 The sparevideo pipeline implements real-time video processing using a **dual-clock-domain** architecture. The pixel clock (25 MHz) matches the VGA output timing standard (640x480 @ 60 Hz), while the DSP clock (100 MHz) provides 4× computation headroom for the processing pipeline. This clock ratio ensures that the processing pipeline can always sustain 1 pixel per `clk_pix` cycle without backpressure, even though the pipeline operates at `clk_dsp` granularity.
 
-The key architectural concept is **control-flow-selectable processing**: a single pipeline front-end (CDC → motion detection) is shared across multiple output modes, selected at runtime by a 2-bit sideband signal. This avoids duplicating hardware for each mode while allowing the user to switch between:
+The key architectural concept is **control-flow-selectable processing**: a single pipeline front-end (CDC → motion detection → streaming CCL) is shared across multiple output modes, selected at runtime by a 2-bit sideband signal. This avoids duplicating hardware for each mode while allowing the user to switch between:
 - **Passthrough**: raw video with no processing — for baseline comparison.
-- **Motion overlay**: the full motion detection pipeline with bounding-box overlay — the primary use case.
+- **Motion overlay**: the full motion detection → CCL → multi-bbox overlay pipeline — the primary use case.
 - **Mask display**: the raw binary motion mask expanded to black/white — for algorithm tuning and debugging.
+- **CCL bbox (debug)**: the mask rendered as a grey canvas with the CCL bboxes drawn on top — for verifying CCL output independently of the RGB pass-through path.
 
 Clock domain crossing (CDC) is handled by asynchronous FIFOs at the pipeline boundaries (`u_fifo_in` at entry, `u_fifo_out` at exit). This decouples the input pixel rate from the DSP processing rate and the VGA output rate, with the FIFOs absorbing burst mismatches during blanking intervals. The 4:1 clock ratio means the DSP domain processes pixels faster than they arrive, so the input FIFO drains quickly and the output FIFO stays well below capacity during normal operation.
 
-The processing pipeline itself (motion detection → bbox reduction → overlay) is documented in the individual module architecture documents. At the top level, the concern is how these modules are interconnected, how control flow selects between them, and how CDC and timing constraints are satisfied.
+The processing pipeline itself (motion detection → streaming CCL → N-way overlay) is documented in the individual module architecture documents. At the top level, the concern is how these modules are interconnected, how control flow selects between them, and how CDC and timing constraints are satisfied.
 
 ### 4.1 Dual-path pipeline: what is the "mask"?
 
@@ -135,22 +143,24 @@ Original scene:              Motion mask:
 
 In motion mode the mask is **not displayed** to the user. It is an intermediate signal consumed by the downstream stages:
 
-- **`u_bbox_reduce`** scans the mask and finds the tightest rectangle that encloses all the `1` pixels — the bounding box. It outputs just 4 numbers: `{min_x, max_x, min_y, max_y}`.
-- **`u_overlay_bbox`** takes those 4 numbers and draws a green rectangle at those coordinates onto the *video* path. This is what the user actually sees on the VGA output — the original video with a green box around the motion.
+- **`u_ccl`** scans the mask in raster order, assigns a label to each motion pixel via 8-connected single-pass union-find, accumulates per-label `{min_x, max_x, min_y, max_y, count}` on the fly, and — during the vertical blanking interval after EOF — resolves the equivalence table, discards components below `CCL_MIN_COMPONENT_PIXELS`, and commits the top `CCL_N_OUT` bounding boxes into a front-buffer register bank. The output is `N_OUT` packed sideband arrays of `{min_x, max_x, min_y, max_y}` plus an `N_OUT`-wide `valid` bit vector, held stable for the entire next frame.
+- **`u_overlay_bbox`** takes those `N_OUT` bbox slots and, for each pixel streaming past, combinationally ORs an `N_OUT`-wide rectangle-edge hit test: if any valid slot's rectangle edge hits `(col, row)`, the pixel is replaced with `BBOX_COLOR` (bright green); otherwise it passes through unchanged.
 
-So the full pipeline's job is: **video in → detect which pixels changed → find the bounding box of those pixels → draw a rectangle on the video → video out**. The mask is the intermediate "which pixels changed" answer that connects the detection step to the bounding-box step.
+So the full pipeline's job is: **video in → detect which pixels changed → label connected motion blobs → for each blob, compute its bounding box → draw up to `N_OUT` rectangles on the video → video out**. The mask is the intermediate "which pixels changed" answer that connects the detection step to the labeling step; the `N_OUT` bboxes are the "where are the distinct moving objects" answer that connects labeling to the overlay.
 
-In mask mode (`ctrl_flow_i = 2'b10`) the 1-bit mask is instead expanded to 24-bit black/white and fed directly to the output FIFO for debug visualization — bypassing both `u_bbox_reduce` and `u_overlay_bbox`.
+In mask mode (`ctrl_flow_i = 2'b10`) the 1-bit mask is instead expanded to 24-bit black/white and fed directly to the output FIFO for debug visualization — bypassing both `u_ccl` and `u_overlay_bbox`.
+
+In ccl_bbox mode (`ctrl_flow_i = 2'b11`) the mask is combinationally expanded to a 24-bit grey canvas (mask=1 → `0x808080`, mask=0 → `0x202020`) and routed into `u_overlay_bbox` in place of the RGB video; `u_ccl` still produces the bbox sideband normally, so the output is the mask-as-grey with the CCL bboxes drawn on top. This is the most direct visual diagnostic for the CCL block — if a drawn rectangle does not enclose a grey blob, either CCL or the mask is wrong, and each can be inspected in isolation.
 
 ### 4.2 Mask/video latency independence
 
 The mask and video paths are consumed by **different modules that do not synchronize per-pixel** with each other, so adding stages to the mask path does not require compensating delay on the video path. Three invariants make this work:
 
-1. **`u_bbox_reduce` is a pure sink** — `tready` is hardwired to 1. It never stalls the mask stream, and it never touches the video stream. It accumulates min/max coordinates internally.
-2. **The bbox is latched at end-of-frame, used during the *next* frame.** When EOF arrives, `u_bbox_reduce` snapshots `{min_x, max_x, min_y, max_y}` into its output registers. These are stable for the entire duration of the next frame. `u_overlay_bbox` reads them as a static sideband while processing that next frame's video.
-3. **Adding stages to the mask path (Gaussian, future morphology, CCL) just delays when the EOF latch happens within the frame.** Even tens of lines of added latency are well inside the same frame period at 320×240 — the bbox is still ready before the next frame's first pixel reaches the overlay.
+1. **`u_ccl` is a pure sink on its mask input** — it accepts one mask bit per cycle whenever the upstream strobes valid, and it produces **no mask output stream** at all. It never stalls the mask stream once the upstream broadcast handshake is complete, and it never touches the video stream. All accumulation (per-label min/max/count, union-find) is internal.
+2. **Bboxes are committed at end-of-frame, used during the *next* frame.** After EOF, `u_ccl` runs a four-phase resolution FSM inside the vertical blanking interval (path-compress → fold → top-N select → reset) and then performs a `PHASE_SWAP` that atomically promotes the new `N_OUT` bbox slots into the front register bank. These outputs are stable for the entire duration of the next frame. `u_overlay_bbox` reads them as a static sideband while processing that next frame's video.
+3. **Adding stages to the mask path (Gaussian, future morphology, stricter CCL variants) just delays when the EOF resolution happens within the vblank.** As long as the full resolution FSM completes before the next frame's first pixel reaches the overlay, the bbox is ready in time. The testbench's V_BLANK (2+2+16 lines) is sized to cover the worst-case cycle budget at 320×240.
 
-As a result, any new mask-path stage between `u_motion_detect` and `u_bbox_reduce` can be inserted without touching the video path.
+As a result, any new mask-path stage between `u_motion_detect` and `u_ccl` can be inserted without touching the video path.
 
 ### 4.3 Design rationale: 1-frame bbox latency
 
@@ -199,24 +209,37 @@ At 60 fps, one frame is 16.7 ms — imperceptible. The user-visible result is in
   │    │  motion_core     │                                   │                  │
   │    └────────┬─────────┘                                   │                  │
   │             │  msk (1-bit + tlast + tuser)                │                  │
-  │             ▼                                             │                  │
-  │    ┌──────────────────┐                                   │                  │
-  │    │  u_bbox_reduce   │  accumulates min/max; latches     │                  │
-  │    │                  │  at EOF                           │                  │
-  │    └────────┬─────────┘                                   │                  │
-  │             │  bbox {min_x,max_x,min_y,max_y}             │                  │
-  │             ▼                                             ▼                  │
+  │             ├───────────────────────────────────┐         │                  │
+  │             ▼                                   │         │                  │
+  │    ┌──────────────────┐                         │         │                  │
+  │    │      u_ccl       │  8-conn union-find;     │         │                  │
+  │    │                  │  EOF FSM resolves +     │         │                  │
+  │    │                  │  swaps N_OUT bboxes     │         │                  │
+  │    └────────┬─────────┘                         │         │                  │
+  │             │  N_OUT × {min_x,max_x,min_y,max_y,valid}    │                  │
+  │             │                                   │         │                  │
+  │             │   ┌───────────────────────────────┘         │                  │
+  │             │   │  (ccl_bbox mode) mask → grey canvas mux │                  │
+  │             │   ▼                                         ▼                  │
+  │             │  ┌──────────────────────────────────────────────────┐          │
+  │             │  │  ovl_in mux:                                     │          │
+  │             │  │    motion              → fork_b RGB              │          │
+  │             │  │    ccl_bbox            → mask_grey_rgb           │          │
+  │             │  └────────────────────┬─────────────────────────────┘          │
+  │             ▼                       ▼                                        │
   │    ┌────────────────────────────────────────────────────────────┐            │
   │    │                   u_overlay_bbox                           │            │
-  │    │   draws green rect on bbox edge; pass-through otherwise    │            │
+  │    │   N_OUT-wide rectangle-edge hit test → BBOX_COLOR,         │            │
+  │    │   otherwise pass-through of ovl_in                         │            │
   │    └────────────────────┬───────────────────────────────────────┘            │
   │                         │  ovl (RGB + tlast + tuser)                         │
   │                         │                                                    │
   │    ┌────────────────────┴─────────────────────────────┐                      │
-  │    │  ctrl_flow mux                                   │                      │
+  │    │  ctrl_flow output mux                            │                      │
   │    │  passthrough → dsp_in                            │                      │
   │    │  motion      → ovl                               │                      │
-  │    │  mask        → msk (Output of u_motion_detect)   │                      │
+  │    │  mask        → msk_rgb (B/W expansion of msk)    │                      │
+  │    │  ccl_bbox    → ovl (grey canvas + CCL bboxes)    │                      │
   │    └────────────────────┬─────────────────────────────┘                      │
   │                         │  proc (RGB + tlast + tuser)                        │
   │                         ▼                                                    │
@@ -237,8 +260,9 @@ At 60 fps, one frame is 16.7 ms — imperceptible. The user-visible result is in
 
 The control-flow mux selects between:
 - **Passthrough** (`ctrl_flow_i = 2'b00`): `dsp_in` feeds directly into `u_fifo_out`. `u_fork` input `tvalid` is gated to 0; overlay output `tready` is tied to 1.
-- **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. Both fork outputs are active; `u_fork` provides RGB to the overlay while also feeding `u_motion_detect` for mask/bbox. This is the default path.
-- **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure.
+- **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. Both fork outputs are active; `u_fork` provides RGB to the overlay (via `ovl_in mux` = `fork_b`) while also feeding `u_motion_detect` → `u_ccl` for bbox generation. This is the default path.
+- **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure; `u_ccl` still receives the mask via the broadcast handshake but its bboxes are not used.
+- **CCL bbox** (`ctrl_flow_i = 2'b11`): `ovl` (overlay output) feeds into `u_fifo_out`, but the overlay's video input is `mask_grey_rgb` (a combinational grey canvas derived from the mask) instead of `fork_b`. `fork_b_tready` is tied to 1 so the unused RGB pipe drains. `u_ccl` runs normally and its bboxes are drawn on top of the grey canvas — a direct visual readout of the CCL stage.
 
 ### 5.1 Submodule roles
 
@@ -246,8 +270,8 @@ The control-flow mux selects between:
 2. **u_fork**: zero-latency 1-to-2 broadcast fork. Splits the DSP-domain stream so that `fork_b` (RGB) feeds the overlay directly while `fork_a` (RGB) feeds the motion detect mask pipeline. Per-output acceptance tracking prevents duplicate transfers on asymmetric consumer stalls. Instantiated only in the motion pipeline path; the fork input `tvalid` is gated to 0 in passthrough mode.
 3. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the per-pixel background model from `u_ram` port A, computes `|Y_cur − bg|`, and emits a **1-bit motion mask**. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes an EMA-updated background value back to RAM on acceptance: `bg_new = bg + ((Y_cur - bg) >>> ALPHA_SHIFT)`. This temporally smooths the background model, suppressing sensor noise and adapting to gradual lighting changes. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md) §4 for the EMA algorithm details.
 4. **u_ram**: dual-port byte RAM (port A for motion detect background model, port B reserved). Zero-initialized so frame 0 reads all-motion (background starts at 0, converges via EMA over subsequent frames).
-5. **u_bbox_reduce**: accumulates `{min_x, max_x, min_y, max_y}` over motion pixels; latches at EOF. The first 2 frames after reset are suppressed (`bbox_empty` forced high) to avoid false full-frame bboxes from zeroed RAM. Drives `msk_tready` tied 1 (always ready).
-6. **u_overlay_bbox**: receives RGB pixels from `fork_b` and bbox sideband from `u_bbox_reduce`. For each pixel, checks if `(col, row)` is on the bbox rectangle edge; substitutes `BBOX_COLOR` (bright green) when on the edge and `bbox_empty=0`. Pure pass-through otherwise.
+5. **u_ccl**: single-pass 8-connected streaming connected-component labeler. Walks the mask in raster order, assigns provisional labels with a 2-row neighbour window, maintains a union-find equivalence table (with a single equiv-write per pixel), and accumulates per-label bounding-box and area statistics in a label-indexed bank RAM. After EOF, a four-phase FSM (`PHASE_A` path-compression → `PHASE_B` fold statistics into roots → `PHASE_C` select top-`CCL_N_OUT` by area, filtering below `CCL_MIN_COMPONENT_PIXELS` → `PHASE_D` reset) runs inside the vertical blanking interval, followed by `PHASE_SWAP` which atomically promotes the resolved bbox set into a front register bank. The first `CCL_PRIME_FRAMES` frames after reset are suppressed (all `valid` bits forced 0) so the EMA background model has time to converge. `msk_tready` is beat-strobe gated (`msk_tvalid && msk_tready_final`) inside the multi-consumer broadcast. See [axis_ccl-arch.md](axis_ccl-arch.md).
+6. **u_overlay_bbox**: receives RGB pixels on its AXI4-Stream input (`ovl_in` = `fork_b` in motion mode, or `mask_grey_rgb` in ccl_bbox mode) and an `N_OUT`-wide packed-array bbox sideband from `u_ccl`. For each pixel, combinationally ORs an `N_OUT`-wide rectangle-edge hit test across all valid slots; on a hit, the pixel is replaced with `BBOX_COLOR` (bright green), otherwise pass-through. Zero added latency on the data path.
 7. **u_fifo_out**: crosses the overlaid RGB stream back to `clk_pix`. Depth 32 entries.
 8. **vga_rst_n gating**: the VGA controller is held in reset until the first `tuser=1` pixel exits `u_fifo_out`. This aligns the VGA scan to a frame boundary regardless of FIFO fill time.
 9. **u_vga**: drives horizontal/vertical counters, asserts `pixel_ready_o` during the active region, gates RGB output to 0 during blanking.
@@ -268,7 +292,7 @@ The control-flow mux selects between:
 | Domain | Clock | Modules |
 |--------|-------|---------|
 | `clk_pix` | 25 MHz | source driver, `u_fifo_in` write side, `u_fifo_out` read side, `u_vga`, VGA reset gating |
-| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_bbox_reduce`, `u_overlay_bbox`, `u_fifo_out` write side |
+| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_ccl`, `u_overlay_bbox`, `u_fifo_out` write side |
 
 CDC crossings use vendored `axis_async_fifo` from [alexforencich/verilog-axis](https://github.com/alexforencich/verilog-axis) (MIT). Active-high resets are derived at the top level: `rst_pix = ~rst_pix_n_i`, `rst_dsp = ~rst_dsp_n_i`.
 
