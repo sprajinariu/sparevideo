@@ -27,6 +27,7 @@ package sparevideo_pkg;
     localparam logic [1:0] CTRL_PASSTHROUGH   = 2'b00;
     localparam logic [1:0] CTRL_MOTION_DETECT = 2'b01;
     localparam logic [1:0] CTRL_MASK_DISPLAY  = 2'b10;
+    localparam logic [1:0] CTRL_CCL_BBOX      = 2'b11;
 
     // ---------------------------------------------------------------
     // Default video timing (320x240 — small, fast-to-simulate)
@@ -55,5 +56,17 @@ package sparevideo_pkg;
     // Future: all of the above migrate to sparevideo_csr CSR register
     // file (AXI-Lite slave) for runtime configurability.
     // ---------------------------------------------------------------
+
+    // ---------------------------------------------------------------
+    // CCL (Block 4) parameters — defaults; override at instantiation.
+    // ---------------------------------------------------------------
+    localparam int CCL_N_LABELS_INT        = 64;
+    localparam int CCL_N_OUT               = 8;
+    localparam int CCL_MIN_COMPONENT_PIXELS = 16;
+    localparam int CCL_MAX_CHAIN_DEPTH     = 8;
+    // Suppress the first N frames' bboxes so the EMA background has time to
+    // converge; during priming the front buffer stays all-invalid. Matches
+    // py/models/motion.py PRIME_FRAMES.
+    localparam int CCL_PRIME_FRAMES        = 2;
 
 endpackage

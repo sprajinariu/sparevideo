@@ -181,7 +181,7 @@ def main():
     p_ver.add_argument("--output", default="dv/data/output.txt",
                        help="Output file (text or binary)")
     p_ver.add_argument("--ctrl-flow", default="passthrough",
-                       choices=["passthrough", "motion", "mask"],
+                       choices=["passthrough", "motion", "mask", "ccl_bbox"],
                        help="Control flow model to verify against "
                             "(default: passthrough)")
     p_ver.add_argument("--tolerance", type=int, default=0,
@@ -200,7 +200,7 @@ def main():
     p_ren.add_argument("--output", default="dv/data/output.txt",
                        help="Output file")
     p_ren.add_argument("--ctrl-flow", default=None,
-                       choices=["passthrough", "motion", "mask"],
+                       choices=["passthrough", "motion", "mask", "ccl_bbox"],
                        help="Control flow model to include as reference row")
     p_ren.add_argument("--alpha-shift", type=int, default=3, dest="alpha_shift",
                        help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")

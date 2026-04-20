@@ -1,5 +1,26 @@
 # `ram` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+  - [3.2 Ports](#32-ports)
+- [4. Concept Description](#4-concept-description)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Inter-port collision semantics](#51-inter-port-collision-semantics)
+  - [5.2 Host-responsibility rule](#52-host-responsibility-rule)
+  - [5.3 Region descriptor model](#53-region-descriptor-model)
+  - [5.4 Resource cost](#54-resource-cost)
+- [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `ram` is a generic behavioral dual-port byte-addressed RAM. It provides two independent 1R1W ports (A and B) sharing a single backing store. Port A is used by `axis_motion_detect` for the per-pixel EMA background model; port B is reserved for future host clients. The module is content-agnostic — it has no knowledge of frames, regions, or algorithms. It does **not** enforce access ordering between ports, synthesize to any specific FPGA primitive, or implement ECC.
@@ -14,14 +35,14 @@
 
 ## 3. Interface Specification
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `DEPTH` | 76800 | Total number of bytes (default = 320×240) |
 | `ADDR_W` | `$clog2(DEPTH)` | Address width (derived) |
 
-### Ports
+### 3.2 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -59,7 +80,7 @@ One `logic [7:0] mem [0:DEPTH-1]` backing store, zero-initialized in an `initial
 
 Two independent `always_ff @(posedge clk_i)` blocks, one per port. Each implements **read-first** semantics on the same port: if a port reads and writes the same address in the same cycle, it returns the **old** value.
 
-### Inter-port collision semantics
+### 5.1 Inter-port collision semantics
 
 | Scenario | Port A | Port B | Result |
 |----------|--------|--------|--------|
@@ -71,7 +92,7 @@ Two independent `always_ff @(posedge clk_i)` blocks, one per port. Each implemen
 
 The last case is unsafe. It is prevented by the **host-responsibility rule** below.
 
-### Host-responsibility rule
+### 5.2 Host-responsibility rule
 
 Any future port B client must obey **at least one** of:
 
@@ -81,7 +102,7 @@ Any future port B client must obey **at least one** of:
 
 Port B is currently tied off (`b_rd_addr_i='0`, `b_wr_en_i=1'b0`) at the top level.
 
-### Region descriptor model
+### 5.3 Region descriptor model
 
 Partitioning is handled externally by compile-time localparams in `sparevideo_top.sv`. Each client receives its `{RGN_BASE, RGN_SIZE}` as module parameters and computes physical addresses as `RGN_BASE + local_offset`. The RAM module itself has no knowledge of regions.
 
@@ -90,7 +111,7 @@ Partitioning is handled externally by compile-time localparams in `sparevideo_to
 | `Y_PREV` | `axis_motion_detect` | `0` | `H_ACTIVE × V_ACTIVE` |
 | (reserved) | port B future client | — | — |
 
-### Resource cost
+### 5.4 Resource cost
 
 For the default 320×240 resolution, the RAM stores 76,800 bytes. On FPGA this maps to approximately 19 BRAM36K blocks (assuming Xilinx 7-series: 36 Kb = 4,096 bytes per BRAM in 1-byte-wide mode). The behavioral model infers as distributed RAM or BRAM depending on the synthesis tool's heuristics.
 

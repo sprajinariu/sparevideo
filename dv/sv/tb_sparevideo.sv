@@ -35,9 +35,9 @@ module tb_sparevideo #(
     localparam int H_SYNC_PULSE  = 8;
     localparam int H_BACK_PORCH  = 4;
     localparam int H_BLANK       = H_FRONT_PORCH + H_SYNC_PULSE + H_BACK_PORCH;
-    localparam int V_FRONT_PORCH = 2;
-    localparam int V_SYNC_PULSE  = 2;
-    localparam int V_BACK_PORCH  = 2;
+    localparam int V_FRONT_PORCH = 5;
+    localparam int V_SYNC_PULSE  = 6;
+    localparam int V_BACK_PORCH  = 5;
     localparam int V_BLANK       = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
 
     // 25 MHz pixel clock (40ns), 100 MHz DSP clock (10ns)
@@ -178,6 +178,8 @@ module tb_sparevideo #(
                     ctrl_flow = sparevideo_pkg::CTRL_MOTION_DETECT;
                 else if (ctrl_flow_str == "mask")
                     ctrl_flow = sparevideo_pkg::CTRL_MASK_DISPLAY;
+                else if (ctrl_flow_str == "ccl_bbox")
+                    ctrl_flow = sparevideo_pkg::CTRL_CCL_BBOX;
                 else
                     $warning("Unknown CTRL_FLOW '%s', using default (motion)", ctrl_flow_str);
             end
@@ -195,8 +197,9 @@ module tb_sparevideo #(
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
         $display("  ctrl_flow: %s",
             (ctrl_flow == sparevideo_pkg::CTRL_PASSTHROUGH)   ? "passthrough" :
-            (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion" :
-            (ctrl_flow == sparevideo_pkg::CTRL_MASK_DISPLAY)  ? "mask" : "unknown");
+            (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion"      :
+            (ctrl_flow == sparevideo_pkg::CTRL_MASK_DISPLAY)  ? "mask"        :
+            (ctrl_flow == sparevideo_pkg::CTRL_CCL_BBOX)      ? "ccl_bbox"    : "unknown");
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 

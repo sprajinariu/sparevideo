@@ -169,9 +169,9 @@ module tb_axis_motion_detect #(
     integer num_errors = 0;
 
     // ---- Gaussian golden model ----
-    // 3x3 Gaussian with causal streaming offset: kernel centered at (r-1, c-1).
-    // Edge replication (clamp to image bounds). Integer >>4 truncation.
-    // When GAUSS_EN=0, returns raw Y unchanged.
+    // True centered 3x3 Gaussian: output at (r, c) uses window at
+    // rows r-1..r+1, cols c-1..c+1. Edge replication at all 4 borders.
+    // Integer >>4 truncation. When GAUSS_EN=0, returns raw Y unchanged.
     function automatic logic [7:0] gauss_at(
         input logic [7:0] y_flat [NUM_PIX],
         input int r, input int c
@@ -182,9 +182,9 @@ module tb_axis_motion_detect #(
         sum = 0;
         for (int dr = 0; dr < 3; dr++) begin
             for (int dc = 0; dc < 3; dc++) begin
-                // Window centered at (r-1, c-1): rows r-2..r, cols c-2..c
-                cr = r - 2 + dr;
-                cc = c - 2 + dc;
+                // Window centered at (r, c): rows r-1..r+1, cols c-1..c+1
+                cr = r - 1 + dr;
+                cc = c - 1 + dc;
                 if (cr < 0) cr = 0;
                 else if (cr >= V) cr = V - 1;
                 if (cc < 0) cc = 0;
@@ -335,6 +335,7 @@ module tb_axis_motion_detect #(
             msk_cap_cnt = msk_cap_cnt + 1;
         end
     end
+
 
     // ---- Reset capture counters before each frame ----
     task automatic reset_capture;

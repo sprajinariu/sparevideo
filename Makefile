@@ -16,6 +16,8 @@ CTRL_FLOW ?= motion
 TOLERANCE ?= 0
 # EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
 ALPHA_SHIFT ?= 3
+# Gaussian pre-filter: 1=enabled, 0=disabled.
+GAUSS_EN ?= 1
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -33,7 +35,7 @@ endif
 SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
            MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) \
-           ALPHA_SHIFT=$(ALPHA_SHIFT) \
+           ALPHA_SHIFT=$(ALPHA_SHIFT) GAUSS_EN=$(GAUSS_EN) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
@@ -64,8 +66,8 @@ help:
 	@echo "    test-ip-gauss3x3           axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF"
 	@echo "    test-ip-motion-detect      axis_motion_detect GAUSS_EN=0: 8-frame golden model, stall, fork desync"
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
-	@echo "    test-ip-bbox-reduce        axis_bbox_reduce: 9 tests, edge cases, SOF reset"
 	@echo "    test-ip-overlay-bbox       axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
+	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator              Simulator: verilator (default) or icarus"
@@ -74,7 +76,7 @@ help:
 	@echo "    HEIGHT=240                       Frame height"
 	@echo "    FRAMES=4                         Number of frames"
 	@echo "    MODE=text|binary                 File format"
-	@echo "    CTRL_FLOW=motion|passthrough|mask Control flow (default motion)"
+	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default motion)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
 	@echo "    ALPHA_SHIFT=3                    EMA adaptation rate: alpha=1/(1<<N) (default 3)"
 	@echo ""
@@ -104,8 +106,8 @@ prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
 	@mkdir -p $(DATA_DIR)/renders
-	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\n' \
-		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' > $(DATA_DIR)/config.mk
+	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nGAUSS_EN = %s\n' \
+		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(GAUSS_EN)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
@@ -132,7 +134,10 @@ verify:
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE) \
-		--alpha-shift $(ALPHA_SHIFT)
+		--alpha-shift $(ALPHA_SHIFT) --gauss-en $(GAUSS_EN)
+
+RENDER_SOURCE_SAFE = $(subst _,-,$(subst :,-,$(SOURCE)))
+RENDER_OUT = $(CURDIR)/$(DATA_DIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
 
 render:
 	@echo ""
@@ -141,7 +146,7 @@ render:
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --alpha-shift $(ALPHA_SHIFT) \
-		--render-output $(CURDIR)/$(DATA_DIR)/renders/comparison.png
+		--gauss-en $(GAUSS_EN) --render-output $(RENDER_OUT)
 
 # ---- Other targets ----
 

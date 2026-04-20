@@ -5,27 +5,19 @@ Dispatch via run_model() which maps the control flow name to the correct model.
 """
 
 from models.passthrough import run as _run_passthrough
-from models.motion import run as _run_motion
-from models.mask import run as _run_mask
+from models.motion      import run as _run_motion
+from models.mask        import run as _run_mask
+from models.ccl_bbox    import run as _run_ccl_bbox
 
 _MODELS = {
     "passthrough": _run_passthrough,
-    "motion": _run_motion,
-    "mask": _run_mask,
+    "motion":      _run_motion,
+    "mask":        _run_mask,
+    "ccl_bbox":    _run_ccl_bbox,
 }
 
 
 def run_model(ctrl_flow: str, frames: list, **kwargs) -> list:
-    """Run the reference model for a control flow.
-
-    Args:
-        ctrl_flow: Control flow name ("passthrough", "motion", "mask").
-        frames: List of numpy arrays (H, W, 3), dtype uint8, RGB order.
-        **kwargs: Passed through to the model's run() function.
-
-    Returns:
-        List of numpy arrays — the expected output frames.
-    """
     if ctrl_flow not in _MODELS:
         raise ValueError(
             f"Unknown control flow '{ctrl_flow}'. "

@@ -18,6 +18,7 @@ module tb_axis_overlay_bbox;
     localparam int V = 4;
     localparam int NUM_PIX = H * V;
     localparam int CLK_PERIOD = 10;
+    localparam int N_OUT_TB = 1;
     localparam logic [23:0] BBOX_COLOR = 24'h00_FF_00; // green
 
     logic clk = 0;
@@ -50,15 +51,14 @@ module tb_axis_overlay_bbox;
     assign m_tready = drv_rdy;
 
     // ---- Bbox sideband — driven from test ----
-    logic [$clog2(H)-1:0] drv_min_x = '0;
-    logic [$clog2(H)-1:0] drv_max_x = '0;
-    logic [$clog2(V)-1:0] drv_min_y = '0;
-    logic [$clog2(V)-1:0] drv_max_y = '0;
-    logic                 drv_empty = 1'b1;
+    logic [N_OUT_TB-1:0]                drv_valid = '0;
+    logic [N_OUT_TB-1:0][$clog2(H)-1:0] drv_min_x = '0, drv_max_x = '0;
+    logic [N_OUT_TB-1:0][$clog2(V)-1:0] drv_min_y = '0, drv_max_y = '0;
 
     axis_overlay_bbox #(
         .H_ACTIVE   (H),
         .V_ACTIVE   (V),
+        .N_OUT      (N_OUT_TB),
         .BBOX_COLOR (BBOX_COLOR)
     ) u_dut (
         .clk_i           (clk),
@@ -73,11 +73,11 @@ module tb_axis_overlay_bbox;
         .m_axis_tready_i (m_tready),
         .m_axis_tlast_o  (m_tlast),
         .m_axis_tuser_o  (m_tuser),
+        .bbox_valid_i    (drv_valid),
         .bbox_min_x_i    (drv_min_x),
         .bbox_max_x_i    (drv_max_x),
         .bbox_min_y_i    (drv_min_y),
-        .bbox_max_y_i    (drv_max_y),
-        .bbox_empty_i    (drv_empty)
+        .bbox_max_y_i    (drv_max_y)
     );
 
     integer num_errors = 0;
@@ -148,8 +148,8 @@ module tb_axis_overlay_bbox;
             for (c = 0; c < H; c = c + 1) begin
                 idx = r * H + c;
                 if (on_rect_golden(c, r,
-                        drv_min_x, drv_max_x,
-                        drv_min_y, drv_max_y, drv_empty))
+                        drv_min_x[0], drv_max_x[0],
+                        drv_min_y[0], drv_max_y[0], !drv_valid[0]))
                     expected[idx] = BBOX_COLOR;
                 else
                     expected[idx] = input_pixels[idx];
@@ -215,9 +215,9 @@ module tb_axis_overlay_bbox;
         // T1 — original test: bbox=(1,1)-(2,2) on solid red
         // ==================================================================
         $display("--- T1: bbox=(1,1)-(2,2) solid red ---");
-        drv_min_x = 2'(1); drv_max_x = 2'(2);
-        drv_min_y = 2'(1); drv_max_y = 2'(2);
-        drv_empty = 1'b0;
+        drv_min_x[0] = 2'(1); drv_max_x[0] = 2'(2);
+        drv_min_y[0] = 2'(1); drv_max_y[0] = 2'(2);
+        drv_valid[0] = 1'b1;
         build_expected();
         run_frame();
         check_frame("T1");
@@ -227,7 +227,7 @@ module tb_axis_overlay_bbox;
         // T2 — empty bbox: passthrough of every pixel
         // ==================================================================
         $display("--- T2: bbox_empty=1 passthrough ---");
-        drv_empty = 1'b1;
+        drv_valid[0] = 1'b0;
         build_expected();  // all pixels pass through
         run_frame();
         check_frame("T2");
@@ -238,9 +238,9 @@ module tb_axis_overlay_bbox;
         //   Interior pixels (if any) should pass through; all border = BBOX_COLOR
         // ==================================================================
         $display("--- T3: full-frame bbox (0,0)-(3,3) ---");
-        drv_min_x = '0; drv_max_x = ($bits(drv_max_x))'(H-1);
-        drv_min_y = '0; drv_max_y = ($bits(drv_max_y))'(V-1);
-        drv_empty = 1'b0;
+        drv_min_x[0] = '0; drv_max_x[0] = ($bits(drv_max_x[0]))'(H-1);
+        drv_min_y[0] = '0; drv_max_y[0] = ($bits(drv_max_y[0]))'(V-1);
+        drv_valid[0] = 1'b1;
         build_expected();
         run_frame();
         check_frame("T3");
@@ -250,9 +250,9 @@ module tb_axis_overlay_bbox;
         // T4 — single-pixel bbox: (2,2)-(2,2)
         // ==================================================================
         $display("--- T4: single-pixel bbox (2,2)-(2,2) ---");
-        drv_min_x = 2'(2); drv_max_x = 2'(2);
-        drv_min_y = 2'(2); drv_max_y = 2'(2);
-        drv_empty = 1'b0;
+        drv_min_x[0] = 2'(2); drv_max_x[0] = 2'(2);
+        drv_min_y[0] = 2'(2); drv_max_y[0] = 2'(2);
+        drv_valid[0] = 1'b1;
         build_expected();
         run_frame();
         check_frame("T4");
@@ -262,9 +262,9 @@ module tb_axis_overlay_bbox;
         // T5 — edge-aligned bbox at origin: (0,0)-(1,1)
         // ==================================================================
         $display("--- T5: edge-aligned bbox at origin (0,0)-(1,1) ---");
-        drv_min_x = '0; drv_max_x = 2'(1);
-        drv_min_y = '0; drv_max_y = 2'(1);
-        drv_empty = 1'b0;
+        drv_min_x[0] = '0; drv_max_x[0] = 2'(1);
+        drv_min_y[0] = '0; drv_max_y[0] = 2'(1);
+        drv_valid[0] = 1'b1;
         build_expected();
         run_frame();
         check_frame("T5");
@@ -274,9 +274,9 @@ module tb_axis_overlay_bbox;
         // T6 — edge-aligned bbox at far corner: (H-2,V-2)-(H-1,V-1)
         // ==================================================================
         $display("--- T6: edge-aligned bbox at far corner (2,2)-(3,3) ---");
-        drv_min_x = 2'(H-2); drv_max_x = ($bits(drv_max_x))'(H-1);
-        drv_min_y = 2'(V-2); drv_max_y = ($bits(drv_max_y))'(V-1);
-        drv_empty = 1'b0;
+        drv_min_x[0] = 2'(H-2); drv_max_x[0] = ($bits(drv_max_x[0]))'(H-1);
+        drv_min_y[0] = 2'(V-2); drv_max_y[0] = ($bits(drv_max_y[0]))'(V-1);
+        drv_valid[0] = 1'b1;
         build_expected();
         run_frame();
         check_frame("T6");
@@ -292,9 +292,9 @@ module tb_axis_overlay_bbox;
                 for (c = 0; c < H; c = c + 1)
                     input_pixels[r*H+c] = {8'(r*16 + c), 8'(c*64), 8'(r*64)};
         end
-        drv_min_x = 2'(1); drv_max_x = 2'(2);
-        drv_min_y = '0;    drv_max_y = 2'(2);
-        drv_empty = 1'b0;
+        drv_min_x[0] = 2'(1); drv_max_x[0] = 2'(2);
+        drv_min_y[0] = '0;    drv_max_y[0] = 2'(2);
+        drv_valid[0] = 1'b1;
         build_expected();
         run_frame();
         check_frame("T7");
@@ -306,9 +306,9 @@ module tb_axis_overlay_bbox;
         $display("--- T8: backpressure, bbox=(1,1)-(2,2) ---");
         for (i = 0; i < NUM_PIX; i = i + 1)
             input_pixels[i] = 24'hFF_00_00;
-        drv_min_x = 2'(1); drv_max_x = 2'(2);
-        drv_min_y = 2'(1); drv_max_y = 2'(2);
-        drv_empty = 1'b0;
+        drv_min_x[0] = 2'(1); drv_max_x[0] = 2'(2);
+        drv_min_y[0] = 2'(1); drv_max_y[0] = 2'(2);
+        drv_valid[0] = 1'b1;
         build_expected();
         stall_active = 1'b1;
         run_frame();

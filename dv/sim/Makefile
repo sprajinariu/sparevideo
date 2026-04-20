@@ -5,7 +5,7 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/ip/gauss3x3/rtl/axis_gauss3x3.sv \
            ../../hw/ip/motion/rtl/motion_core.sv \
            ../../hw/ip/motion/rtl/axis_motion_detect.sv \
-           ../../hw/ip/motion/rtl/axis_bbox_reduce.sv \
+           ../../hw/ip/motion/rtl/axis_ccl.sv \
            ../../hw/ip/motion/rtl/axis_overlay_bbox.sv \
            ../../hw/top/sparevideo_top.sv \
            ../../hw/ip/vga/rtl/vga_controller.sv \
@@ -24,6 +24,7 @@ FRAMES      ?= 4
 MODE        ?= text
 CTRL_FLOW   ?= motion
 ALPHA_SHIFT ?= 3
+GAUSS_EN    ?= 1
 INFILE      ?= ../data/input.txt
 OUTFILE     ?= ../data/output.txt
 
@@ -35,7 +36,7 @@ SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
 .PHONY: compile sim sim-waves sw-dry-run clean \
        test-ip test-ip-rgb2ycrcb test-ip-gauss3x3 \
        test-ip-motion-detect test-ip-motion-detect-gauss \
-       test-ip-bbox-reduce test-ip-overlay-bbox
+       test-ip-overlay-bbox test-ip-ccl
 
 # ---------------------------------------------------------------------------
 # Icarus Verilog — NOT MAINTAINED. Kept for reference only; will likely fail.
@@ -72,7 +73,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
-            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GGAUSS_EN=$(GAUSS_EN) \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -86,7 +87,7 @@ VLT_FLAGS = --binary -sv --timing \
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(GAUSS_EN)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(GAUSS_EN)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo
@@ -122,7 +123,7 @@ VLT_TB_FLAGS = --binary -sv --timing \
                -Wno-WIDTHTRUNC -Wno-SELRANGE -Wno-WIDTHCONCAT \
                -Wno-UNUSEDSIGNAL -Wno-UNDRIVEN
 
-test-ip: test-ip-rgb2ycrcb test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-bbox-reduce test-ip-overlay-bbox
+test-ip: test-ip-rgb2ycrcb test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl
 	@echo "All block testbenches passed."
 
 # --- rgb2ycrcb ---
@@ -157,17 +158,19 @@ test-ip-gauss3x3:
 	  $(IP_GAUSS3X3_RTL) ../../hw/ip/gauss3x3/tb/tb_axis_gauss3x3.sv
 	obj_tb_axis_gauss3x3/Vtb_axis_gauss3x3
 
-# --- axis_bbox_reduce ---
-test-ip-bbox-reduce:
-	verilator $(VLT_TB_FLAGS) --top-module tb_axis_bbox_reduce --Mdir obj_tb_axis_bbox_reduce \
-	  ../../hw/ip/motion/rtl/axis_bbox_reduce.sv ../../hw/ip/motion/tb/tb_axis_bbox_reduce.sv
-	obj_tb_axis_bbox_reduce/Vtb_axis_bbox_reduce
-
 # --- axis_overlay_bbox ---
 test-ip-overlay-bbox:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_overlay_bbox --Mdir obj_tb_axis_overlay_bbox \
+	  ../../hw/top/sparevideo_pkg.sv \
 	  ../../hw/ip/motion/rtl/axis_overlay_bbox.sv ../../hw/ip/motion/tb/tb_axis_overlay_bbox.sv
 	obj_tb_axis_overlay_bbox/Vtb_axis_overlay_bbox
+
+# --- axis_ccl ---
+test-ip-ccl:
+	verilator $(VLT_TB_FLAGS) --top-module tb_axis_ccl --Mdir obj_tb_axis_ccl \
+	  ../../hw/top/sparevideo_pkg.sv \
+	  ../../hw/ip/motion/rtl/axis_ccl.sv ../../hw/ip/motion/tb/tb_axis_ccl.sv
+	obj_tb_axis_ccl/Vtb_axis_ccl
 
 # ---------------------------------------------------------------------------
 
@@ -175,4 +178,4 @@ clean:
 	rm -f *.vvp *.vcd *.bin *.vpi
 	rm -rf $(VOBJ_DIR) obj_tb_rgb2ycrcb obj_tb_axis_gauss3x3 \
 	       obj_tb_axis_motion_detect obj_tb_axis_motion_detect_gauss \
-	       obj_tb_axis_bbox_reduce obj_tb_axis_overlay_bbox
+	       obj_tb_axis_overlay_bbox obj_tb_axis_ccl

@@ -4,7 +4,7 @@ Video processing pipeline with motion detection and bounding-box overlay, verifi
 
 ## Overview
 
-A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough, motion detection + bounding-box overlay, or mask display), crosses back to the pixel clock, and drives a VGA controller. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active path.
+A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough, motion detection + N-way bounding-box overlay via connected-component labeling, mask display, or mask-as-grey + CCL-bbox debug), crosses back to the pixel clock, and drives a VGA controller. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active path.
 
 Architecture details, module interfaces, and design decisions are documented in [`docs/specs/`](docs/specs/):
 
@@ -13,8 +13,8 @@ Architecture details, module interfaces, and design decisions are documented in 
 | [`sparevideo-top-arch.md`](docs/specs/sparevideo-top-arch.md) | Top-level pipeline, clock domains, FIFO sizing, SVAs |
 | [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
-| [`axis_bbox_reduce-arch.md`](docs/specs/axis_bbox_reduce-arch.md) | Mask → bounding-box reduction |
-| [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | Rectangle overlay on RGB video |
+| [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
+| [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
 | [`ram-arch.md`](docs/specs/ram-arch.md) | Dual-port byte RAM, region descriptor model |
 | [`vga_controller-arch.md`](docs/specs/vga_controller-arch.md) | VGA timing generator |
@@ -41,8 +41,8 @@ hw/ip/gauss3x3/rtl/
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
 ├── motion_core.sv             Pure-combinational: abs-diff threshold + EMA background update
-├── axis_bbox_reduce.sv        Mask → bounding-box accumulator
-└── axis_overlay_bbox.sv       Bounding-box rectangle overlay on RGB video
+├── axis_ccl.sv                Streaming 8-connected CCL + EOF FSM + top-N bbox double-buffer
+└── axis_overlay_bbox.sv       N_OUT-wide bounding-box rectangle overlay on RGB video
 
 hw/ip/vga/rtl/
 ├── vga_controller.sv          VGA timing generator (instantiated in top)
@@ -62,11 +62,11 @@ hw/ip/rgb2ycrcb/tb/
 └── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
 
 hw/ip/gauss3x3/tb/
-└── tb_axis_gauss3x3.sv        6 tests: uniform/impulse/gradient/checkerboard/stall/SOF reset
+└── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
 
 hw/ip/motion/tb/
 ├── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
-├── tb_axis_bbox_reduce.sv     9 tests: edge cases, SOF reset isolation
+├── tb_axis_ccl.sv             7 tests: single blob, hollow, disjoint, U-merge, overflow, back-to-back
 └── tb_axis_overlay_bbox.sv    8 tests: empty/full/single-pixel, backpressure
 
 dv/sv/
@@ -89,8 +89,10 @@ py/
 ├── models/
 │   ├── __init__.py            Model dispatch (run_model → per-control-flow model)
 │   ├── passthrough.py         Passthrough model (identity)
-│   ├── motion.py              Motion pipeline model (luma, mask, bbox, overlay)
-│   └── mask.py                Mask display model (luma, mask, B/W expansion)
+│   ├── motion.py              Motion pipeline model (luma, mask, CCL bboxes, overlay)
+│   ├── mask.py                Mask display model (luma, mask, B/W expansion)
+│   ├── ccl.py                 Streaming CCL reference model (matches RTL bit-for-bit)
+│   └── ccl_bbox.py            ccl_bbox debug composition (mask-as-grey + bboxes)
 ├── viz/
 │   └── render.py              Render input/output comparison image grid
 └── tests/
@@ -137,8 +139,9 @@ make run-pipeline SOURCE=path/to/video.mp4 MODE=binary
 
 # Control flow selection (model-based verification at TOLERANCE=0)
 make run-pipeline CTRL_FLOW=passthrough   # identity — exact match
-make run-pipeline CTRL_FLOW=motion        # motion detect + bbox overlay — pixel-accurate model
+make run-pipeline CTRL_FLOW=motion        # motion detect + N-bbox overlay — pixel-accurate model
 make run-pipeline CTRL_FLOW=mask          # raw motion mask — B/W output for debugging
+make run-pipeline CTRL_FLOW=ccl_bbox      # mask-as-grey canvas + CCL bboxes (debug CCL directly)
 
 # EMA background model tuning
 make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
@@ -191,9 +194,9 @@ make render
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
-make test-ip-gauss3x3        # axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF
+make test-ip-gauss3x3        # axis_gauss3x3: 11 tests, centered Gaussian + latency + busy_o fallback
 make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
-make test-ip-bbox-reduce     # axis_bbox_reduce: 9 tests, edge cases, SOF reset
+make test-ip-ccl             # axis_ccl: 7 tests, single/hollow/disjoint/U-merge/overflow/back-to-back
 make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure
 make sw-dry-run              # Bypass RTL — file loopback, zero sim time
 make sim-waves               # RTL sim + open GTKWave

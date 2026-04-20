@@ -1,5 +1,41 @@
 # `axis_motion_detect` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+  - [2.1 Datapath overview](#21-datapath-overview)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+  - [3.2 Ports](#32-ports)
+- [4. Concept Description](#4-concept-description)
+  - [4.1 Algorithms in this module](#41-algorithms-in-this-module)
+  - [4.2 Spatial pre-filter — 3x3 Gaussian](#42-spatial-pre-filter--3x3-gaussian)
+  - [4.3 Threshold comparison — polarity-agnostic absolute difference](#43-threshold-comparison--polarity-agnostic-absolute-difference)
+  - [4.4 Temporal background model — EMA](#44-temporal-background-model--ema)
+  - [4.5 Placement rationale — no incremental RAM for EMA](#45-placement-rationale--no-incremental-ram-for-ema)
+  - [4.6 Placement rationale — why the Gaussian is internal, not an external AXIS stage](#46-placement-rationale--why-the-gaussian-is-internal-not-an-external-axis-stage)
+  - [4.7 Placement rationale — why spatial filtering must be pre-threshold](#47-placement-rationale--why-spatial-filtering-must-be-pre-threshold)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Per-pixel pipeline (overview)](#51-per-pixel-pipeline-overview)
+  - [5.2 Spatial pre-filter implementation — 3x3 Gaussian](#52-spatial-pre-filter-implementation--3x3-gaussian)
+  - [5.3 Threshold comparison implementation](#53-threshold-comparison-implementation)
+  - [5.4 Temporal background model implementation — EMA](#54-temporal-background-model-implementation--ema)
+  - [5.5 Pixel address counter](#55-pixel-address-counter)
+  - [5.6 RAM read/write discipline](#56-ram-readwrite-discipline)
+  - [5.7 Pipeline stages](#57-pipeline-stages)
+  - [5.8 `idx_pipe` — SRL-inferred shift register](#58-idx_pipe--srl-inferred-shift-register)
+  - [5.9 Memory read address timing](#59-memory-read-address-timing)
+  - [5.10 Backpressure — single-output pipeline stall](#510-backpressure--single-output-pipeline-stall)
+  - [5.11 Resource cost](#511-resource-cost)
+- [6. State / Control Logic](#6-state--control-logic)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `axis_motion_detect` computes a 1-bit per-pixel motion mask by comparing the current frame's luma (Y8) against a per-pixel background model stored in the shared RAM. The background model is maintained as an exponential moving average (EMA) — each pixel's stored value tracks the temporal mean of that pixel's luma, smoothing out sensor noise and gradual lighting changes. When `GAUSS_EN=1`, a 3x3 Gaussian pre-filter (`axis_gauss3x3`) smooths the luma spatially before the threshold comparison, reducing salt-and-pepper noise in the motion mask.
@@ -31,7 +67,7 @@ as inputs and produces `mask_bit` and `ema_update` as outputs.
 pixel address counter, manages the RGB→Y stall mux, derives Gaussian control signals,
 and wires the memory ports.
 
-### Datapath overview
+### 2.1 Datapath overview
 
 ```
                           axis_motion_detect
@@ -85,7 +121,7 @@ the input to `axis_overlay_bbox` independently of mask processing.
 
 ## 3. Interface Specification
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -93,11 +129,11 @@ the input to `axis_overlay_bbox` independently of mask processing.
 | `V_ACTIVE` | 240 | Active lines per frame |
 | `THRESH` | 16 | Unsigned luma-difference threshold; motion detected when `diff > THRESH` |
 | `ALPHA_SHIFT` | 3 | EMA smoothing factor as a bit-shift: alpha = 1 / (1 << ALPHA_SHIFT). Default 3 → alpha = 1/8. Higher values = slower background adaptation. When 0, the EMA reduces to raw-frame write-back (bg_new = Y_cur) |
-| `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (2-cycle latency, `PIPE_STAGES=3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
+| `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (H_ACTIVE + 2 cycle latency from rgb2ycrcb, `PIPE_STAGES = H_ACTIVE + 3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
 | `RGN_BASE` | 0 | Base byte-address of the background model region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the background model region (sanity-checked at elaboration) |
 
-### Ports
+### 3.2 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -128,7 +164,7 @@ the input to `axis_overlay_bbox` independently of mask processing.
 
 Background subtraction is a fundamental technique in video surveillance and motion detection. It maintains a model of the static background scene and detects motion by comparing each incoming pixel against this model. Pixels that differ significantly from the background are classified as foreground (motion).
 
-### Algorithms in this module
+### 4.1 Algorithms in this module
 
 Three algorithms are applied in sequence to each incoming pixel, after an initial RGB → Y8 colour-space conversion:
 
@@ -138,12 +174,12 @@ Three algorithms are applied in sequence to each incoming pixel, after an initia
 
 The ordering is fixed for two reasons:
 
-- **Spatial filtering must precede thresholding.** Spatial smoothing operates on continuous-valued luma; once the signal has been quantised to a 1-bit mask, averaging 0s and 1s is neither a blur nor a morphological op. See "Placement rationale — why spatial filtering must be pre-threshold" below.
-- **Threshold and EMA update are co-sited, not sequential stages.** Both need `Y_smooth` and `bg` simultaneously, and both fire in the same cycle: the comparison drives the mask output, and the EMA result drives the RAM write-back. See "Placement rationale — why the EMA lives in the write-back path" below.
+- **Spatial filtering must precede thresholding.** Spatial smoothing operates on continuous-valued luma; once the signal has been quantised to a 1-bit mask, averaging 0s and 1s is neither a blur nor a morphological op. See §4.7 below.
+- **Threshold and EMA update are co-sited, not sequential stages.** Both need `Y_smooth` and `bg` simultaneously, and both fire in the same cycle: the comparison drives the mask output, and the EMA result drives the RAM write-back. See §4.5 below.
 
 The three algorithms address complementary noise and adaptation problems. The Gaussian attacks *spatial* noise (uncorrelated pixel-to-pixel jitter within one frame). The EMA attacks *temporal* noise (uncorrelated frame-to-frame jitter at one pixel) and slow illumination drift. The threshold collapses the analog difference into the binary motion decision that downstream stages consume.
 
-### Spatial pre-filter — 3x3 Gaussian
+### 4.2 Spatial pre-filter — 3x3 Gaussian
 
 The Gaussian pre-filter convolves the Y channel with the kernel
 
@@ -159,13 +195,13 @@ The pre-filter is orthogonal to the EMA. The Gaussian averages over *space* with
 
 When `GAUSS_EN = 0` this stage is bypassed and `Y_smooth = Y_cur`; the rest of the datapath is identical. See [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) for line-buffer and adder-tree details.
 
-### Threshold comparison — polarity-agnostic absolute difference
+### 4.3 Threshold comparison — polarity-agnostic absolute difference
 
 The motion decision is `mask = (|Y_smooth − bg| > THRESH)`. Using the *absolute* difference rather than a signed difference makes the comparison **polarity-agnostic**: both arrival pixels (where a moving object now is) and departure pixels (where it was) are flagged as motion, regardless of the brightness relationship between object and background (bright-on-dark, dark-on-bright, or colour scenes).
 
 The trade-off is that the downstream bounding box encompasses both old and new object positions, making it slightly larger than the object by approximately one frame of displacement. This oversizing is accepted as the cost of scene-type independence.
 
-### Temporal background model — EMA
+### 4.4 Temporal background model — EMA
 
 The simplest background model would store the previous frame's raw pixel values. However, raw frame differencing is sensitive to sensor noise — random ±2–5 luma jitter between consecutive frames on a static scene triggers false positives when the threshold is set low enough to detect real motion.
 
@@ -191,11 +227,11 @@ In short: raw previous-frame differencing treats every frame-to-frame change as 
 
 **Why not raw-frame priming?** Writing raw `y_cur` to RAM on frame 0 was evaluated but rejected. While it fills the background model instantly, any foreground object present in frame 0 gets its luma committed to the background. When the object moves, the departure ghost persists for `~1/alpha` frames — much worse than the EMA warm-up from zero. With EMA from zero, the background only moves `y_cur >> ALPHA_SHIFT` toward the object per frame, so departure ghosts from the initial convergence clear quickly.
 
-### Placement rationale — no incremental RAM for EMA
+### 4.5 Placement rationale — no incremental RAM for EMA
 
 The EMA reuses the **same** per-pixel RAM region (`RGN_BASE`, `H_ACTIVE × V_ACTIVE` bytes) that a raw previous-frame buffer would have used. The region still holds one 8-bit value per pixel; only the interpretation of that value changes — it is now a running average rather than the last raw luma. No second region, no second port, no additional BRAM is required. Port A remains a single 1R1W access per pixel, so there is no port contention between reads and writes.
 
-### Placement rationale — why the Gaussian is internal, not an external AXIS stage
+### 4.6 Placement rationale — why the Gaussian is internal, not an external AXIS stage
 
 The Gaussian pre-filter (`axis_gauss3x3`) is instantiated **inside** `axis_motion_detect`, on the internal Y channel between `rgb2ycrcb` and the threshold comparison. It is not a standalone AXIS stage in `sparevideo_top`. This placement is deliberate for three reasons:
 
@@ -203,7 +239,7 @@ The Gaussian pre-filter (`axis_gauss3x3`) is instantiated **inside** `axis_motio
 2. **RGB passthrough stays sharp.** The video path that reaches `axis_overlay_bbox` (via `axis_fork` at the top level) is the *original* RGB stream. Smoothing RGB upstream of the fork would blur the video the user sees on the VGA output. Keeping the Gaussian internal to the motion detector ensures only the mask-decision path is smoothed.
 3. **No changes to top-level wiring.** The external AXIS interface of `axis_motion_detect` (RGB in, 1-bit mask out, RAM ports) is unchanged whether `GAUSS_EN=0` or `GAUSS_EN=1`. `sparevideo_top` does not need to know whether spatial smoothing is present.
 
-### Placement rationale — why spatial filtering must be pre-threshold
+### 4.7 Placement rationale — why spatial filtering must be pre-threshold
 
 Spatial smoothing must operate on the **continuous-valued** Y signal, not on the binary mask. Once thresholding converts the diff into a 1-bit mask, averaging 0s and 1s is neither Gaussian blur nor morphological filtering — the intensity information has been quantized away. Therefore the Gaussian is placed *before* the threshold comparison. Post-threshold binary cleanup (erode/dilate) is a separate class of operation and, when added, sits downstream of this module on the mask AXIS stream.
 
@@ -211,7 +247,7 @@ Spatial smoothing must operate on the **continuous-valued** Y signal, not on the
 
 ## 5. Internal Architecture
 
-### Per-pixel pipeline (overview)
+### 5.1 Per-pixel pipeline (overview)
 
 Every accepted pixel flows through the same three-algorithm sequence described in §4, now expressed at the RTL signal level:
 
@@ -236,20 +272,21 @@ When `ALPHA_SHIFT = 0`, `ema_step = delta` and `ema_update = Y_cur`, so the modu
 
 The remainder of this section splits along the same per-algorithm axis as §4, then covers the shared infrastructure (address counter, RAM discipline, pipeline register chain, stall handling, and resource cost).
 
-### Spatial pre-filter implementation — 3x3 Gaussian
+### 5.2 Spatial pre-filter implementation — 3x3 Gaussian
 
 The Gaussian is instantiated inside a `generate` block gated by `GAUSS_EN`. When `GAUSS_EN = 0` the submodule is elided from elaboration and `y_smooth = y_cur` is wired directly. See [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) for the internal line-buffer/column-shift/adder-tree structure.
 
-`axis_motion_detect` owns the control signals that drive the Gaussian. Two registered signals derive the submodule's `valid_i` and `sof_i` from the AXIS acceptance handshake:
+`axis_motion_detect` owns the control signals that drive the Gaussian. `gauss_pixel_valid` is a **sticky 1-deep pending flag** registered from the AXIS acceptance handshake: it is set on `s_axis_tvalid_i && s_axis_tready_o`, and cleared when the Gaussian consumes the pending pixel (`gauss_consume`). Sticky behaviour is required because the Gaussian must see `valid_i` held high across its phantom cycles (when `busy_o=1`) — a 1-cycle pulse would be missed.
 
 ```
-gauss_pixel_valid <= s_axis_tvalid_i && s_axis_tready_o   (gated by !pipe_stall)
-gauss_sof         <= s_axis_tuser_i                        (gated by !pipe_stall)
+on accept : gauss_pixel_valid <= 1, gauss_sof <= s_axis_tuser_i
+on consume: gauss_pixel_valid <= 0, gauss_sof <= 0
+gauss_consume = gauss_pixel_valid && !pipe_stall && !gauss_busy
 ```
 
-They are 1-cycle delayed so that they align with `y_cur` emerging from `rgb2ycrcb`. The Gaussian's `stall_i` is wired to the module's `pipe_stall` signal, so the pre-filter's internal line-buffer state freezes during downstream backpressure just like the rest of the pipeline.
+The 1-cycle register delay aligns `valid_i`/`sof_i` with `y_cur` emerging from `rgb2ycrcb`. The Gaussian's `stall_i` is wired to the module's `pipe_stall` signal, so the pre-filter's internal line-buffer state freezes during downstream backpressure. `gauss_busy` (from `u_gauss.busy_o`, 1'b0 when `GAUSS_EN=0`) indicates the Gaussian is executing a phantom cycle and cannot accept a real pixel.
 
-### Threshold comparison implementation
+### 5.3 Threshold comparison implementation
 
 The threshold comparison lives in `motion_core` (`hw/ip/motion/rtl/`), a pure-combinational module shared with the EMA update. The mask path is three combinational operators:
 
@@ -261,7 +298,7 @@ logic       mask_bit_o = (diff > THRESH);         // 8-bit unsigned compare
 
 `y_cur_i` is driven by `y_smooth` (post-Gaussian when `GAUSS_EN=1`, raw `y_cur` otherwise). `y_bg_i` is driven directly from `mem_rd_data_i`. Evaluation happens in the pipeline stage where both values are simultaneously valid; the result `mask_bit_o` is registered once more as it leaves the module, aligned with the sideband `tlast`/`tuser` chain so the AXIS output stays well-formed.
 
-### Temporal background model implementation — EMA
+### 5.4 Temporal background model implementation — EMA
 
 The EMA update shares the same `motion_core` instance as the threshold comparison, using signed arithmetic so the EMA step can go either direction:
 
@@ -276,19 +313,19 @@ The EMA multiplication by `α = 1/(1 << ALPHA_SHIFT)` is implemented as an arith
 
 The arithmetic right-shift (`>>>`) preserves the sign of `ema_delta`, so `bg` can move down as well as up when `y_cur < bg`. The shift count is the `ALPHA_SHIFT` compile-time parameter, so no multiplier or runtime shifter is synthesised; Yosys/Verilator infers a fixed wire routing. When `ALPHA_SHIFT = 0` the shift is a no-op, `ema_step = ema_delta`, and `ema_update_o = y_cur_i` — bit-for-bit raw write-back.
 
-The write-back port assignment is `mem_wr_data_o <= ema_update_o`. This is the only change the EMA introduces versus a raw previous-frame buffer; the RAM region, addressing, read path, and comparison path are untouched (see §4 "Placement rationale — why the EMA lives in the write-back path").
+The write-back port assignment is `mem_wr_data_o <= ema_update_o`. This is the only change the EMA introduces versus a raw previous-frame buffer; the RAM region, addressing, read path, and comparison path are untouched (see §4.5 "Placement rationale — no incremental RAM for EMA").
 
-### Pixel address counter
+### 5.5 Pixel address counter
 
 `pix_addr` is a frame-relative counter reset on SOF (`tuser`) and incremented on every accepted pixel (`tvalid && tready`). The physical RAM address is `RGN_BASE + pix_addr`.
 
 `mem_rd_addr_o` is driven combinationally to `RGN_BASE + pix_addr_next` (the address for the *next* pixel), so the read result is available at `mem_rd_data_i` 1 cycle later — exactly when the next pixel is being processed.
 
-### RAM read/write discipline
+### 5.6 RAM read/write discipline
 
 The RAM uses read-first semantics on port A. When motion detect reads and writes the same address in the same cycle (the current pixel's address), port A returns the **old** value (previous frame's background estimate). No external bypass logic is needed.
 
-### Pipeline stages
+### 5.7 Pipeline stages
 
 **`GAUSS_EN=0` (PIPE_STAGES=1):**
 
@@ -299,47 +336,58 @@ Cycle C+1 : y_cur registered; mem_rd_data_i arrives → diff computed → mask r
 
 Total latency: **1 clock cycle**.
 
-**`GAUSS_EN=1` (PIPE_STAGES=3):**
+**`GAUSS_EN=1` (PIPE_STAGES = H_ACTIVE + 3):**
+
+The centered Gaussian (`axis_gauss3x3`) has H_ACTIVE + 1 cycles of fill latency (1 row + 1 column of spatial offset) plus 2 pipeline cycles, giving a total Gaussian latency of H_ACTIVE + 2 cycles from `rgb2ycrcb` output. The pixel address pipeline (`idx_pipe`) must delay the RAM read address by the same amount so that `y_smooth` and `bg[P]` meet at the comparator for the same pixel P:
 
 ```
-Cycle C   : pixel N accepted; rgb2ycrcb MACs computed; gauss control signals registered
-Cycle C+1 : y_cur registered; Gaussian line buffer read + column shift stage 1
-Cycle C+2 : Gaussian column shift stage 2 + adder tree (combinational)
-Cycle C+3 : y_smooth registered; mem_rd_data_i arrives → diff computed → mask registered
+Cycle C            : pixel N accepted; rgb2ycrcb MACs computed; gauss control signals registered
+Cycle C+1          : y_cur registered; Gaussian begins accumulating into line buffers
+Cycle C+2          : Gaussian line buffer read + column shift stage 1
+...
+Cycle C+H_ACTIVE+2 : Gaussian output stage 1 (adder tree)
+Cycle C+H_ACTIVE+3 : y_smooth registered; mem_rd_data_i arrives → diff computed → mask registered
 ```
 
-Total latency: **3 clock cycles**.
+Total latency: **H_ACTIVE + 3 clock cycles** (323 cycles at 320px).
 
 `PIPE_STAGES` is computed dynamically:
 
 ```
-GAUSS_LATENCY = (GAUSS_EN != 0) ? 2 : 0
-PIPE_STAGES   = 1 + GAUSS_LATENCY
+GAUSS_LATENCY = (GAUSS_EN != 0) ? (H_ACTIVE + 2) : 0
+PIPE_STAGES   = 1 + GAUSS_LATENCY   // 1 at GAUSS_EN=0; H_ACTIVE+3 at GAUSS_EN=1
 ```
 
-### Memory read address timing
+### 5.8 `idx_pipe` — SRL-inferred shift register
+
+`idx_pipe` is a PIPE_STAGES-deep shift register that tracks the pixel address through the pipeline. At GAUSS_EN=1, PIPE_STAGES = H_ACTIVE + 3 = 323 stages × 17 bits. Synthesis tools infer these as SRL32 primitives on Xilinx 7-series (~170 LUTs) or equivalent SHIFTREG on Intel, provided the data path carries **no reset**. Only `valid_pipe`, `tlast_pipe`, and `tuser_pipe` carry a synchronous reset; `idx_pipe` is reset-free so that SRL inference fires.
+
+### 5.9 Memory read address timing
 
 The RAM read address must be issued 1 cycle before the comparison stage. With `GAUSS_EN=1`, the comparison happens at pipeline stage 3, so the read address uses `idx_pipe[PIPE_STAGES-2]` (delayed by 2 cycles from acceptance). With `GAUSS_EN=0`, it uses `pix_addr` (combinational, same cycle). During stall, a registered `pix_addr_hold` keeps the address stable.
 
-### Backpressure — single-output pipeline stall
+### 5.10 Backpressure — single-output pipeline stall
 
-The module has a single AXI4-Stream output (mask). Backpressure is handled by a simple pipeline stall:
+The module has a single AXI4-Stream output (mask). Backpressure is handled by a pipeline stall combined with the sticky 1-deep pending slot described in §5.2:
 
 ```
 pipe_valid     = valid_pipe[PIPE_STAGES-1]
 pipe_stall     = pipe_valid AND NOT m_axis_msk_tready_i
 beat_done      = pipe_valid AND m_axis_msk_tready_i
+gauss_consume  = gauss_pixel_valid AND NOT pipe_stall AND NOT gauss_busy
 
-s_axis_tready_o = NOT pipe_valid OR m_axis_msk_tready_i
+s_axis_tready_o = NOT gauss_pixel_valid OR gauss_consume
 ```
 
-When the mask consumer stalls (`msk_tready=0`):
-- All pipeline registers are frozen (gated with `!pipe_stall`).
-- `rgb2ycrcb` is fed from `held_tdata` (the last accepted pixel's data, captured on each acceptance) rather than live `s_axis_tdata_i`.
+`s_axis_tready_o` accepts a new pixel whenever the pending slot is empty, or will become empty this cycle (`gauss_consume` frees it for a simultaneous accept).
+
+When the mask consumer stalls (`msk_tready=0`) or the Gaussian signals `busy_o=1`:
+- All pipeline registers are frozen (gated with `!pipe_stall`); `gauss_pixel_valid` stays set, so `valid_i` to the Gaussian is held high across its phantom cycle as the contract requires.
+- `rgb2ycrcb` is fed from `held_tdata` (the last accepted pixel's data, captured on each acceptance) rather than live `s_axis_tdata_i`. The mux selects `held_tdata` whenever no accept occurs this cycle, keeping `y_cur` stable during both stalls and Gaussian phantom cycles.
 - `mem_rd_addr_o` is held via a registered hold address (`pix_addr_hold`).
 - `mem_wr_en_o` is driven by `beat_done`, ensuring exactly one write per pixel.
 
-### Resource cost
+### 5.11 Resource cost
 
 The module consumes one `rgb2ycrcb` instance (9 multipliers + 24 FFs), optionally one `axis_gauss3x3` instance when `GAUSS_EN=1` (see [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) §5 for its internal resource breakdown), the `motion_core` combinational logic (one 8-bit subtractor, one absolute-value, one comparator, one 9-bit arithmetic shift, one 8-bit adder), and the sideband pipeline registers (~3 bits × `PIPE_STAGES`). RAM consumption is external (shared `ram` module). The pixel address counter adds `$clog2(H_ACTIVE × V_ACTIVE)` bits of registered state.
 
@@ -369,10 +417,10 @@ There is no explicit FSM. Pipeline stall logic is purely combinational from `pip
 | Gaussian pre-filter (`axis_gauss3x3`, `GAUSS_EN=1`) | 2 clock cycles |
 | RAM read | 1 clock cycle |
 | Total pixel input → mask output (`GAUSS_EN=0`) | 1 clock cycle |
-| Total pixel input → mask output (`GAUSS_EN=1`) | 3 clock cycles |
+| Total pixel input → mask output (`GAUSS_EN=1`) | H_ACTIVE + 3 clock cycles (323 at 320px) |
 | Throughput | 1 pixel / cycle (when `msk_tready=1`) |
 
-Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame bbox. `axis_bbox_reduce` suppresses bbox output for the first 2 frames (priming period) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.
+Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame "motion" mask. `axis_ccl` suppresses bbox output for the first 2 frames (`PRIME_FRAMES`; EOF FSM still runs but `PHASE_SWAP` leaves the front buffer empty) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.
 
 EMA convergence: After a step change in a pixel's value, the background converges toward the new value over approximately `1/alpha = 1 << ALPHA_SHIFT` frames. With the default `ALPHA_SHIFT=3` (alpha=1/8), a pixel that steps from 100 to 200 will have its background reach ~200 after ~16 frames. Motion is detected (mask=1) for the first several frames until `|Y_cur - bg|` drops below `THRESH`. This is the intended behavior — transient objects are detected, then absorbed into the background.
 
