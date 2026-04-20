@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source .venv/bin/activate)",
+      "Bash(make lint *)",
+      "Bash(make test-ip *)",
+      "Bash(make -C dv/sim test-ip *)",
+      "Bash(make -C dv/sim test-ip-motion-detect *)",
+      "Bash(make test-ip-motion-detect-gauss *)",
+      "Bash(make -C dv/sim test-ip-motion-detect-gauss *)",
+      "Bash(make -C dv/sim test-ip-gauss3x3 *)",
+      "Bash(make run-pipeline *)",
+      "Bash(make test-py *)",
+      "Bash(source .venv/bin/activate && python -m pytest py/tests/ *)",
+      "Bash(source .venv/bin/activate && python -m pytest py/tests/test_models.py *)",
+      "Bash(source .venv/bin/activate && python -m pytest py/tests/test_frame_io.py *)",
+      "Bash(source .venv/bin/activate && python -m pytest py/tests/test_vga.py *)",
+      "Bash(source .venv/bin/activate && python py/*)",
+      "Bash(python3 << *)",
+      "Bash(python3 /tmp/*)",
+      "Bash(bash << *)",
+      "Bash(bash /tmp/*)"
+    ]
+  }
+}
