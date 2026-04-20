@@ -397,28 +397,27 @@ def test_gauss_uniform():
 
 
 def test_gauss_impulse():
-    """Single bright pixel produces kernel-weighted 3x3 response with causal offset.
+    """Single bright pixel produces kernel-weighted 3x3 response centered on it.
 
-    The RTL causal streaming filter centers the convolution at (r-1, c-1)
-    relative to scan position (r, c). An impulse at (4, 4) produces the
-    kernel response at output positions shifted by (+1, +1): center at (5, 5).
+    True centered 3x3 filter: an impulse at (r, c) produces the kernel
+    response centered at (r, c) with no spatial offset.
     """
     y = np.zeros((8, 16), dtype=np.uint8)
     y[4, 4] = 255
     result = _gauss3x3(y)
 
-    # Center weight at (5,5): 4*255 / 16 = 63 (truncated)
-    assert result[5, 5] == 63, f"Center: got {result[5, 5]}, expected 63"
+    # Center weight at (4,4): 4*255 / 16 = 63 (truncated)
+    assert result[4, 4] == 63, f"Center: got {result[4, 4]}, expected 63"
     # 2-weighted neighbors: 2*255 / 16 = 31
-    for r, c in [(4, 5), (6, 5), (5, 4), (5, 6)]:
+    for r, c in [(3, 4), (5, 4), (4, 3), (4, 5)]:
         assert result[r, c] == 31, f"({r},{c}): got {result[r, c]}, expected 31"
     # 1-weighted corners: 1*255 / 16 = 15
-    for r, c in [(4, 4), (4, 6), (6, 4), (6, 6)]:
+    for r, c in [(3, 3), (3, 5), (5, 3), (5, 5)]:
         assert result[r, c] == 15, f"({r},{c}): got {result[r, c]}, expected 15"
     # All other pixels should be 0
     for r in range(8):
         for c in range(16):
-            if abs(r - 5) > 1 or abs(c - 5) > 1:
+            if abs(r - 4) > 1 or abs(c - 4) > 1:
                 assert result[r, c] == 0, f"({r},{c}): got {result[r, c]}, expected 0"
 
 

@@ -323,27 +323,27 @@ The GAUSS_EN=1 golden model already uses a software Gaussian function. Update it
 
 ### Must pass (blocking):
 
-- [ ] **Phase 0: Impulse alignment test (Test 7)** — confirms `PIPE_STAGES = H_ACTIVE + 3` is correct before any motion-pipeline work is merged
-- [ ] `make lint` — no new warnings
-- [ ] `make test-ip` — all unit tests pass
+- [x] **Phase 0: Impulse alignment test (Test 7)** — confirms `PIPE_STAGES = H_ACTIVE + 3` is correct before any motion-pipeline work is merged
+- [x] `make lint` — no new warnings
+- [x] `make test-ip` — all unit tests pass
   - `test-ip-gauss3x3`: tests 1-11 (updated golden models for centered convolution)
   - `test-ip-motion-detect`: GAUSS_EN=0 regression (unchanged)
   - `test-ip-motion-detect-gauss`: GAUSS_EN=1 with centered golden model
   - All other IP tests unchanged
-- [ ] `make run-pipeline CTRL_FLOW=motion` at `TOLERANCE=0`
-- [ ] `make run-pipeline CTRL_FLOW=mask` at `TOLERANCE=0`
-- [ ] `make run-pipeline CTRL_FLOW=passthrough` at `TOLERANCE=0`
-- [ ] Python model `_gauss3x3()` produces standard centered Gaussian (matches `scipy.ndimage` to within truncation)
-- [ ] Phantom-cycle drain produces correct bottom / right border pixels (edge-replicated)
-- [ ] Stall behavior correct under backpressure during both normal and phantom-cycle operation
-- [ ] Back-to-back frames work correctly (SOF resets internal counters and in-flight phantom cycles)
-- [ ] `busy_o` stays low during the standard TB / VGA-timed integration (normal blanking available)
+- [x] `make run-pipeline CTRL_FLOW=motion` at `TOLERANCE=0`
+- [x] `make run-pipeline CTRL_FLOW=mask` at `TOLERANCE=0`
+- [x] `make run-pipeline CTRL_FLOW=passthrough` at `TOLERANCE=0`
+- [x] Python model `_gauss3x3()` produces standard centered Gaussian (matches `scipy.ndimage` to within truncation)
+- [x] Phantom-cycle drain produces correct bottom / right border pixels (edge-replicated)
+- [x] Stall behavior correct under backpressure during both normal and phantom-cycle operation
+- [x] Back-to-back frames work correctly (SOF resets internal counters and in-flight phantom cycles)
+- [x] `busy_o` stays low during the standard TB / VGA-timed integration (normal blanking available)
 
 ### Should pass (non-blocking, verify manually):
 
-- [ ] With `SOURCE="synthetic:noisy_moving_box"`, mask quality is comparable to causal version (1-pixel shift was negligible)
-- [ ] SRL inference confirmed in synth report for `idx_pipe*` (no BRAM usage added)
-- [ ] `make test-py` passes with updated model tests
+- [x] With `SOURCE="synthetic:noisy_moving_box"`, mask quality is comparable to causal version (1-pixel shift was negligible)
+- [x] SRL inference confirmed in synth report for `idx_pipe*` (no BRAM usage added)
+- [x] `make test-py` passes with updated model tests
 
 ---
 
@@ -351,59 +351,59 @@ The GAUSS_EN=1 golden model already uses a software Gaussian function. Update it
 
 ### Phase 0: Algebra sanity + Documentation (blocking)
 
-- [ ] Implement and run Test 7 (impulse alignment) with a placeholder `PIPE_STAGES` value, empirically confirm the `H_ACTIVE + 3` formula before committing downstream work. If off-by-one, adjust and re-verify before proceeding.
-- [ ] Update `docs/specs/axis_gauss3x3-arch.md` — remove causal offset sections, document centered semantics, phantom-cycle drain, blanking requirements, `busy_o` port, new latency
-- [ ] Update `docs/specs/axis_motion_detect-arch.md` — update PIPE_STAGES calculation, timing table, note SRL inference for `idx_pipe`
+- [x] Implement and run Test 7 (impulse alignment) with a placeholder `PIPE_STAGES` value, empirically confirm the `H_ACTIVE + 3` formula before committing downstream work. If off-by-one, adjust and re-verify before proceeding.
+- [x] Update `docs/specs/axis_gauss3x3-arch.md` — remove causal offset sections, document centered semantics, phantom-cycle drain, blanking requirements, `busy_o` port, new latency
+- [x] Update `docs/specs/axis_motion_detect-arch.md` — update PIPE_STAGES calculation, timing table, note SRL inference for `idx_pipe`
 
 ### Phase 1: RTL — `axis_gauss3x3` changes
 
-- [ ] Extend internal `col` / `row` counters to scan `[0..H_ACTIVE]` × `[0..V_ACTIVE]`
-- [ ] Add phantom-cycle trigger logic (self-clock during upstream `valid_i=0` blanking; assert `busy_o` if no blanking available)
-- [ ] Add bottom / right edge replication cases to the `win[][]` mux
-- [ ] Gate line-buffer writes on real pixels only (no writes during phantom cycles)
-- [ ] Add `busy_o` output
-- [ ] Reset internal counters on `sof_i`
-- [ ] Update file header comment to reference MathWorks / Xilinx Vitis instead of sistenix
-- [ ] `make lint` passes
+- [x] Extend internal `col` / `row` counters to scan `[0..H_ACTIVE]` × `[0..V_ACTIVE]`
+- [x] Add phantom-cycle trigger logic (self-clock during upstream `valid_i=0` blanking; assert `busy_o` if no blanking available)
+- [x] Add bottom / right edge replication cases to the `win[][]` mux
+- [x] Gate line-buffer writes on real pixels only (no writes during phantom cycles)
+- [x] Add `busy_o` output
+- [x] Reset internal counters on `sof_i`
+- [x] Update file header comment to reference MathWorks / Xilinx Vitis instead of sistenix
+- [x] `make lint` passes
 
 ### Phase 2: RTL — `axis_motion_detect` changes
 
-- [ ] Update `GAUSS_LATENCY` to `H_ACTIVE + 2`
-- [ ] Remove reset from `idx_pipe` data path (keep reset on `valid_pipe` / `tlast_pipe` / `tuser_pipe`) to enable SRL inference
-- [ ] Gate `s_axis_tready_o` with `!gauss_busy`
-- [ ] `make lint` passes
-- [ ] Confirm SRL inference in synth report (or document the BRAM fallback if inference fails)
+- [x] Update `GAUSS_LATENCY` to `H_ACTIVE + 2`
+- [x] Remove reset from `idx_pipe` data path (keep reset on `valid_pipe` / `tlast_pipe` / `tuser_pipe`) to enable SRL inference
+- [x] Gate `s_axis_tready_o` with `!gauss_busy`
+- [x] `make lint` passes
+- [x] Confirm SRL inference in synth report (or document the BRAM fallback if inference fails)
 
 ### Phase 3: Testbenches
 
-- [ ] Update `tb_axis_gauss3x3` golden model for centered convolution
-- [ ] Add Test 7 (impulse alignment — Phase 0 blocker)
-- [ ] Add Test 8 (bottom / right edge)
-- [ ] Add Test 9 (latency measurement)
-- [ ] Add Test 10 (no-blanking `busy_o` fallback)
-- [ ] Add Test 11 (minimum-blanking compliance)
-- [ ] Update `tb_axis_motion_detect` GAUSS_EN=1 golden model
-- [ ] `make test-ip` all pass
+- [x] Update `tb_axis_gauss3x3` golden model for centered convolution
+- [x] Add Test 7 (impulse alignment — Phase 0 blocker)
+- [x] Add Test 8 (bottom / right edge)
+- [x] Add Test 9 (latency measurement)
+- [x] Add Test 10 (no-blanking `busy_o` fallback)
+- [x] Add Test 11 (minimum-blanking compliance)
+- [x] Update `tb_axis_motion_detect` GAUSS_EN=1 golden model
+- [x] `make test-ip` all pass
 
 ### Phase 4: Python model + harness
 
-- [ ] Simplify `_gauss3x3()` in `py/models/motion.py` (remove causal offset, use pad=1)
-- [ ] Update `py/tests/test_models.py` expected values
-- [ ] `make test-py` passes
+- [x] Simplify `_gauss3x3()` in `py/models/motion.py` (remove causal offset, use pad=1)
+- [x] Update `py/tests/test_models.py` expected values
+- [x] `make test-py` passes
 
 ### Phase 5: Full pipeline verification
 
-- [ ] `make run-pipeline CTRL_FLOW=motion TOLERANCE=0`
-- [ ] `make run-pipeline CTRL_FLOW=mask TOLERANCE=0`
-- [ ] `make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0`
-- [ ] Verify all `CTRL_FLOW × GAUSS_EN × ALPHA_SHIFT` combinations at `TOLERANCE=0`
+- [x] `make run-pipeline CTRL_FLOW=motion TOLERANCE=0`
+- [x] `make run-pipeline CTRL_FLOW=mask TOLERANCE=0`
+- [x] `make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0`
+- [x] Verify all `CTRL_FLOW × GAUSS_EN × ALPHA_SHIFT` combinations at `TOLERANCE=0`
 
 ### Phase 6: Documentation updates (blocking — do not merge until complete)
 
-- [ ] Update `README.md` if any user-visible options change
-- [ ] Update `CLAUDE.md` if project structure changes
-- [ ] Move this plan to `docs/plans/old/` with date stamp
-- [ ] Update parent plan's sub-plans table
+- [x] Update `README.md` if any user-visible options change
+- [x] Update `CLAUDE.md` if project structure changes
+- [x] Move this plan to `docs/plans/old/` with date stamp
+- [x] Update parent plan's sub-plans table
 
 ---
 

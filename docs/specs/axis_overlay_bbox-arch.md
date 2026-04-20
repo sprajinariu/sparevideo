@@ -1,5 +1,26 @@
 # `axis_overlay_bbox` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+  - [3.2 Ports](#32-ports)
+- [4. Concept Description](#4-concept-description)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Column/row counters](#51-columnrow-counters)
+  - [5.2 Rectangle edge predicate](#52-rectangle-edge-predicate)
+  - [5.3 Output pixel selection](#53-output-pixel-selection)
+  - [5.4 Resource cost](#54-resource-cost)
+- [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `axis_overlay_bbox` draws a 1-pixel-thick rectangle on an RGB888 AXI4-Stream video pipeline using bounding-box coordinates provided as a stable sideband input from `axis_bbox_reduce`. Pixels on the rectangle edge are replaced with `BBOX_COLOR`; all other pixels pass through unchanged. When `bbox_empty_i` is asserted the module is a pure pass-through with zero modification. It does **not** buffer frames, track objects, or generate any sideband output.
@@ -14,7 +35,7 @@
 
 ## 3. Interface Specification
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -22,7 +43,7 @@
 | `V_ACTIVE` | 240 | Active lines per frame |
 | `BBOX_COLOR` | `24'h00_FF_00` | Rectangle colour (bright green) |
 
-### Ports
+### 3.2 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -61,13 +82,13 @@ The approach requires zero frame buffering — the overlay is applied in a singl
 
 ## 5. Internal Architecture
 
-### Column/row counters
+### 5.1 Column/row counters
 
 `col` increments on every accepted pixel (`tvalid && tready`), resets to 0 on `tlast`. `row` increments on `tlast`, resets to 0 on `tuser`.
 
 On `tuser` (SOF), `col` is set to **1** — not 0. The SOF pixel is always at image column 0 and reads the registered `col` before the update fires, so it correctly sees `col=0` from the previous `tlast` or hardware reset. Setting the register to 1 ensures the *next* pixel (image column 1) also sees `col=1`. Without this, every pixel in the first row of each frame would have its column index shifted by 1, causing the `on_rect` predicate to misfire for column-dependent bbox edges.
 
-### Rectangle edge predicate
+### 5.2 Rectangle edge predicate
 
 A pixel at `(col, row)` is on the rectangle edge (`on_rect`) iff:
 
@@ -83,7 +104,7 @@ on_rect = !bbox_empty_i && (
 
 This is purely combinational and evaluates to 1 only on the 4 edges of the bounding rectangle.
 
-### Output pixel selection
+### 5.3 Output pixel selection
 
 ```
 m_axis_tdata_o = on_rect ? BBOX_COLOR : s_axis_tdata_i
@@ -91,7 +112,7 @@ m_axis_tdata_o = on_rect ? BBOX_COLOR : s_axis_tdata_i
 
 All sideband signals (`tvalid`, `tlast`, `tuser`) pass through unchanged. `s_axis_tready_o = m_axis_tready_i` — backpressure propagates directly.
 
-### Resource cost
+### 5.4 Resource cost
 
 The module uses two counters (`$clog2(H_ACTIVE)` + `$clog2(V_ACTIVE)` bits), six comparators for the edge predicate, and one 24-bit 2:1 MUX for the output pixel selection. No RAM, DSP, or pipeline registers on the data path — the overlay is purely combinational with zero added latency.
 

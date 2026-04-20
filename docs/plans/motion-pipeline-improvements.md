@@ -681,8 +681,8 @@ Detailed implementation, testing, and acceptance criteria for each block:
 | 0. Mask display ctrl flow | [old/2026-04-15_ctrl-flow-mask-display.md](old/2026-04-15_ctrl-flow-mask-display.md) | done |
 | 1. EMA background model | [old/2026-04-15_block1-ema-background.md](old/2026-04-15_block1-ema-background.md) | done |
 | 2. Gaussian pre-filter (causal) | [old/2026-04-16_block2-gaussian-prefilter.md](old/2026-04-16_block2-gaussian-prefilter.md) | done |
-| 2a. Centered Gaussian upgrade | [2026-04-16_block2a-centered-gaussian.md](2026-04-16_block2a-centered-gaussian.md) | not started |
-| —. Decouple RGB/mask pipelines | [2026-04-17_decouple-rgb-mask-pipelines.md](2026-04-17_decouple-rgb-mask-pipelines.md) | not started |
+| 2a. Centered Gaussian upgrade | [old/2026-04-17_block2a-centered-gaussian.md](old/2026-04-17_block2a-centered-gaussian.md) | done |
+| —. Decouple RGB/mask pipelines | [old/2026-04-17_decouple-rgb-mask-pipelines.md](old/2026-04-17_decouple-rgb-mask-pipelines.md) | done |
 | 3. Morphological opening | block3-morphological-opening.md | not started |
 | 4. Connected-component labeling | block4-ccl.md | not started |
 | 5. Adaptive threshold | block5-adaptive-threshold.md | not started |

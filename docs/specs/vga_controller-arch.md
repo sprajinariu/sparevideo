@@ -1,5 +1,27 @@
 # `vga_controller` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+  - [3.2 Ports](#32-ports)
+- [4. Concept Description](#4-concept-description)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Counters](#51-counters)
+  - [5.2 Active region](#52-active-region)
+  - [5.3 Sync generation](#53-sync-generation)
+  - [5.4 RGB output](#54-rgb-output)
+  - [5.5 Resource cost](#55-resource-cost)
+- [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `vga_controller` accepts a streaming RGB888 pixel input via a ready/valid handshake, generates VGA horizontal and vertical timing, and drives RGB + hsync/vsync outputs. It consumes exactly one pixel per active-region clock cycle and outputs zero-valued RGB during blanking intervals. It does **not** scale, crop, or reformat the pixel data; it does not buffer frames; it does not generate pixel data (test patterns are in `pattern_gen.sv`).
@@ -14,7 +36,7 @@
 
 ## 3. Interface Specification
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -29,7 +51,7 @@
 
 Defaults correspond to 640×480 @ 60 Hz on a 25 MHz pixel clock.
 
-### Ports
+### 3.2 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -63,7 +85,7 @@ This counter-based approach is standard for VGA timing generation. The timing pa
 
 ## 5. Internal Architecture
 
-### Counters
+### 5.1 Counters
 
 - `h_count`: horizontal counter, 0…`H_TOTAL−1`. Increments every clock. Wraps at `H_TOTAL−1`.
 - `v_count`: vertical counter, 0…`V_TOTAL−1`. Increments each time `h_count` wraps. Wraps at `V_TOTAL−1`.
@@ -78,24 +100,24 @@ V_SYNC_START = V_ACTIVE + V_FRONT_PORCH
 V_SYNC_END   = V_SYNC_START + V_SYNC_PULSE
 ```
 
-### Active region
+### 5.2 Active region
 
 `active = (h_count < H_ACTIVE) && (v_count < V_ACTIVE)` — combinational.
 
 `pixel_ready_o = active` — the controller accepts exactly one pixel per active-region cycle.
 
-### Sync generation
+### 5.3 Sync generation
 
 `vga_hsync_o` is asserted (low) when `h_count ∈ [H_SYNC_START, H_SYNC_END)`.  
 `vga_vsync_o` is asserted (low) when `v_count ∈ [V_SYNC_START, V_SYNC_END)`.  
 Both are registered.
 
-### RGB output
+### 5.4 RGB output
 
 During active region: `vga_{r,g,b}_o <= pixel_data_i[23:16/15:8/7:0]` — registered.  
 During blanking: `vga_{r,g,b}_o <= 8'h00` — registered.
 
-### Resource cost
+### 5.5 Resource cost
 
 The module consumes two counters (`$clog2(H_TOTAL)` + `$clog2(V_TOTAL)` bits), a handful of comparators for timing region detection, and 26 output flip-flops (24-bit RGB + hsync + vsync). No RAM or DSP resources are used.
 

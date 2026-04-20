@@ -1,5 +1,34 @@
 # `axis_gauss3x3` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+  - [3.2 Ports](#32-ports)
+- [4. Concept Description](#4-concept-description)
+  - [4.1 Centered streaming Gaussian](#41-centered-streaming-gaussian)
+  - [4.2 Phantom-cycle drain and blanking](#42-phantom-cycle-drain-and-blanking)
+  - [4.3 Edge replication](#43-edge-replication)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Data flow overview](#51-data-flow-overview)
+  - [5.2 Row/column counters](#52-rowcolumn-counters)
+  - [5.3 Line buffers](#53-line-buffers-distributed-ram-depth--h_active-width--8)
+  - [5.4 Column shift registers](#54-column-shift-registers-6-ffs)
+  - [5.5 Edge replication muxing](#55-edge-replication-muxing-combinational)
+  - [5.6 Convolution](#56-convolution-combinational-adder-tree)
+  - [5.7 Output register](#57-output-register)
+  - [5.8 SOF handling](#58-sof-handling)
+  - [5.9 Resource cost summary](#59-resource-cost-summary)
+- [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `axis_gauss3x3` applies a 3x3 Gaussian blur to an 8-bit luma (Y) stream using the kernel `[1 2 1; 2 4 2; 1 2 1] / 16`. It is a synchronous pipeline element controlled by the parent module ([`axis_motion_detect`](axis_motion_detect-arch.md)) via `valid_i`, `sof_i`, and `stall_i` signals. It does **not** implement its own AXI4-Stream handshake, process multi-channel data, or support parameterized kernel sizes. All kernel multiplications are bit-shifts (wiring only); no DSP multipliers are used.
@@ -23,14 +52,14 @@ axis_motion_detect (u_motion)
 
 ## 3. Interface Specification
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `H_ACTIVE` | 320 | Active pixels per line (line buffer depth) |
 | `V_ACTIVE` | 240 | Active lines per frame (row counter range) |
 
-### Ports
+### 3.2 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -73,7 +102,7 @@ Y_out[r,c] = (1*Y[r-1,c-1] + 2*Y[r-1,c] + 1*Y[r-1,c+1]
 
 All weights are powers of 2: `*1` = identity (wiring), `*2` = `<<1` (wiring), `*4` = `<<2` (wiring). The final `>>4` is also wiring (bit-select `sum[11:4]`). The entire convolution is 9 additions with no multiplier hardware.
 
-### Centered streaming Gaussian
+### 4.1 Centered streaming Gaussian
 
 This module implements **true centered convolution**. The output `y_o` for the n-th pixel in scan order is the Gaussian smoothed value at the same spatial position as the n-th input pixel — no diagonal shift. This is the standard convention adopted by MathWorks Vision HDL Toolbox (`floor(K_h/2)` lines of latency) and Xilinx Vitis Vision `Filter2D`/`Window2D`.
 
@@ -81,7 +110,7 @@ The cost of centering is latency: pixel (r, c) cannot be output until row r+1 co
 
 This latency is absorbed in the existing pipeline via `idx_pipe` in `axis_motion_detect`, which delays the pixel address by the same H_ACTIVE + 3 cycles so `y_smooth` and `bg[P]` meet at the comparator for the same pixel P.
 
-### Phantom-cycle drain and blanking
+### 4.2 Phantom-cycle drain and blanking
 
 After all real pixels of a row are consumed, the 3x3 window centered at the **last real column** (c = H_ACTIVE − 1) still needs column c+1 = H_ACTIVE, which does not exist. The module self-clocks one **phantom cycle** at col = H_ACTIVE, using the edge-replicated right-border value. This phantom cycle produces the centered output for the rightmost pixel of that row.
 
@@ -93,7 +122,7 @@ Phantom cycles execute **during upstream blanking** (when `valid_i = 0`):
 - **Per frame**: H_ACTIVE + 1 phantom cycles after the last row → absorbed in V-blank. Minimum: H_ACTIVE + 1 cycles of V-blank.
 - **No blanking available**: `busy_o` is asserted for the phantom cycle. The parent module (`axis_motion_detect`) uses this to deassert `s_axis_tready_o` for one cycle, creating the required blanking window. In standard VGA-timed integration (`H_BLANK = 16`, `V_BLANK = 6 lines`), blanking is always available and `busy_o` stays low.
 
-### Edge replication
+### 4.3 Edge replication
 
 At image borders, the 3x3 window extends outside the image. Border pixel replication clamps out-of-bounds coordinates to the nearest valid pixel. All four borders are handled:
 
@@ -112,7 +141,7 @@ At image borders, the 3x3 window extends outside the image. Border pixel replica
 
 ## 5. Internal Architecture
 
-### Data flow overview
+### 5.1 Data flow overview
 
 ```
 y_i ──► [line buffers LB0, LB1] ──► [column shift regs] ──► [edge mux] ──► [adder tree] ──► y_o
@@ -120,13 +149,13 @@ y_i ──► [line buffers LB0, LB1] ──► [column shift regs] ──► [e
           1-cycle latency)           6 FFs total)
 ```
 
-### 1. Row/column counters
+### 5.2 Row/column counters
 
 Registered counters `col` and `row` track position within the active region, extended to `[0 .. H_ACTIVE]` × `[0 .. V_ACTIVE]` so phantom positions can be represented. On `sof_i` the counters reset to 0. On `!stall_i && valid_i` they advance. On a phantom cycle they advance without consuming a real pixel.
 
 A combinational `cur_col`/`cur_row` computes the actual position of the pixel (real or phantom) being processed in the current cycle.
 
-### 2. Line buffers (distributed RAM, depth = `H_ACTIVE`, width = 8)
+### 5.3 Line buffers (distributed RAM, depth = `H_ACTIVE`, width = 8)
 
 Two line buffers store previous rows. When the scan position is at row r:
 
@@ -149,7 +178,7 @@ During phantom cycles, line buffer writes are gated off (no real pixel to store)
 
 **Resource cost:** At 320px, each buffer is 320 × 8 = 2,560 bits. Synthesis infers distributed RAM (LUT-RAM). Total: ~640 bytes.
 
-### 3. Column shift registers (6 FFs)
+### 5.4 Column shift registers (6 FFs)
 
 After the line buffer read stage (d1), each row's output feeds a 2-deep shift register providing `c`, `c-1`, `c-2` taps:
 
@@ -161,11 +190,11 @@ r0: y_d1   → r0_c1 → r0_c2    (bottom row: c, c-1, c-2)
 
 The `_c0` taps are combinational aliases. Shift registers are gated by `!stall_i && valid_d1`. During phantom right-edge cycles the shift register is not advanced by new input; the replicated right-border value is injected via the edge mux.
 
-### 4. Edge replication muxing (combinational)
+### 5.5 Edge replication muxing (combinational)
 
-The 3x3 window `win[row][col]` defaults to shift register outputs. Muxes override based on `col_d1` and `row_d1` according to the table in §4. The mux operates on the d1-stage signals and is purely combinational.
+The 3x3 window `win[row][col]` defaults to shift register outputs. Muxes override based on `col_d1` and `row_d1` according to the table in §4.3. The mux operates on the d1-stage signals and is purely combinational.
 
-### 5. Convolution (combinational adder tree)
+### 5.6 Convolution (combinational adder tree)
 
 ```
 conv_sum[11:0] = {4'b0, win[0][0]}       + {3'b0, win[0][1], 1'b0} + {4'b0, win[0][2]}
@@ -175,15 +204,15 @@ conv_sum[11:0] = {4'b0, win[0][0]}       + {3'b0, win[0][1], 1'b0} + {4'b0, win[
 
 Maximum shifted value: 10 bits. Sum of 9 terms: 12 bits. Output: `conv_sum[11:4]` (= `>> 4`).
 
-### 6. Output register
+### 5.7 Output register
 
 `y_o` and `valid_d2` are registered on each non-stall cycle (real or phantom), giving the module its base 2-cycle internal latency. The first valid `valid_o` pulse appears H_ACTIVE + 3 cycles after the first input pixel.
 
-### 7. SOF handling
+### 5.8 SOF handling
 
 On `sof_i`, internal `col`/`row` counters reset to 0. Any in-flight phantom cycles for the previous frame are cancelled (they complete within V-blank before the next SOF arrives in normal operation).
 
-### Resource cost summary
+### 5.9 Resource cost summary
 
 | Resource | Count |
 |----------|-------|

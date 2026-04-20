@@ -1,5 +1,26 @@
 # `axis_bbox_reduce` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+  - [3.2 Ports](#32-ports)
+- [4. Concept Description](#4-concept-description)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Resource cost](#51-resource-cost)
+- [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
+  - [6.1 Scratch accumulator update](#61-scratch-accumulator-update-priority-order-evaluated-each-accepted-pixel)
+  - [6.2 Column/row counter update](#62-columnrow-counter-update)
+  - [6.3 Output latch](#63-output-latch)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `axis_bbox_reduce` consumes the 1-bit motion mask stream from `axis_motion_detect` and reduces it to a bounding rectangle `{min_x, max_x, min_y, max_y}` that encloses all motion pixels in the frame. The result is latched once per frame at end-of-frame and presented as a stable sideband output to `axis_overlay_bbox`. It does **not** generate an AXI4-Stream output; it does not filter isolated pixels; it does not track multiple objects.
@@ -14,14 +35,14 @@
 
 ## 3. Interface Specification
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `H_ACTIVE` | 320 | Active pixels per line (sets `col` counter width) |
 | `V_ACTIVE` | 240 | Active lines per frame (sets `row` counter width) |
 
-### Ports
+### 3.2 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -75,7 +96,7 @@ On SOF (`tuser=1`) the scratch is initialised in one of two ways (see §6).
 - On `tuser` (SOF), `col` is set to **1** — not 0. The SOF pixel itself is always at image column 0 and reads `col` before the register update, so it correctly sees `col=0`. Setting the register to 1 ensures that the *next* pixel (image column 1) also sees `col=1`. Without this correction the entire first row would have its column indices shifted by 1.
 - `row` increments on `tlast`; resets to 0 on `tuser`.
 
-### Resource cost
+### 5.1 Resource cost
 
 The module uses four min/max accumulator registers (each `$clog2(H_ACTIVE)` or `$clog2(V_ACTIVE)` bits wide), two position counters, and a set of comparators for the per-pixel min/max updates. No RAM or DSP resources are used.
 
@@ -85,7 +106,7 @@ The module uses four min/max accumulator registers (each `$clog2(H_ACTIVE)` or `
 
 No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no ready check needed since `tready` is hardwired 1).
 
-### Scratch accumulator update (priority order, evaluated each accepted pixel)
+### 6.1 Scratch accumulator update (priority order, evaluated each accepted pixel)
 
 | Condition | Action |
 |-----------|--------|
@@ -93,7 +114,7 @@ No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no
 | `tvalid && tuser && tdata == 0` | SOF pixel, no motion: reset scratch to sentinels (`sc_min_x='1`, `sc_max_x='0`, …) and clear `sc_any`. |
 | `tvalid && !tuser && tdata == 1` | Non-SOF motion pixel: `sc_any=1`; update `sc_min/max_x/y` by comparison with `col`/`row`. |
 
-### Column/row counter update
+### 6.2 Column/row counter update
 
 | Condition | Action |
 |-----------|--------|
@@ -101,7 +122,7 @@ No FSM. All logic is `always_ff` register updates gated on `s_axis_tvalid_i` (no
 | `tvalid && tlast` | `col <= 0`, `row <= row + 1` |
 | `tvalid && !tuser && !tlast` | `col <= col + 1` |
 
-### Output latch
+### 6.3 Output latch
 
 | Condition | Action |
 |-----------|--------|
