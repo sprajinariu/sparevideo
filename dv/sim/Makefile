@@ -24,6 +24,7 @@ FRAMES      ?= 4
 MODE        ?= text
 CTRL_FLOW   ?= motion
 ALPHA_SHIFT ?= 3
+GAUSS_EN    ?= 1
 INFILE      ?= ../data/input.txt
 OUTFILE     ?= ../data/output.txt
 
