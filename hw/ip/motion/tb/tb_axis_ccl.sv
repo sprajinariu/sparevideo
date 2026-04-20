@@ -4,9 +4,11 @@
 // T2 hollow rectangle (one connected component)
 // T3 disjoint rectangles -> two distinct bboxes
 // T4 U-shape forces equiv merge
-// T5 min-size filter drops 1-pixel speckle
-// T6 overflow: more blobs than N_LABELS_INT; no crash, real blobs still emit
+// T5 min-size filter drops small blobs (separate DUT with MIN_PIX=4)
+// T6 overflow: large blob + many single-pixel blobs; large blob survives
 // T7 back-to-back frames: second frame's bboxes do not inherit from the first
+// T8 mid-frame strobe gaps: deasserting tvalid mid-frame preserves labeling
+// T9 priming: PRIME_FRAMES=1 suppresses front buffer for 1 frame (separate DUT)
 
 `timescale 1ns / 1ps
 
@@ -23,6 +25,9 @@ module tb_axis_ccl;
     logic clk = 0;
     always #(CLK_PERIOD/2) clk = ~clk;
     logic rst_n;
+    // Separate reset for the priming DUT so T9 sees frame 0 after reset, not
+    // after the 8+ frames the other tests already drove through it.
+    logic pf_rst_n;
 
     // --- drv_* pattern ---
     logic drv_tdata = 1'b0, drv_tvalid = 1'b0, drv_tlast = 1'b0, drv_tuser = 1'b0;
@@ -65,11 +70,82 @@ module tb_axis_ccl;
         .bbox_empty_o   (bbox_empty)
     );
 
+    // Second DUT: MIN_COMPONENT_PIXELS=4 — exercises the size filter.
+    logic [N_OUT-1:0]                mp4_bbox_valid;
+    logic [N_OUT-1:0][$clog2(H)-1:0] mp4_bbox_min_x, mp4_bbox_max_x;
+    logic [N_OUT-1:0][$clog2(V)-1:0] mp4_bbox_min_y, mp4_bbox_max_y;
+    logic                            mp4_bbox_swap;
+
+    axis_ccl #(
+        .H_ACTIVE             (H),
+        .V_ACTIVE             (V),
+        .N_LABELS_INT         (N_LABELS),
+        .N_OUT                (N_OUT),
+        .MIN_COMPONENT_PIXELS (4),
+        .MAX_CHAIN_DEPTH      (8),
+        .PRIME_FRAMES         (0)
+    ) u_dut_minpix4 (
+        .clk_i           (clk),
+        .rst_n_i         (rst_n),
+        .s_axis_tdata_i  (s_tdata),
+        .s_axis_tvalid_i (s_tvalid),
+        .s_axis_tready_o (),
+        .s_axis_tlast_i  (s_tlast),
+        .s_axis_tuser_i  (s_tuser),
+        .bbox_valid_o    (mp4_bbox_valid),
+        .bbox_min_x_o    (mp4_bbox_min_x),
+        .bbox_max_x_o    (mp4_bbox_max_x),
+        .bbox_min_y_o    (mp4_bbox_min_y),
+        .bbox_max_y_o    (mp4_bbox_max_y),
+        .bbox_swap_o     (mp4_bbox_swap),
+        .bbox_empty_o    ()
+    );
+
+    // Third DUT: PRIME_FRAMES=1 — exercises the priming skip on frame 0.
+    logic [N_OUT-1:0]                pf_bbox_valid;
+    logic [N_OUT-1:0][$clog2(H)-1:0] pf_bbox_min_x, pf_bbox_max_x;
+    logic [N_OUT-1:0][$clog2(V)-1:0] pf_bbox_min_y, pf_bbox_max_y;
+    logic                            pf_bbox_swap;
+    logic                            pf_bbox_empty;
+
+    axis_ccl #(
+        .H_ACTIVE             (H),
+        .V_ACTIVE             (V),
+        .N_LABELS_INT         (N_LABELS),
+        .N_OUT                (N_OUT),
+        .MIN_COMPONENT_PIXELS (MIN_PIX),
+        .MAX_CHAIN_DEPTH      (8),
+        .PRIME_FRAMES         (1)
+    ) u_dut_prime1 (
+        .clk_i           (clk),
+        .rst_n_i         (pf_rst_n),
+        .s_axis_tdata_i  (s_tdata),
+        .s_axis_tvalid_i (s_tvalid),
+        .s_axis_tready_o (),
+        .s_axis_tlast_i  (s_tlast),
+        .s_axis_tuser_i  (s_tuser),
+        .bbox_valid_o    (pf_bbox_valid),
+        .bbox_min_x_o    (pf_bbox_min_x),
+        .bbox_max_x_o    (pf_bbox_max_x),
+        .bbox_min_y_o    (pf_bbox_min_y),
+        .bbox_max_y_o    (pf_bbox_max_y),
+        .bbox_swap_o     (pf_bbox_swap),
+        .bbox_empty_o    (pf_bbox_empty)
+    );
+
     integer num_errors = 0;
     logic mask [NP];
 
     task automatic drive_frame;
-        integer r, c;
+        drive_frame_gated(1'b0);
+    endtask
+
+    // Drive a frame optionally inserting a 1-cycle tvalid=0 gap every other
+    // accepted pixel. Exercises the shift-chain/accept_d1 invariants under
+    // mid-frame stalls.
+    task automatic drive_frame_gated(input logic insert_gaps);
+        integer r, c, pix_idx;
+        pix_idx = 0;
         for (r = 0; r < V; r = r + 1) begin
             for (c = 0; c < H; c = c + 1) begin
                 drv_tdata  = mask[r*H + c];
@@ -77,6 +153,13 @@ module tb_axis_ccl;
                 drv_tlast  = (c == H-1);
                 drv_tuser  = (r == 0 && c == 0);
                 @(posedge clk);
+                if (insert_gaps && (pix_idx % 2 == 0)) begin
+                    drv_tvalid = 1'b0;
+                    drv_tlast  = 1'b0;
+                    drv_tuser  = 1'b0;
+                    @(posedge clk);
+                end
+                pix_idx = pix_idx + 1;
             end
         end
         drv_tvalid = 1'b0;
@@ -125,10 +208,82 @@ module tb_axis_ccl;
             if (bbox_valid[k]) cnt = cnt + 1;
     endtask
 
+    // Assert that `bbox_valid` does NOT contain a matching bbox in any slot.
+    task automatic assert_bbox_absent(
+        input string  label,
+        input integer exp_min_x, exp_max_x, exp_min_y, exp_max_y
+    );
+        integer k;
+        logic   found;
+        found = 1'b0;
+        for (k = 0; k < N_OUT; k = k + 1) begin
+            if (bbox_valid[k] &&
+                bbox_min_x[k] == exp_min_x && bbox_max_x[k] == exp_max_x &&
+                bbox_min_y[k] == exp_min_y && bbox_max_y[k] == exp_max_y) begin
+                found = 1'b1;
+            end
+        end
+        if (found) begin
+            $display("FAIL %s: bbox (%0d,%0d)-(%0d,%0d) should not be present",
+                     label, exp_min_x, exp_min_y, exp_max_x, exp_max_y);
+            num_errors = num_errors + 1;
+        end else begin
+            $display("PASS %s: filtered bbox absent", label);
+        end
+    endtask
+
+    // Check a specific bbox exists in the MIN_PIX=4 DUT's front buffer.
+    task automatic assert_mp4_bbox_present(
+        input string  label,
+        input integer exp_min_x, exp_max_x, exp_min_y, exp_max_y
+    );
+        integer k;
+        logic   found;
+        found = 1'b0;
+        for (k = 0; k < N_OUT; k = k + 1) begin
+            if (mp4_bbox_valid[k] &&
+                mp4_bbox_min_x[k] == exp_min_x && mp4_bbox_max_x[k] == exp_max_x &&
+                mp4_bbox_min_y[k] == exp_min_y && mp4_bbox_max_y[k] == exp_max_y) begin
+                found = 1'b1;
+            end
+        end
+        if (!found) begin
+            $display("FAIL %s: MIN_PIX=4 bbox (%0d,%0d)-(%0d,%0d) not found",
+                     label, exp_min_x, exp_min_y, exp_max_x, exp_max_y);
+            num_errors = num_errors + 1;
+        end else begin
+            $display("PASS %s: MIN_PIX=4 bbox present", label);
+        end
+    endtask
+
+    task automatic assert_mp4_bbox_absent(
+        input string  label,
+        input integer exp_min_x, exp_max_x, exp_min_y, exp_max_y
+    );
+        integer k;
+        logic   found;
+        found = 1'b0;
+        for (k = 0; k < N_OUT; k = k + 1) begin
+            if (mp4_bbox_valid[k] &&
+                mp4_bbox_min_x[k] == exp_min_x && mp4_bbox_max_x[k] == exp_max_x &&
+                mp4_bbox_min_y[k] == exp_min_y && mp4_bbox_max_y[k] == exp_max_y) begin
+                found = 1'b1;
+            end
+        end
+        if (found) begin
+            $display("FAIL %s: MIN_PIX=4 bbox (%0d,%0d)-(%0d,%0d) should be filtered out",
+                     label, exp_min_x, exp_min_y, exp_max_x, exp_max_y);
+            num_errors = num_errors + 1;
+        end else begin
+            $display("PASS %s: MIN_PIX=4 bbox correctly filtered", label);
+        end
+    endtask
+
     integer i;
 
     initial begin
-        rst_n = 0;
+        rst_n    = 0;
+        pf_rst_n = 0;  // hold priming DUT in reset until T9
         repeat (4) @(posedge clk);
         rst_n = 1;
         repeat (2) @(posedge clk);
@@ -177,20 +332,33 @@ module tb_axis_ccl;
         begin logic to; wait_swap(to); end
         assert_bbox_present("T4", 1, 6, 0, 4);
 
-        // ---- T5: min-size filter. Use MIN_PIX=4; 1-pixel speckle dropped. ----
-        // For this test, re-parametrize a second DUT with MIN_PIX=4.
-        // (Simpler: keep MIN_PIX=1 for T1-T4 but add a second DUT instance with MIN_PIX=4
-        //  — deferred to an enhancement. For now, sanity-check small blob + large blob both present.)
-        // SKIPPED in the minimum cut; see tb TODO.
-
-        // ---- T6: overflow — more disjoint single-pixel blobs than N_LABELS-1=15 ----
-        $display("--- T6: overflow — 20 disjoint single pixels ---");
+        // ---- T5: min-size filter — MIN_COMPONENT_PIXELS=4 DUT. ----
+        // 1-pixel speckle at (0,0) dropped; 2x2 blob at (5,5)-(6,6) survives.
+        $display("--- T5: min-size filter (MIN_PIX=4) ---");
         for (i = 0; i < NP; i = i + 1) mask[i] = 1'b0;
-        // 20 isolated pixels on an 8x8 is impossible (only 64 positions, must not touch 8-connected).
-        // Use a 4-cell-spaced pattern: mask[(2*r)*H + 2*c] for r in 0..3, c in 0..3 = 16 points.
-        for (i = 0; i < 4; i = i + 1)
-            for (integer j = 0; j < 4; j = j + 1)
-                mask[(2*i)*H + 2*j] = 1'b1;   // 16 disjoint single pixels
+        mask[0*H + 0] = 1'b1;                                     // 1-px speckle
+        mask[5*H + 5] = 1'b1; mask[5*H + 6] = 1'b1;
+        mask[6*H + 5] = 1'b1; mask[6*H + 6] = 1'b1;               // 2x2 blob (4 px)
+        drive_frame();
+        begin logic to; wait_swap(to); end  // both DUTs' FSMs complete together
+        assert_mp4_bbox_present("T5 keep",   5, 6, 5, 6);
+        assert_mp4_bbox_absent ("T5 drop",   0, 0, 0, 0);
+
+        // ---- T6: top-K by count — one large blob plus many single pixels ----
+        // The large blob has count=9; singles have count=1. Top-K (N_OUT=4)
+        // must include the large blob. Singles are 2-cell-spaced and
+        // non-adjacent (8-connectivity) to each other or to the big blob.
+        $display("--- T6: 1 large blob + 8 single pixels ---");
+        for (i = 0; i < NP; i = i + 1) mask[i] = 1'b0;
+        // Large 3x3 blob (9 px) at (5,5)-(7,7).
+        for (i = 5; i <= 7; i = i + 1) begin
+            integer c;
+            for (c = 5; c <= 7; c = c + 1) mask[i*H + c] = 1'b1;
+        end
+        // 8 disjoint single pixels in the top-left.
+        mask[0*H + 0] = 1'b1; mask[0*H + 2] = 1'b1; mask[0*H + 4] = 1'b1;
+        mask[2*H + 0] = 1'b1; mask[2*H + 2] = 1'b1; mask[2*H + 4] = 1'b1;
+        mask[4*H + 0] = 1'b1; mask[4*H + 2] = 1'b1;
         drive_frame();
         begin logic to; wait_swap(to); end
         begin
@@ -200,9 +368,10 @@ module tb_axis_ccl;
                 $display("FAIL T6: no bboxes emitted despite many blobs");
                 num_errors = num_errors + 1;
             end else begin
-                $display("PASS T6: overflow did not crash, %0d slots populated", c);
+                $display("T6: %0d slots populated", c);
             end
         end
+        assert_bbox_present("T6 large survives", 5, 7, 5, 7);
 
         // ---- T7: back-to-back frames, second must not inherit first ----
         $display("--- T7: back-to-back frames ---");
@@ -229,6 +398,60 @@ module tb_axis_ccl;
             if (leak) begin
                 $display("FAIL T7: previous frame's bbox leaked into current");
                 num_errors = num_errors + 1;
+            end
+        end
+
+        // ---- T8: mid-frame tvalid gaps must not corrupt labeling ----
+        $display("--- T8: mid-frame strobe gaps ---");
+        for (i = 0; i < NP; i = i + 1) mask[i] = 1'b0;
+        // Same pattern as T1: 3x3 rectangle at rows 2..4, cols 3..5.
+        for (i = 2; i <= 4; i = i + 1) begin
+            integer c;
+            for (c = 3; c <= 5; c = c + 1) mask[i*H + c] = 1'b1;
+        end
+        drive_frame_gated(1'b1);
+        begin logic to; wait_swap(to); end
+        assert_bbox_present("T8 gated", 3, 5, 2, 4);
+
+        // ---- T9: priming — PRIME_FRAMES=1 DUT ----
+        // u_dut_prime1 has been held in reset so frame 0 after pf_rst_n rises
+        // is the first frame it sees. Frame 0 PHASE_SWAP must skip the front
+        // update; frame 1 must commit.
+        $display("--- T9: PRIME_FRAMES=1 suppresses first frame ---");
+        pf_rst_n = 1'b1;
+        repeat (2) @(posedge clk);
+        for (i = 0; i < NP; i = i + 1) mask[i] = 1'b0;
+        for (i = 1; i <= 3; i = i + 1) begin
+            integer c;
+            for (c = 1; c <= 3; c = c + 1) mask[i*H + c] = 1'b1;  // 3x3 blob
+        end
+        drive_frame();                          // frame A (frame 0 for all DUTs)
+        begin logic to; wait_swap(to); end      // wait for first swap pulse
+        // After frame 0 swap: main DUT (PRIME_FRAMES=0) has bbox; priming DUT does not.
+        if (pf_bbox_valid != '0) begin
+            $display("FAIL T9a: priming DUT emitted bbox on frame 0 (valid=%b)", pf_bbox_valid);
+            num_errors = num_errors + 1;
+        end else begin
+            $display("PASS T9a: priming DUT front buffer empty on frame 0");
+        end
+        // Second frame, same mask. Priming DUT should now emit the bbox.
+        drive_frame();
+        begin logic to; wait_swap(to); end
+        begin
+            integer k;
+            logic   found;
+            found = 1'b0;
+            for (k = 0; k < N_OUT; k = k + 1) begin
+                if (pf_bbox_valid[k] &&
+                    pf_bbox_min_x[k] == 1 && pf_bbox_max_x[k] == 3 &&
+                    pf_bbox_min_y[k] == 1 && pf_bbox_max_y[k] == 3)
+                    found = 1'b1;
+            end
+            if (!found) begin
+                $display("FAIL T9b: priming DUT did not emit real bbox on frame 1");
+                num_errors = num_errors + 1;
+            end else begin
+                $display("PASS T9b: priming DUT emits real bbox after priming");
             end
         end
 

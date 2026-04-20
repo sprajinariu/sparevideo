@@ -43,7 +43,7 @@
 
 The module replaces the earlier single-global-bbox reducer (`axis_bbox_reduce`). Two people walking in opposite corners now produce two distinct bboxes instead of one frame-spanning rectangle.
 
-It is a pure sink on its AXIS port — `tready` is wired high. All multi-cycle work (path compression, accumulator fold, top-N selection, reset) is scheduled during the vertical-blanking interval. `axis_ccl` does **not** perform morphological closing, temporal merging, or cross-frame object association; it has no dependency on the shared Y-ref RAM used by `axis_motion_detect`.
+It is nearly a pure sink on its AXIS port: `tready` is asserted during streaming (`PHASE_IDLE`) and deasserted only while the EOF resolution FSM is running (`PHASE_A..PHASE_SWAP`). All multi-cycle work (path compression, accumulator fold, top-N selection, reset) is scheduled during the vertical-blanking interval, and the tready deassert is both the structural invariant that makes per-pixel writes gatable on `PHASE_IDLE` and the back-pressure that stalls upstream if vblank is too short. `axis_ccl` does **not** perform morphological closing, temporal merging, or cross-frame object association; it has no dependency on the shared Y-ref RAM used by `axis_motion_detect`.
 
 ---
 
@@ -84,7 +84,7 @@ sparevideo_top
 | **AXI4-Stream mask input** | | | |
 | `s_axis_tdata_i` | input | 1 | Mask bit (1 = foreground). |
 | `s_axis_tvalid_i` | input | 1 | Beat valid. |
-| `s_axis_tready_o` | output | 1 | Constant `1'b1` — module is a pure sink. |
+| `s_axis_tready_o` | output | 1 | `(phase == PHASE_IDLE)` — low during the EOF resolution FSM so upstream stalls instead of feeding pixels that would bypass the PHASE_IDLE write gate. |
 | `s_axis_tlast_i` | input | 1 | End-of-line. |
 | `s_axis_tuser_i` | input | 1 | Start-of-frame marker on the first pixel of each frame. |
 | **Sideband output (packed arrays, `N_OUT` slots)** | | | |
@@ -94,9 +94,9 @@ sparevideo_top
 | `bbox_min_y_o` | output | `N_OUT × ROW_W` | Per-slot min y. |
 | `bbox_max_y_o` | output | `N_OUT × ROW_W` | Per-slot max y. |
 | `bbox_swap_o` | output | 1 | 1-cycle strobe pulsed at PHASE_SWAP — indicates a new frame's bboxes are now visible on the front buffer. |
-| `bbox_empty_o` | output | 1 | `AND` of `bbox_valid_o == '0` — convenience signal for downstream. |
+| `bbox_empty_o` | output | 1 | Asserted when no slot is valid (i.e. `bbox_valid_o == '0`) — convenience signal for downstream. |
 
-Since `s_axis_tready_o` is tied high, the multi-consumer broadcast in `sparevideo_top` must feed `axis_ccl` a strobe that is true only on globally-accepted beats (`msk_tvalid && msk_tready`), not raw `msk_tvalid`. Without this, any cycle the mask stream is stalled by the other consumer (the overlay) would be double-counted by the internal col/row counters. See `sparevideo_top.sv` `ccl_beat_strobe`.
+`s_axis_tready_o` is high during streaming and low during the EOF resolution FSM (§6.7). In the multi-consumer broadcast in `sparevideo_top` (mask display and CCL_BBOX modes) the mask stream is consumed by both `axis_ccl` and a passthrough path; the top-level AND-combines the tready signals so the upstream stalls when *either* consumer is not ready. `axis_ccl` is additionally fed a `ccl_beat_strobe = msk_tvalid && msk_tready` as its `tvalid` so it advances exactly once per globally-accepted beat, rather than once per raw-upstream beat — without this, cycles stalled by the other consumer would be double-counted by the internal col/row counters. See `sparevideo_top.sv` `ccl_beat_strobe`.
 
 ---
 
@@ -383,7 +383,9 @@ During the priming window, back-buffer data is computed and then *discarded* —
 | SWAP | 1 | — |
 | **Total** | — | **~1,280 worst case** |
 
-Vblank at real VGA 640×480 @ 60 Hz on a 100 MHz DSP clock is ~144 kcycles — ~100× headroom. The project TB uses `V_BLANK = 16` lines (~21 kcycles at 320×240) — ~16× headroom.
+Vblank at real VGA 640×480 @ 60 Hz on a 100 MHz DSP clock is ~144 kcycles — ~100× headroom. The project TB uses `V_BLANK_TOTAL = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH = 20` lines at 320×240 with `H_TOTAL ≈ 336` — ~6.7 kcycles, ~5× headroom.
+
+This headroom is a **correctness** constraint, not just a throughput one: the per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are gated on `phase == PHASE_IDLE`. If a pixel is accepted while the FSM is still in any of `PHASE_A..PHASE_SWAP`, its label/accumulator update is silently dropped, while `line_buf`, `w_label`, and `col`/`row` still advance — corrupting the labeling state when streaming resumes. The RTL defends against this two ways: (a) `s_axis_tready_o = (phase == PHASE_IDLE)` structurally back-pressures the upstream for the FSM duration; (b) a Verilator-only SVA `assert_no_accept_during_eof_fsm` traps any handshake that sneaks through. Integrators must still size their inter-frame idle window to exceed the cycle budget above — the FIFOs in front of `axis_ccl` have finite depth and will eventually reflect the stall upstream.
 
 ---
 
@@ -396,7 +398,7 @@ Vblank at real VGA 640×480 @ 60 Hz on a 100 MHz DSP clock is ~144 kcycles — ~
 | `bbox_swap_o` pulse → `bbox_*_o` updated | 0 cycles (`bbox_swap_o` fires on the same cycle the front buffer updates) |
 | Steady-state mask throughput | 1 pixel / cycle |
 
-`tready` is constant `1'b1`; there is no back-pressure path.
+`tready` is asserted whenever `phase == PHASE_IDLE` (the streaming phase). During `PHASE_A..PHASE_SWAP` (the EOF resolution FSM) `tready` is deasserted so in-flight pixels stall upstream rather than being silently misprocessed. See §6.7 for the cycle budget that determines the worst-case stall length.
 
 ---
 
@@ -414,7 +416,7 @@ Module parameter defaults reference the package constants. Override at instantia
 ## 9. Known Limitations
 
 - **Single equiv write per pixel can over-split vs. full union-find.** On noisy masks, two labels that would eventually unify via a third label may not merge within one frame if the chains haven't been built up by raster order. This is an accepted spec trade-off: the 1W port budget is tight, and over-splitting is safer than mis-merging. The Python model matches this exactly, so RTL and model agree bit-for-bit.
-- **`MAX_CHAIN_DEPTH = 8` is a hard bound.** Chains deeper than 8 leave tail labels referencing a non-root. Their pixels form their own accumulator entry and either survive on their own or are dropped by `MIN_COMPONENT_PIXELS`.
+- **`MAX_CHAIN_DEPTH = 8` is a hard bound.** Chains deeper than 8 leave tail labels referencing a *non-root* (Phase A writes `equiv[L] ← chase_root` even when the chase terminates on the depth limit rather than on a fixed point). Phase B then folds `acc[L]` into `acc[equiv[L]]`, which is itself a non-root, so the component ends up split between the root accumulator and the partially-chased midpoint. On natural masks, observed chain depth is small (≤3) and this has no visible effect. If `N_LABELS_INT` is raised substantially without a proportional bump to `MAX_CHAIN_DEPTH`, the silent-split behavior can degrade top-K selection — the split halves compete against each other for slots rather than being unified.
 - **Label 0 overflow can produce a catch-all bbox.** When `N_LABELS_INT` is exhausted mid-frame, subsequent new components pool into label 0. If the pool exceeds `MIN_COMPONENT_PIXELS`, Phase C emits a spurious union-of-everything bbox. Mitigation: raise `N_LABELS_INT`; or add label recycling (future work).
 - **Homogeneous object fragmentation is inherited from the mask.** EMA-based motion detection marks only leading/trailing edges of solid-color objects. CCL correctly labels these as separate components — there is no within-frame way to reunite them. Follow-ups (morphological closing, bbox-merge post-pass) are documented in `docs/plans/old/2026-04-20_block4-ccl.md`.
 - **No cross-frame object identity.** Frame N's slot 3 has no relationship to frame N+1's slot 3 beyond "largest first". Persistent IDs require a separate tracker stage.

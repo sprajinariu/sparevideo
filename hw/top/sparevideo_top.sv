@@ -309,10 +309,12 @@ module sparevideo_top #(
                       ? (proc_tready && bbox_msk_tready)
                       : bbox_msk_tready;
 
-    // axis_ccl is always ready (bbox_msk_tready = 1'b1) but in multi-consumer
-    // modes the upstream holds beats across cycles when proc_tready=0. Feed
-    // axis_ccl the actual global-handshake strobe (tvalid && tready) so it
-    // advances exactly once per accepted beat.
+    // axis_ccl asserts bbox_msk_tready during streaming and deasserts it only
+    // while its EOF resolution FSM is active (vblank). In multi-consumer
+    // modes the upstream may also hold beats across cycles when proc_tready=0.
+    // Feed axis_ccl the global-handshake strobe (tvalid && tready) as its
+    // tvalid so it advances exactly once per accepted beat, regardless of
+    // which consumer gated the stall.
     logic ccl_beat_strobe;
     assign ccl_beat_strobe = msk_tvalid && msk_tready;
 

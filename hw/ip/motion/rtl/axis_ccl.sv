@@ -6,8 +6,8 @@
 // exports up to N_OUT distinct bboxes via a double-buffered sideband.
 //
 // Output sideband: packed arrays of N_OUT {min_x, max_x, min_y, max_y, valid}.
-// A 1-cycle `bbox_valid_o` pulse indicates the swap has occurred; `bbox_empty_o`
-// is the AND of all per-slot valid bits being 0.
+// A 1-cycle `bbox_swap_o` pulse indicates the front buffer has been updated;
+// `bbox_empty_o` is asserted when no slot is valid (i.e. `bbox_valid_o == '0`).
 //
 // See docs/specs/axis_ccl-arch.md for the algorithm, EOF FSM phases,
 // cycle budget, and memory layout.
@@ -41,8 +41,8 @@ module axis_ccl #(
     output logic                                   bbox_empty_o    // no valid slots
 );
 
-    // Always ready — pure sink, no backpressure on the mask stream.
-    assign s_axis_tready_o = 1'b1;
+    // Backpressure during the EOF resolution FSM — see the tready assign
+    // below the `phase_t` declaration.
 
     // ---- Parameter widths ----
     localparam int LABEL_W   = $clog2(N_LABELS_INT);
@@ -311,6 +311,17 @@ module axis_ccl #(
     } phase_t;
     phase_t phase;
 
+    // Deassert tready while the EOF resolution FSM is active. The per-pixel
+    // writes to equiv[], acc_*[], and next_free below are gated on
+    // PHASE_IDLE, so accepting beats while phase != PHASE_IDLE would
+    // silently drop the label updates while still advancing line_buf,
+    // w_label, and col/row — corrupting the labeling state when streaming
+    // resumes. Instead we stall the upstream for the duration of the FSM
+    // (~1,300 cycles worst case); the fork + motion_detect propagate the
+    // stall and the input async FIFO absorbs it during vblank. The
+    // `assert_no_accept_during_eof_fsm` SVA is a regression trip-wire.
+    assign s_axis_tready_o = (phase == PHASE_IDLE);
+
     // Walker for labels 1..N_LABELS_INT-1 (fits in LABEL_W bits).
     logic [LABEL_W-1:0] lbl_idx;
     logic [$clog2(MAX_CHAIN_DEPTH+1)-1:0] chase_cnt;
@@ -560,5 +571,20 @@ module axis_ccl #(
             endcase
         end
     end
+
+    // -----------------------------------------------------------------
+    // SVA checker (Verilator only)
+    // -----------------------------------------------------------------
+`ifdef VERILATOR
+    // No input beat may be accepted while the EOF resolution FSM is active.
+    // The tready deassert above enforces this structurally; this assertion
+    // is a trip-wire that will fire if the tready gate is ever removed or
+    // if a downstream change lets a beat slip through during PHASE_A..SWAP.
+    assert_no_accept_during_eof_fsm: assert property (
+        @(posedge clk_i) disable iff (!rst_n_i)
+            !(s_axis_tvalid_i && s_axis_tready_o && (phase != PHASE_IDLE))
+    ) else $error("axis_ccl: input beat accepted during EOF FSM (phase=%0d) — V_BLANK insufficient or tready gate missing",
+                  phase);
+`endif
 
 endmodule
