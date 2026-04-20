@@ -84,6 +84,12 @@ module axis_motion_detect #(
 
     localparam int IDX_W = $clog2(H_ACTIVE * V_ACTIVE);
 
+    // s_axis_tlast_i is kept for AXIS port symmetry but not consumed here —
+    // output tlast is regenerated from out_col/out_row counters. Sink it into
+    // an unused net so lint stays clean without a waiver.
+    logic _unused_tlast;
+    assign _unused_tlast = s_axis_tlast_i;
+
     // ---- Single-output pipeline control ----
     // The output valid signal comes directly from the Gaussian pre-filter's
     // valid_o (GAUSS_EN=1) or from a 1-cycle delayed accept (GAUSS_EN=0).

@@ -9,7 +9,7 @@
 //
 // Architecture:
 //   - Two line buffers (simple dual-port, depth = H_ACTIVE, width = 8) hold
-//     rows P_r - 1 (LB0) and P_r (LB1) relative to the output pixel P_r. The
+//     rows P_r - 1 (lb_top) and P_r (lb_mid) relative to the output pixel P_r.
 //     live input feeds row P_r + 1.
 //   - Column shift registers (2 FFs per row, 6 FFs total) provide c-1, c, c+1 taps.
 //   - Edge handling: border pixel replication at all 4 borders.
@@ -26,15 +26,20 @@
 //
 // References (mainstream streaming 2D-convolution conventions):
 //   - MathWorks Vision HDL Toolbox: floor(K_h/2) = 1 line of latency, edge
-//     padding with blanking-based drain. Min H-blank = 2*K_w = 6 cycles,
-//     min V-blank = K_h = 3 lines.
+//     padding with blanking-based drain. Their conservative external-spec
+//     minimum is H-blank >= 2*K_w = 6 cycles and V-blank >= K_h = 3 lines.
 //   - Xilinx Vitis Vision Filter2D / Window2D: centered SOP with line buffer
 //     depth K_v - 1 and a K_v x K_w window buffer.
 //
+// This implementation's true blanking requirement is tighter than MathWorks:
+//   - Min H-blank: 1 cycle per row (absorbs the per-row phantom cycle).
+//   - Min V-blank: H_ACTIVE + 1 cycles total (absorbs the phantom-row drain).
+//   - If blanking is unavailable, busy_o asserts to stall the upstream
+//     tready for exactly as many cycles as needed (see tb_axis_gauss3x3
+//     Test 10, which runs with zero inter-frame blanking).
+//
 // Latency: H_ACTIVE + 3 cycles from first valid_i to first valid_o. Throughput
-// is 1 pixel/cycle after fill. Steady-state phantom drain is 1 cycle per row
-// (absorbed in H_BLANK >= 6) plus H_ACTIVE + 1 cycles per frame (absorbed in
-// V_BLANK >= 3 lines).
+// is 1 pixel/cycle after fill.
 //
 // This is a synchronous pipeline element, not a full AXIS stage. The parent
 // module (axis_motion_detect) controls handshake via valid_i / stall_i and
@@ -129,17 +134,18 @@ module axis_gauss3x3 #(
     end
 
     // ---- Line buffers (simple dual-port BRAM) ----
-    // LB0 holds row r-2, LB1 holds row r-1 where r is the current scan row.
+    // lb_top holds row r-2 (top of window), lb_mid holds row r-1 (middle),
+    // where r is the current scan row. The live input carries row r (bottom).
     // Reads: on any advance where cur_col is in-range (skip phantom-col).
     // Writes: on real_pixel only (no live y_i on phantom row or phantom col).
 
-    logic [7:0] lb0_mem [H_ACTIVE];
-    logic [7:0] lb1_mem [H_ACTIVE];
+    logic [7:0] lb_top_mem [H_ACTIVE];
+    logic [7:0] lb_mid_mem [H_ACTIVE];
 
-    logic [7:0] lb0_rd, lb1_rd;
+    logic [7:0] lb_top_rd, lb_mid_rd;
 
     // cur_col can equal H_ACTIVE on a phantom-col cycle; gate the read to avoid
-    // out-of-range addressing. Holding lb0_rd / lb1_rd naturally replicates the
+    // out-of-range addressing. Holding lb_top_rd / lb_mid_rd naturally replicates the
     // right edge (rightmost shift-register slot mirrors the middle one).
     logic lb_active_col;
     assign lb_active_col = (cur_col != (COL_W)'(H_ACTIVE));
@@ -147,12 +153,12 @@ module axis_gauss3x3 #(
     always_ff @(posedge clk_i) begin
         if (!stall_i) begin
             if (advance && lb_active_col) begin
-                lb0_rd <= lb0_mem[cur_col];
-                lb1_rd <= lb1_mem[cur_col];
+                lb_top_rd <= lb_top_mem[cur_col];
+                lb_mid_rd <= lb_mid_mem[cur_col];
             end
             if (real_pixel) begin
-                lb0_mem[cur_col] <= lb1_mem[cur_col];
-                lb1_mem[cur_col] <= y_i;
+                lb_top_mem[cur_col] <= lb_mid_mem[cur_col];
+                lb_mid_mem[cur_col] <= y_i;
             end
         end
     end
@@ -191,14 +197,14 @@ module axis_gauss3x3 #(
 
     always_ff @(posedge clk_i) begin
         if (!stall_i && valid_d1) begin
-            r2_c2 <= r2_c1; r2_c1 <= lb0_rd;
-            r1_c2 <= r1_c1; r1_c1 <= lb1_rd;
-            r0_c2 <= r0_c1; r0_c1 <= y_d1;
+            r2_c1 <= lb_top_rd; r2_c2 <= r2_c1;
+            r1_c1 <= lb_mid_rd; r1_c2 <= r1_c1;
+            r0_c1 <= y_d1;      r0_c2 <= r0_c1;
         end
     end
 
-    assign r2_c0 = lb0_rd;
-    assign r1_c0 = lb1_rd;
+    assign r2_c0 = lb_top_rd;
+    assign r1_c0 = lb_mid_rd;
     assign r0_c0 = y_d1;
 
     // ---- Edge replication muxing ----
@@ -208,7 +214,7 @@ module axis_gauss3x3 #(
     //   - row_d1 == V_ACTIVE   (phantom row, last real output row: bottom is off-frame)
     //   - col_d1 == 1          (first real col: left of window is off-frame;
     //                           also masks row-transition contamination in r*_c2)
-    // col_d1 == H_ACTIVE (phantom col) needs NO mux: lb0_rd/lb1_rd/y_d1 are
+    // col_d1 == H_ACTIVE (phantom col) needs NO mux: lb_top_rd/lb_mid_rd/y_d1 are
     // held from the previous cycle, so r*_c0 already equals r*_c1 (middle).
 
     logic [7:0] win [3][3];  // win[row][col], [0][0]=top-left
