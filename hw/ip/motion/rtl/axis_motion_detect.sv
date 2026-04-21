@@ -279,9 +279,9 @@ module axis_motion_detect #(
 
     // ---- Motion core (combinational: threshold + EMA, two rates) ----
     logic       mask_bit;
+    logic       raw_motion;
     logic [7:0] ema_update;
     logic [7:0] ema_update_slow;
-    logic       raw_motion;
 
     motion_core #(
         .THRESH           (THRESH),
@@ -292,17 +292,10 @@ module axis_motion_detect #(
         .y_bg_i             (mem_rd_data_i),
         .primed_i           (primed),
         .mask_bit_o         (mask_bit),
+        .raw_motion_o       (raw_motion),
         .ema_update_o       (ema_update),
         .ema_update_slow_o  (ema_update_slow)
     );
-
-    // raw_motion: recompute locally (same logic motion_core uses, but without
-    // the primed gate) so the wrapper can select between the two EMA update
-    // sources based on the threshold decision alone.
-    logic [7:0] raw_diff;
-    assign raw_diff   = (y_smooth > mem_rd_data_i) ? (y_smooth - mem_rd_data_i)
-                                                   : (mem_rd_data_i - y_smooth);
-    assign raw_motion = (raw_diff > THRESH[7:0]);
 
     // ---- Memory write-back: priming (hard-init) / motion (slow EMA) / non-motion (fast EMA) ----
     // Fire on beat_done so each accepted output writes exactly once.

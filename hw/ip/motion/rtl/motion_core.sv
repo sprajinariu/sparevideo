@@ -20,18 +20,18 @@ module motion_core #(
     input  logic       primed_i,           // 1 = frame >= 1; 0 = priming frame 0
 
     output logic       mask_bit_o,         // 1 = motion detected (gated by primed_i)
+    output logic       raw_motion_o,       // 1 = motion, NOT gated (for wrapper's bg mux)
     output logic [7:0] ema_update_o,       // bg + (delta >>> ALPHA_SHIFT)      — non-motion branch
     output logic [7:0] ema_update_slow_o   // bg + (delta >>> ALPHA_SHIFT_SLOW) — motion branch
 );
 
     // ---- Motion comparison (gated by primed_i) ----
     logic [7:0] diff;
-    logic       raw_motion;
 
-    assign diff       = (y_cur_i > y_bg_i) ? (y_cur_i - y_bg_i)
-                                            : (y_bg_i - y_cur_i);
-    assign raw_motion = (diff > THRESH[7:0]);
-    assign mask_bit_o = primed_i && raw_motion;
+    assign diff         = (y_cur_i > y_bg_i) ? (y_cur_i - y_bg_i)
+                                              : (y_bg_i - y_cur_i);
+    assign raw_motion_o = (diff > THRESH[7:0]);
+    assign mask_bit_o   = primed_i && raw_motion_o;
 
     // ---- EMA background update — shared subtract, two parallel shifts ----
     logic signed [8:0] ema_delta;

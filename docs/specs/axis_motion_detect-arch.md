@@ -274,19 +274,25 @@ Y_cur    = rgb2ycrcb(R, G, B).y       // 1-cycle pipeline inside rgb2ycrcb
 Y_smooth = gauss3x3(Y_cur)            // 2-cycle pipeline (GAUSS_EN=1) or bypass (GAUSS_EN=0)
 bg       = mem_rd_data_i              // RAM read, 1-cycle latency after mem_rd_addr_o
 diff     = abs(Y_smooth − bg)
-mask     = (diff > THRESH)
+raw_motion = (diff > THRESH)
+mask     = primed ? raw_motion : 1'b0 // frame 0 mask suppressed during priming
 
-// EMA background update — write smoothed estimate back to RAM
-delta      = Y_smooth − bg            // signed 9-bit
-ema_step   = delta >>> ALPHA_SHIFT    // arithmetic right-shift (sign-preserving)
-ema_update = bg + ema_step[7:0]       // new background value
+// Two-rate EMA update — shared subtract, two arithmetic right-shifts
+delta             = Y_smooth − bg                   // signed 9-bit
+ema_step_fast     = delta >>> ALPHA_SHIFT           // non-motion rate
+ema_step_slow     = delta >>> ALPHA_SHIFT_SLOW      // motion rate
+ema_update        = bg + ema_step_fast[7:0]
+ema_update_slow   = bg + ema_step_slow[7:0]
+
+// 3:1 write-back mux selects source per pixel
+bg_next = !primed     ? Y_smooth         // frame-0 hard init
+        :  raw_motion ? ema_update_slow  // motion pixel → slow rate
+        :               ema_update       // non-motion pixel → fast rate
 
 mem_wr_addr_o = RGN_BASE + pix_addr
-mem_wr_data_o = ema_update            // EMA-smoothed background, not raw Y_cur
-mem_wr_en_o   = tvalid && tready      // only on actual acceptance
+mem_wr_data_o = bg_next
+mem_wr_en_o   = tvalid && tready         // only on actual acceptance
 ```
-
-When `ALPHA_SHIFT = 0`, `ema_step = delta` and `ema_update = Y_cur`, so the module reduces to raw previous-frame write-back.
 
 The remainder of this section splits along the same per-algorithm axis as §4, then covers the shared infrastructure (address counter, RAM discipline, pipeline register chain, stall handling, and resource cost).
 
@@ -309,12 +315,13 @@ The 1-cycle register delay aligns `valid_i`/`sof_i` with `y_cur` emerging from `
 The threshold comparison lives in `motion_core` (`hw/ip/motion/rtl/`), a pure-combinational module shared with the EMA update. The mask path is three combinational operators:
 
 ```systemverilog
-// motion_core — mask path
-logic [7:0] diff       = abs(y_cur_i - y_bg_i);   // 8-bit subtract + absolute value
-logic       mask_bit_o = (diff > THRESH);         // 8-bit unsigned compare
+// motion_core — mask path (gated by primed_i so frame 0 mask is always 0)
+logic [7:0] diff         = abs(y_cur_i - y_bg_i);   // 8-bit subtract + absolute value
+logic       raw_motion_o = (diff > THRESH);         // ungated threshold compare
+logic       mask_bit_o   = primed_i && raw_motion_o;
 ```
 
-`y_cur_i` is driven by `y_smooth` (post-Gaussian when `GAUSS_EN=1`, raw `y_cur` otherwise). `y_bg_i` is driven directly from `mem_rd_data_i`. Evaluation happens in the pipeline stage where both values are simultaneously valid; the result `mask_bit_o` is registered once more as it leaves the module, aligned with the sideband `tlast`/`tuser` chain so the AXIS output stays well-formed.
+`y_cur_i` is driven by `y_smooth` (post-Gaussian when `GAUSS_EN=1`, raw `y_cur` otherwise). `y_bg_i` is driven directly from `mem_rd_data_i`. Evaluation happens in the pipeline stage where both values are simultaneously valid; the gated result `mask_bit_o` is registered once more as it leaves the module, aligned with the sideband `tlast`/`tuser` chain so the AXIS output stays well-formed. `raw_motion_o` is also exposed (ungated) so `axis_motion_detect` can drive the 3:1 `bg_next` write-back mux without duplicating the threshold compare.
 
 ### 5.4 Temporal background model implementation — EMA
 
