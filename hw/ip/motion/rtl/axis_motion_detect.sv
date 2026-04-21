@@ -49,13 +49,14 @@
 // memory port and connects to the shared `ram` port A at the top level.
 
 module axis_motion_detect #(
-    parameter int H_ACTIVE    = 320,
-    parameter int V_ACTIVE    = 240,
-    parameter int THRESH      = 16,
-    parameter int ALPHA_SHIFT = 3,    // EMA alpha = 1 / (1 << ALPHA_SHIFT), default 1/8
-    parameter int GAUSS_EN    = 1,    // 1 = Gaussian pre-filter enabled, 0 = bypass (raw Y)
-    parameter int RGN_BASE    = 0,
-    parameter int RGN_SIZE    = H_ACTIVE * V_ACTIVE
+    parameter int H_ACTIVE         = 320,
+    parameter int V_ACTIVE         = 240,
+    parameter int THRESH           = 16,
+    parameter int ALPHA_SHIFT      = 3,    // alpha = 1/(1 << ALPHA_SHIFT), default 1/8 — non-motion rate
+    parameter int ALPHA_SHIFT_SLOW = 6,    // alpha = 1/(1 << ALPHA_SHIFT_SLOW), default 1/64 — motion rate
+    parameter int GAUSS_EN         = 1,    // 1 = Gaussian pre-filter enabled, 0 = bypass (raw Y)
+    parameter int RGN_BASE         = 0,
+    parameter int RGN_SIZE         = H_ACTIVE * V_ACTIVE
 ) (
     input  logic        clk_i,
     input  logic        rst_n_i,
@@ -261,22 +262,60 @@ module axis_motion_detect #(
 
     assign mem_rd_addr_o = ($bits(mem_rd_addr_o))'(RGN_BASE) + rd_addr_next;
 
-    // ---- Motion core (combinational: threshold + EMA) ----
+    // ---- Priming flag: latches on end_of_frame of frame 0, held thereafter. ----
+    // While primed==0, the write-back path stores y_smooth directly (hard-init)
+    // and mask_bit is forced to 0 inside motion_core.
+    logic primed;
+    logic beat_done_eof;
+
+    assign beat_done_eof = pipe_valid && !pipe_stall && end_of_frame;
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i)
+            primed <= 1'b0;
+        else if (beat_done_eof)
+            primed <= 1'b1;
+    end
+
+    // ---- Motion core (combinational: threshold + EMA, two rates) ----
     logic       mask_bit;
     logic [7:0] ema_update;
+    logic [7:0] ema_update_slow;
+    logic       raw_motion;
 
     motion_core #(
-        .THRESH      (THRESH),
-        .ALPHA_SHIFT (ALPHA_SHIFT)
+        .THRESH           (THRESH),
+        .ALPHA_SHIFT      (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW)
     ) u_core (
-        .y_cur_i      (y_smooth),   // smoothed Y when GAUSS_EN=1, raw Y when 0
-        .y_bg_i       (mem_rd_data_i),
-        .mask_bit_o   (mask_bit),
-        .ema_update_o (ema_update)
+        .y_cur_i            (y_smooth),
+        .y_bg_i             (mem_rd_data_i),
+        .primed_i           (primed),
+        .mask_bit_o         (mask_bit),
+        .ema_update_o       (ema_update),
+        .ema_update_slow_o  (ema_update_slow)
     );
 
-    // ---- Memory write-back: store EMA-updated background ----
+    // raw_motion: recompute locally (same logic motion_core uses, but without
+    // the primed gate) so the wrapper can select between the two EMA update
+    // sources based on the threshold decision alone.
+    logic [7:0] raw_diff;
+    assign raw_diff   = (y_smooth > mem_rd_data_i) ? (y_smooth - mem_rd_data_i)
+                                                   : (mem_rd_data_i - y_smooth);
+    assign raw_motion = (raw_diff > THRESH[7:0]);
+
+    // ---- Memory write-back: priming (hard-init) / motion (slow EMA) / non-motion (fast EMA) ----
     // Fire on beat_done so each accepted output writes exactly once.
+    logic [7:0] bg_next;
+    always_comb begin
+        if (!primed)
+            bg_next = y_smooth;        // frame-0 hard-init
+        else if (raw_motion)
+            bg_next = ema_update_slow; // motion pixel → slow rate
+        else
+            bg_next = ema_update;      // non-motion pixel → fast rate
+    end
+
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
             mem_wr_en_o   <= 1'b0;
@@ -285,7 +324,7 @@ module axis_motion_detect #(
         end else begin
             mem_wr_en_o   <= beat_done;
             mem_wr_addr_o <= ($bits(mem_wr_addr_o))'(RGN_BASE) + out_addr;
-            mem_wr_data_o <= ema_update;
+            mem_wr_data_o <= bg_next;
         end
     end
 

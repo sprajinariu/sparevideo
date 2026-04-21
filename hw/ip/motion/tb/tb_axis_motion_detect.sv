@@ -5,8 +5,8 @@
 //   test-ip-motion-detect-gauss — GAUSS_EN=1 (Gaussian pre-filter on Y)
 //
 // Tests (in order):
-//   Frame 0 — RAM zero-init → golden mask per pixel
-//   Frame 1 — same pixels, EMA-updated y_prev → golden mask check, RAM EMA verify
+//   Frame 0 — PRIMING: mask forced to 0, bg hard-inited to Y_eff(frame_pixels); RAM check
+//   Frame 1 — same pixels after priming → all-zero mask (bg matches); RAM EMA verify
 //   Frame 2 — mixed-motion: pixels crafted for threshold boundary vs EMA y_prev
 //   Frame 3 — same mixed-motion under msk consumer stall → verifies stall correctness
 //   Frame 4 — bright-block pattern → spatial variation for Gaussian edge smoothing
@@ -16,7 +16,9 @@
 // When GAUSS_EN=1, the golden model applies a 3x3 Gaussian with causal streaming
 // offset (kernel centered at (r-1, c-1)) before mask/EMA, matching the RTL.
 //
-// EMA background model: y_prev = y_prev + ((y_cur - y_prev) >>> ALPHA_SHIFT)
+// EMA background model (frame 1+):
+//   non-motion pixel: y_prev += (y_cur - y_prev) >>> ALPHA_SHIFT      (fast rate)
+//   motion pixel:     y_prev += (y_cur - y_prev) >>> ALPHA_SHIFT_SLOW  (slow rate)
 //
 // Conventions: drv_* intermediaries, posedge register, $display/$fatal.
 
@@ -29,7 +31,8 @@ module tb_axis_motion_detect #(
     localparam int H           = 16;
     localparam int V           = 8;
     localparam int THRESH      = 16;
-    localparam int ALPHA_SHIFT = 3;
+    localparam int ALPHA_SHIFT      = 3;
+    localparam int ALPHA_SHIFT_SLOW = 6;
     localparam int NUM_PIX     = H * V;
     localparam int CLK_PERIOD  = 10;
 
@@ -115,13 +118,14 @@ module tb_axis_motion_detect #(
 
     // ---- DUT ----
     axis_motion_detect #(
-        .H_ACTIVE    (H),
-        .V_ACTIVE    (V),
-        .THRESH      (THRESH),
-        .ALPHA_SHIFT (ALPHA_SHIFT),
-        .GAUSS_EN    (GAUSS_EN),
-        .RGN_BASE    (0),
-        .RGN_SIZE    (NUM_PIX)
+        .H_ACTIVE         (H),
+        .V_ACTIVE         (V),
+        .THRESH           (THRESH),
+        .ALPHA_SHIFT      (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW),
+        .GAUSS_EN         (GAUSS_EN),
+        .RGN_BASE         (0),
+        .RGN_SIZE         (NUM_PIX)
     ) u_dut (
         .clk_i               (clk),
         .rst_n_i             (rst_n),
@@ -162,6 +166,11 @@ module tb_axis_motion_detect #(
     // y_prev: Y8 values from the previously driven frame (updated by TB).
     // Stored as 1D flat array, but for Gaussian computation we index as [r*H+c].
     logic [7:0]  y_prev [NUM_PIX];
+
+    // TB-side tracking of the DUT's internal `primed` flag.
+    // primed starts 0, flips to 1 after the last beat of frame 0 is accepted.
+    // The TB mirrors the RTL by updating its golden model identically.
+    logic tb_primed = 1'b0;
 
     // ---- Capture arrays ----
     logic        cap_msk [NUM_PIX];
@@ -250,16 +259,18 @@ module tb_axis_motion_detect #(
         logic exp_msk;
         compute_y_eff(pixels);
         for (i = 0; i < NUM_PIX; i = i + 1) begin
-            yc      = y_eff[i];
-            diff    = (yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc);
-            exp_msk = (diff > THRESH[7:0]);
+            yc   = y_eff[i];
+            diff = (yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc);
+            // During priming (frame 0, tb_primed still 0 when this is called),
+            // mask is forced to 0. After priming, it's the threshold compare.
+            exp_msk = tb_primed ? (diff > THRESH[7:0]) : 1'b0;
             if (cap_msk[i] !== exp_msk) begin
-                $display("FAIL %s msk px%0d (%0d,%0d): got=%0b exp=%0b yeff=%0d yprev=%0d d=%0d",
-                         label, i, i/H, i%H, cap_msk[i], exp_msk, yc, y_prev[i], diff);
+                $display("FAIL %s msk px%0d (%0d,%0d): got=%0b exp=%0b yeff=%0d yprev=%0d d=%0d primed=%0b",
+                         label, i, i/H, i%H, cap_msk[i], exp_msk, yc, y_prev[i], diff, tb_primed);
                 num_errors = num_errors + 1;
             end
         end
-        $display("%s: mask golden check done", label);
+        $display("%s: mask golden check done (primed=%0b)", label, tb_primed);
     endtask
 
     // Read RAM via port B and compare against expected EMA y_prev array.
@@ -283,14 +294,28 @@ module tb_axis_motion_detect #(
     endtask
 
     // Update y_prev[] using EMA on effective Y (raw or Gaussian-filtered).
-    // Must call compute_y_eff before this (y_eff[] is used).
+    // Frame 0 (tb_primed==0): hard-init bg from current frame, then flip tb_primed.
+    // Frame 1+ (tb_primed==1): selective EMA — slow rate on motion pixels, fast on non-motion.
     task automatic update_y_prev(input logic [23:0] pixels [NUM_PIX]);
-        logic signed [8:0] delta, step;
+        logic signed [8:0] delta, step_fast, step_slow, step;
+        logic [7:0] yc;
+        logic raw_motion;
         compute_y_eff(pixels);
-        for (int i = 0; i < NUM_PIX; i++) begin
-            delta     = {1'b0, y_eff[i]} - {1'b0, y_prev[i]};
-            step      = delta >>> ALPHA_SHIFT;
-            y_prev[i] = y_prev[i] + step[7:0];
+        if (!tb_primed) begin
+            // Frame 0: hard-init bg from current frame
+            for (int i = 0; i < NUM_PIX; i++)
+                y_prev[i] = y_eff[i];
+            tb_primed = 1'b1;
+        end else begin
+            for (int i = 0; i < NUM_PIX; i++) begin
+                yc        = y_eff[i];
+                delta     = {1'b0, yc} - {1'b0, y_prev[i]};
+                step_fast = delta >>> ALPHA_SHIFT;
+                step_slow = delta >>> ALPHA_SHIFT_SLOW;
+                raw_motion = ((yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc)) > THRESH[7:0];
+                step      = raw_motion ? step_slow : step_fast;
+                y_prev[i] = y_prev[i] + step[7:0];
+            end
         end
     endtask
 
@@ -387,23 +412,26 @@ module tb_axis_motion_detect #(
         repeat (2) @(posedge clk);
 
         // ================================================================
-        // Frame 0: RAM zero-init → y_prev=0, golden mask per pixel
+        // Frame 0: PRIMING — mask forced to 0 for every pixel; bg initialized
+        // to Y_eff(frame_pixels).
         // ================================================================
-        $display("=== Frame 0 (y_prev=0, golden mask) ===");
+        $display("=== Frame 0 (priming: mask=0, bg init) ===");
         reset_capture();
         fork
             drive_frame(frame_pixels);
             wait_frame_captured();
         join
         repeat (5) @(posedge clk);
-        check_mask_golden(frame_pixels, "frame0");
-        // y_prev stays 0 for checking frame 0; update after checks
-        update_y_prev(frame_pixels);
+        check_mask_golden(frame_pixels, "frame0");  // expects all-zero (tb_primed still 0)
+        update_y_prev(frame_pixels);                 // hard-init path, flips tb_primed
+        // Verify RAM holds Y_eff(frame_pixels) after priming
+        repeat (5) @(posedge clk);
+        check_ram_ema("frame0");
 
         // ================================================================
-        // Frame 1: same pixels, EMA y_prev from frame 0 → golden mask; RAM EMA check
+        // Frame 1: same pixels; bg already matches (from priming) → all-zero mask
         // ================================================================
-        $display("=== Frame 1 (same pixels, EMA y_prev, RAM EMA check) ===");
+        $display("=== Frame 1 (same pixels after priming, expect all-zero mask) ===");
         reset_capture();
         fork
             drive_frame(frame_pixels);
@@ -412,7 +440,6 @@ module tb_axis_motion_detect #(
         repeat (5) @(posedge clk);
         check_mask_golden(frame_pixels, "frame1");
         update_y_prev(frame_pixels);
-        // Wait a few extra cycles for last RAM write-back to settle
         repeat (5) @(posedge clk);
         check_ram_ema("frame1");
 
