@@ -25,3 +25,6 @@ lint_off -rule UNUSEDSIGNAL    -file "*motion_core.sv" -match "*ema_step*"
 // Gaussian conv_sum is 12 bits; output is sum[11:4] (>>4 divide by 16).
 // Bottom 4 bits are intentionally discarded (truncation, no rounding).
 lint_off -rule UNUSEDSIGNAL    -file "*axis_gauss3x3.sv" -match "*conv_sum*"
+// sparevideo_pkg has no `timescale directive; harmless mismatch vs
+// vendored verilog-axis files.
+lint_off -rule TIMESCALEMOD   -file "*sparevideo_pkg.sv"

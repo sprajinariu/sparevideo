@@ -5,11 +5,11 @@ description: "sparevideo top-level — AXI4-Stream video pipeline"
 filesets:
   files_rtl:
     files:
-      - hw/top/sparevideo_pkg.sv
       - hw/top/ram.sv
       - hw/top/sparevideo_top.sv
     file_type: systemVerilogSource
     depend:
+      - sparevideo:pkg:common
       - opensoc:ip:vga
       - sparevideo:third_party:verilog-axis
       - sparevideo:ip:axis

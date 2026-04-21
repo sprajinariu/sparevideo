@@ -14,6 +14,7 @@ RTL is wrong.
 
 import numpy as np
 
+from models.ccl import run_ccl
 
 # Project-specific coefficients from rgb2ycrcb.sv:
 #   y_sum_c = 77*R + 150*G + 29*B;  output = y_sum_c[15:8]
@@ -77,116 +78,68 @@ def _compute_mask(y_cur, y_ref, thresh):
     return diff > thresh
 
 
-def _compute_bbox(mask):
-    """Compute tightest bounding box of motion pixels.
+# CCL defaults — mirror the RTL parameters. Keep in sync with sparevideo_pkg.
+N_OUT                = 8
+N_LABELS_INT         = 64
+MIN_COMPONENT_PIXELS = 16
+MAX_CHAIN_DEPTH      = 8
 
-    Returns (min_x, max_x, min_y, max_y, empty).
+
+def _draw_bboxes(frame, bboxes):
+    """Draw 1-pixel-thick rectangles for each non-None bbox. Returns a modified copy.
+
+    Assumes bboxes are in-range. run_ccl produces coords strictly within the frame.
     """
-    motion_pixels = np.argwhere(mask)
-    if len(motion_pixels) == 0:
-        return 0, 0, 0, 0, True
-    min_y = int(motion_pixels[:, 0].min())
-    max_y = int(motion_pixels[:, 0].max())
-    min_x = int(motion_pixels[:, 1].min())
-    max_x = int(motion_pixels[:, 1].max())
-    return min_x, max_x, min_y, max_y, False
-
-
-def _draw_bbox(frame, min_x, max_x, min_y, max_y, empty):
-    """Draw 1-pixel rectangle border on frame. Returns modified copy."""
     out = frame.copy()
-    if empty:
-        return out
-
-    h, w = frame.shape[:2]
-
-    # Left and right vertical edges (within y range)
-    for y in range(min_y, max_y + 1):
-        if 0 <= min_x < w:
+    for b in bboxes:
+        if b is None:
+            continue
+        min_x, max_x, min_y, max_y, _count = b
+        for y in range(min_y, max_y + 1):
             out[y, min_x] = BBOX_COLOR
-        if 0 <= max_x < w:
             out[y, max_x] = BBOX_COLOR
-
-    # Top and bottom horizontal edges (within x range)
-    for x in range(min_x, max_x + 1):
-        if 0 <= min_y < h:
+        for x in range(min_x, max_x + 1):
             out[min_y, x] = BBOX_COLOR
-        if 0 <= max_y < h:
             out[max_y, x] = BBOX_COLOR
-
     return out
 
 
 def run(frames, thresh=16, alpha_shift=3, gauss_en=True, **kwargs):
-    """Motion pipeline reference model.
+    """Motion pipeline reference model (CCL-based, multi-bbox).
 
-    Processes frames online with state, matching the streaming RTL behavior.
-
-    Args:
-        frames: List of numpy arrays (H, W, 3), dtype uint8, RGB order.
-        thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
-        alpha_shift: EMA smoothing factor (default 3, alpha=1/8).
-        gauss_en: Enable 3x3 Gaussian pre-filter on Y channel (default True).
-
-    Returns:
-        List of numpy arrays — the expected output frames.
+    1. RGB -> Y (optional Gaussian pre-filter).
+    2. Motion mask from |Y - EMA_bg|.
+    3. CCL on the mask -> up to N_OUT bboxes per frame.
+    4. Overlay this frame's bboxes from the PREVIOUS frame (1-frame delay).
+    5. Priming: first 2 frames suppressed (all slots None).
     """
     if not frames:
         return []
 
     h, w = frames[0].shape[:2]
-
-    # Y-prev buffer starts at zero (RAM is zero-initialized)
     y_ref = np.zeros((h, w), dtype=np.uint8)
-
-    # Bbox state: starts empty (bbox_empty=1 after reset)
-    bbox_state = (0, 0, 0, 0, True)  # (min_x, max_x, min_y, max_y, empty)
-
-    # Frame counter for priming suppression
-    frame_cnt = 0
+    bboxes_state = [None] * N_OUT
 
     outputs = []
-
     for i, frame in enumerate(frames):
-        # Step 1: RGB -> Y
         y_cur = _rgb_to_y(frame)
-
-        # Step 1b: Optional Gaussian pre-filter
-        if gauss_en:
-            y_cur_filt = _gauss3x3(y_cur)
-        else:
-            y_cur_filt = y_cur
-
-        # Step 2: Motion mask (uses filtered Y)
+        y_cur_filt = _gauss3x3(y_cur) if gauss_en else y_cur
         mask = _compute_mask(y_cur_filt, y_ref, thresh)
 
-        # Step 3: Overlay bbox from PREVIOUS frame onto current frame
-        # (1-frame delay: bbox is computed at EOF of frame N, applied to frame N+1)
-        out = _draw_bbox(frame, *bbox_state)
+        out = _draw_bboxes(frame, bboxes_state)
 
-        # Step 4: Compute this frame's bbox (will be used for NEXT frame's overlay)
-        new_bbox = _compute_bbox(mask)
+        new_bboxes = run_ccl(
+            [mask],
+            n_out=N_OUT,
+            n_labels_int=N_LABELS_INT,
+            min_component_pixels=MIN_COMPONENT_PIXELS,
+            max_chain_depth=MAX_CHAIN_DEPTH,
+        )[0]
 
-        # Step 5: Priming suppression (PrimeFrames=2)
-        # bbox_reduce: primed = (frame_cnt == PrimeFrames)
-        # frame_cnt increments on is_eof_r when !primed.
-        # Due to NBA semantics, latch reads OLD frame_cnt, so:
-        #   frame 0 EOF: frame_cnt=0, primed=false -> empty. Then frame_cnt becomes 1.
-        #   frame 1 EOF: frame_cnt=1, primed=false -> empty. Then frame_cnt becomes 2.
-        #   frame 2 EOF: frame_cnt=2, primed=true  -> valid bbox.
-        primed = (frame_cnt == PRIME_FRAMES)
-        if not primed or new_bbox[4]:  # not primed OR no motion
-            bbox_state = (0, 0, 0, 0, True)
-        else:
-            bbox_state = new_bbox
+        primed = (i >= PRIME_FRAMES)
+        bboxes_state = new_bboxes if primed else [None] * N_OUT
 
-        # Advance priming counter (after latch decision, matching NBA timing)
-        if not primed:
-            frame_cnt += 1
-
-        # Step 6: Update reference buffer (EMA write-back, uses filtered Y)
         y_ref = _ema_update(y_cur_filt, y_ref, alpha_shift)
-
         outputs.append(out)
 
     return outputs

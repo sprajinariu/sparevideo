@@ -420,7 +420,7 @@ There is no explicit FSM. Pipeline stall logic is purely combinational from `pip
 | Total pixel input → mask output (`GAUSS_EN=1`) | H_ACTIVE + 3 clock cycles (323 at 320px) |
 | Throughput | 1 pixel / cycle (when `msk_tready=1`) |
 
-Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame bbox. `axis_bbox_reduce` suppresses bbox output for the first 2 frames (priming period) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.
+Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame "motion" mask. `axis_ccl` suppresses bbox output for the first 2 frames (`PRIME_FRAMES`; EOF FSM still runs but `PHASE_SWAP` leaves the front buffer empty) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.
 
 EMA convergence: After a step change in a pixel's value, the background converges toward the new value over approximately `1/alpha = 1 << ALPHA_SHIFT` frames. With the default `ALPHA_SHIFT=3` (alpha=1/8), a pixel that steps from 100 to 200 will have its background reach ~200 after ~16 frames. Motion is detected (mask=1) for the first several frames until `|Y_cur - bg|` drops below `THRESH`. This is the intended behavior — transient objects are detected, then absorbed into the background.
 

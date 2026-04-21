@@ -1,0 +1,14 @@
+CAPI=2:
+name: "sparevideo:pkg:common"
+description: "Shared project-wide SystemVerilog package"
+
+filesets:
+  files_rtl:
+    files:
+      - sparevideo_pkg.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

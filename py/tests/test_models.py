@@ -6,9 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
+import pytest
 
 from models import run_model
-from models.motion import _rgb_to_y, _compute_mask, _compute_bbox, _ema_update, _gauss3x3, BBOX_COLOR
+from models.motion import _rgb_to_y, _compute_mask, _ema_update, _gauss3x3, BBOX_COLOR
 from frames.video_source import load_frames
 
 
@@ -90,33 +91,6 @@ def test_mask_static_scene():
     assert not mask.any()
 
 
-# ---- Bbox tests ----
-
-def test_bbox_empty():
-    """No motion pixels -> empty bbox."""
-    mask = np.zeros((8, 16), dtype=bool)
-    _, _, _, _, empty = _compute_bbox(mask)
-    assert empty
-
-
-def test_bbox_single_pixel():
-    """Single motion pixel -> bbox is that pixel."""
-    mask = np.zeros((8, 16), dtype=bool)
-    mask[3, 7] = True
-    min_x, max_x, min_y, max_y, empty = _compute_bbox(mask)
-    assert not empty
-    assert (min_x, max_x, min_y, max_y) == (7, 7, 3, 3)
-
-
-def test_bbox_region():
-    """Motion region -> tightest enclosing rectangle."""
-    mask = np.zeros((8, 16), dtype=bool)
-    mask[2:5, 4:10] = True
-    min_x, max_x, min_y, max_y, empty = _compute_bbox(mask)
-    assert not empty
-    assert (min_x, max_x, min_y, max_y) == (4, 9, 2, 4)
-
-
 # ---- End-to-end motion model tests ----
 
 def test_motion_static_scene():
@@ -187,14 +161,34 @@ def test_motion_dark_moving_box():
     assert green_mask.any(), "Dark moving box should produce bbox overlay on frame 3"
 
 
-def test_motion_two_boxes():
-    """Two moving objects: single bbox encompasses both."""
+def test_motion_two_boxes_produces_two_bboxes():
+    """two_boxes source: after priming, output should contain TWO distinct bbox rectangles."""
     frames = load_frames("synthetic:two_boxes", width=64, height=48, num_frames=6)
     out = run_model("motion", frames)
+    green = np.all(out[3] == BBOX_COLOR, axis=-1)
+    left_green  = green[:, :32].any()
+    right_green = green[:, 32:].any()
+    assert left_green and right_green, "Two bboxes should render on both halves"
 
-    # Frame 3 should have overlay
-    green_mask = np.all(out[3] == BBOX_COLOR, axis=-1)
-    assert green_mask.any(), "Two boxes should produce bbox overlay on frame 3"
+
+def test_ccl_bbox_grey_canvas_static():
+    """ccl_bbox on static scene: no motion after EMA convergence -> pure grey canvas, no rectangles."""
+    frames = _static_frames(width=32, height=24, num_frames=60)
+    out = run_model("ccl_bbox", frames)
+    from models.ccl_bbox import BG_GREY, FG_GREY, BBOX_COLOR as CCL_BBOX_COLOR
+    assert not np.any(np.all(out[59] == CCL_BBOX_COLOR, axis=-1)), "No bboxes after EMA convergence"
+    assert np.all(out[59] == BG_GREY), "Fully static scene should leave only the BG_GREY canvas"
+
+
+def test_ccl_bbox_moving_two_boxes():
+    """ccl_bbox on two_boxes: frame after priming should show multiple bbox rectangles on grey canvas."""
+    frames = load_frames("synthetic:two_boxes", width=64, height=48, num_frames=6)
+    out = run_model("ccl_bbox", frames)
+    from models.ccl_bbox import BBOX_COLOR as CCL_BBOX_COLOR
+    green = np.all(out[3] == CCL_BBOX_COLOR, axis=-1)
+    left_green  = green[:, :32].any()
+    right_green = green[:, 32:].any()
+    assert left_green and right_green, "ccl_bbox should render both rectangles"
 
 
 def test_motion_priming_frames():
@@ -293,6 +287,122 @@ def test_unknown_ctrl_flow():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
+
+
+# ---- CCL reference model tests ----
+
+from models.ccl import run_ccl
+
+try:
+    from scipy.ndimage import label as _scipy_label
+    _HAS_SCIPY = True
+except ImportError:
+    _HAS_SCIPY = False
+
+
+def _mask_to_bbox_set(mask):
+    """Ground truth: use scipy to get bboxes as a set of (min_x,max_x,min_y,max_y,count)."""
+    labeled, n = _scipy_label(mask, structure=np.ones((3, 3), dtype=int))  # 8-connectivity
+    result = set()
+    for lbl in range(1, n + 1):
+        ys, xs = np.where(labeled == lbl)
+        result.add((int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max()), int(len(xs))))
+    return result
+
+
+def test_ccl_empty_mask():
+    """Empty mask -> all slots None."""
+    mask = np.zeros((8, 8), dtype=bool)
+    out = run_ccl([mask], n_out=4, min_component_pixels=1)
+    assert out == [[None, None, None, None]]
+
+
+def test_ccl_single_blob():
+    """Single rectangle -> one bbox."""
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:5, 3:6] = True  # 3x3 blob
+    out = run_ccl([mask], n_out=4, min_component_pixels=1)
+    assert out[0][0] == (3, 5, 2, 4, 9)
+    assert out[0][1:] == [None, None, None]
+
+
+def test_ccl_disjoint_blobs_two():
+    """Two disjoint rectangles -> two separate bboxes."""
+    mask = np.zeros((8, 16), dtype=bool)
+    mask[1:3, 1:3] = True   # 4-pixel top-left
+    mask[5:8, 10:14] = True # 12-pixel bottom-right
+    out = run_ccl([mask], n_out=4, min_component_pixels=1)
+    bboxes = {b for b in out[0] if b is not None}
+    assert bboxes == {(1, 2, 1, 2, 4), (10, 13, 5, 7, 12)}
+
+
+def test_ccl_u_shape_merges():
+    """U-shape: two top arms join through a bottom row -> single component."""
+    mask = np.zeros((6, 8), dtype=bool)
+    mask[0:5, 1] = True     # left arm
+    mask[0:5, 6] = True     # right arm
+    mask[4, 1:7] = True     # bottom connector
+    out = run_ccl([mask], n_out=4, min_component_pixels=1)
+    nonnull = [b for b in out[0] if b is not None]
+    assert len(nonnull) == 1, f"U-shape must be one component, got {nonnull}"
+    assert nonnull[0][0:4] == (1, 6, 0, 4)
+
+
+def test_ccl_min_size_filter():
+    """1-pixel speckle + large blob: only the large blob survives filter."""
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[0, 0] = True             # 1-pixel speckle
+    mask[3:7, 3:7] = True         # 16-pixel blob
+    out = run_ccl([mask], n_out=4, min_component_pixels=4)
+    nonnull = [b for b in out[0] if b is not None]
+    assert len(nonnull) == 1
+    assert nonnull[0] == (3, 6, 3, 6, 16)
+
+
+def test_ccl_overflow_absorbed():
+    """More disjoint tiny blobs than N_LABELS_INT -> overflow pools into label 0."""
+    mask = np.zeros((4, 40), dtype=bool)
+    for c in range(0, 40, 4):  # 10 single-pixel blobs at cols 0,4,8,...,36
+        mask[1, c] = True
+    out = run_ccl([mask], n_out=4, n_labels_int=4, min_component_pixels=1)
+    nonnull = [b for b in out[0] if b is not None]
+    assert 1 <= len(nonnull) <= 4
+
+
+@pytest.mark.skipif(not _HAS_SCIPY, reason="scipy not available")
+def test_ccl_subset_of_scipy_sparse_masks():
+    """Sparse random masks: every bbox our streaming CCL emits matches some scipy component.
+
+    The spec-mandated single equiv-write per pixel (`equiv[max] = min`, no
+    root chase during streaming) can over-split components vs a full
+    union-find. Therefore ours may be a refinement of scipy. The invariant:
+    every (min_x,max_x,min_y,max_y,count) tuple we emit corresponds to a
+    real 8-connected component in the mask — verified by checking our bboxes
+    form a subset of scipy's complete set. See docs/specs/axis_ccl-arch.md.
+    """
+    rng = np.random.default_rng(42)
+    for trial in range(10):
+        mask = rng.random((12, 20)) > 0.8  # sparse: ~20% foreground
+        ours = run_ccl([mask], n_out=16, n_labels_int=128, min_component_pixels=1)
+        ours_set = {b for b in ours[0] if b is not None}
+        truth = _mask_to_bbox_set(mask)
+        extras = ours_set - truth
+        assert not extras, (
+            f"Trial {trial}: our bboxes not in scipy truth: {extras}"
+        )
+
+
+def test_ccl_multi_frame_independent():
+    """Two frames: each frame's CCL state is independent."""
+    m0 = np.zeros((4, 4), dtype=bool)
+    m0[0, 0] = True
+    m1 = np.zeros((4, 4), dtype=bool)
+    m1[3, 3] = True
+    out = run_ccl([m0, m1], n_out=2, min_component_pixels=1)
+    assert out[0][0] == (0, 0, 0, 0, 1)
+    assert out[0][1] is None
+    assert out[1][0] == (3, 3, 3, 3, 1)
+    assert out[1][1] is None
 
 
 # ---- EMA background model tests ----

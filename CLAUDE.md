@@ -6,9 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Do not include `Co-Authored-By` trailers in commit messages.
 
+## Documentation Conventions
+
+All design specs, architecture docs, and implementation plans live under `docs/plans/` — **never** under `docs/superpowers/specs/` or any other skill-default location. Brainstorming specs go to `docs/plans/YYYY-MM-DD-<topic>-design.md`. Implementation plans follow the same `docs/plans/` prefix.
+
 ## Project Overview
 
-sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with bounding-box overlay, or mask display), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
+sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with CCL-driven N-way bounding-box overlay, mask display, or a `ccl_bbox` debug mode that shows the mask as a grey canvas under the CCL bboxes), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
 
 All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no interfaces/modports, no classes) for Icarus Verilog 12 compatibility.
 
@@ -30,8 +34,9 @@ make run-pipeline SOURCE="synthetic:gradient" MODE=binary SIMULATOR=verilator
 
 # Control flow selection (default: motion)
 make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
-make run-pipeline CTRL_FLOW=motion                    # motion detect + bbox overlay
+make run-pipeline CTRL_FLOW=motion                    # motion detect + N-way CCL bbox overlay
 make run-pipeline CTRL_FLOW=mask                      # raw motion mask, B/W output
+make run-pipeline CTRL_FLOW=ccl_bbox                  # mask-as-grey + CCL bboxes (debug CCL directly)
 
 # 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/ALPHA_SHIFT to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
@@ -57,7 +62,7 @@ make setup                   # One-time setup (install deps)
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
 - `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
 - `hw/ip/gauss3x3/rtl/` — 3x3 Gaussian pre-filter on Y channel (axis_gauss3x3: line buffers + adder tree)
-- `hw/ip/motion/rtl/` — Motion detection pipeline (axis_motion_detect, motion_core, axis_bbox_reduce, axis_overlay_bbox)
+- `hw/ip/motion/rtl/` — Motion detection pipeline (axis_motion_detect, motion_core, axis_ccl, axis_overlay_bbox)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library
@@ -70,8 +75,10 @@ make setup                   # One-time setup (install deps)
 - `py/frames/video_source.py` — Load video from MP4/PNG/synthetic, resize, extract frames
 - `py/models/` — Control-flow reference models for pixel-accurate verification
 - `py/models/passthrough.py` — Passthrough model (identity)
-- `py/models/motion.py` — Motion pipeline model (luma, mask, bbox, overlay)
+- `py/models/motion.py` — Motion pipeline model (luma, mask, CCL bboxes, overlay)
 - `py/models/mask.py` — Mask display model (luma, mask, B/W expansion)
+- `py/models/ccl.py` — Streaming CCL reference model (spec-matched to axis_ccl RTL)
+- `py/models/ccl_bbox.py` — ccl_bbox render model (mask-as-grey + CCL bbox overlay)
 - `py/viz/render.py` — Render input/output frames as comparison image grid
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
 - `py/tests/test_models.py` — Unit tests for control-flow reference models
@@ -94,9 +101,9 @@ The single testbench (`dv/sim/tb_sparevideo.sv`) supports two modes:
 
 **SW dry-run** (`+sw_dry_run`): Bypasses RTL entirely. File loopback at zero sim time — reads input, writes output directly. Useful for testing the Python harness flow without waiting for RTL sim.
 
-Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion|mask`, `+sw_dry_run`, `+DUMP_VCD`.
+Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion|mask|ccl_bbox`, `+sw_dry_run`, `+DUMP_VCD`.
 
-TB blanking parameters are small (H: 4+8+4, V: 2+2+2) to minimize sim time.
+TB blanking parameters: H: 4+8+4, V: 2+2+16 (the 16-line V_BLANK absorbs the axis_ccl EOF FSM's worst-case cycle budget).
 
 **Important**: TB drives signals at `@(posedge clk)` using non-blocking assignments (`<=`). NBA scheduling ensures TB drives land after the DUT's `always_ff` has sampled its inputs in the Active region. The output capture always block samples at `@(negedge clk)` to avoid races with the DUT output.
 
@@ -205,7 +212,11 @@ These apply to any future motion pipeline block (Gaussian, morphology, CCL, adap
 
 **Departure ghosts are inherent to EMA.** When an object moves, pixels at its old position show as motion until the background converges back (~`1/alpha` frames). This is the trade-off for noise suppression, not a bug.
 
-**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 3 control flows (passthrough, motion, mask) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple sources at TOLERANCE=0.
+**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple sources at TOLERANCE=0.
+
+**Vblank FSM modules must deassert tready for the full FSM duration.** `axis_ccl` deasserts `tready` during PHASE_A..PHASE_SWAP (the EOF resolution FSM) so pixels cannot arrive while internal state is exclusively owned by the FSM. Per-pixel writes are additionally gated on `PHASE_IDLE`, but those gates alone are not sufficient — without the tready deassert, the FIFO upstream can push pixels that advance `line_buf` and `col`/`row` without updating `equiv[]` or `acc_*[]`, silently corrupting the labeling state. Vblank timing must exceed the worst-case FSM cycle budget; see `axis_ccl-arch.md §6.7`.
+
+**Beat-strobe pattern for multi-consumer mask broadcast.** `axis_ccl` is fed `ccl_beat_strobe = msk_tvalid && msk_tready` as its `tvalid`, not raw `msk_tvalid`. In mask-display and ccl_bbox modes, the mask is consumed by two paths simultaneously; in those modes `msk_tready` is the AND of both consumers' readies. If one consumer stalls, the upstream stalls too and `msk_tvalid && msk_tready` goes low — so `axis_ccl` does not advance its internal `col`/`row` counters on the stalled cycle. Using raw `msk_tvalid` instead would cause the counters to race ahead, producing wrong neighbour reads and corrupted labels.
 
 ### Python environment
 

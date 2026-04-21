@@ -684,5 +684,5 @@ Detailed implementation, testing, and acceptance criteria for each block:
 | 2a. Centered Gaussian upgrade | [old/2026-04-17_block2a-centered-gaussian.md](old/2026-04-17_block2a-centered-gaussian.md) | done |
 | —. Decouple RGB/mask pipelines | [old/2026-04-17_decouple-rgb-mask-pipelines.md](old/2026-04-17_decouple-rgb-mask-pipelines.md) | done |
 | 3. Morphological opening | block3-morphological-opening.md | not started |
-| 4. Connected-component labeling | block4-ccl.md | not started |
+| 4. Connected-component labeling | [old/2026-04-20_block4-ccl.md](old/2026-04-20_block4-ccl.md) | done — see [`docs/specs/axis_ccl-arch.md`](../specs/axis_ccl-arch.md) |
 | 5. Adaptive threshold | block5-adaptive-threshold.md | not started |

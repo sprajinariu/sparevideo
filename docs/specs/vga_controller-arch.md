@@ -150,7 +150,7 @@ None from `sparevideo_pkg`. VGA timing parameters are passed through from the to
 
 ## 9. Known Limitations
 
-- **No `tuser`/`tlast` input**: the controller does not track frame/line boundaries in the pixel stream — it relies entirely on its own internal counters. If the pixel stream goes out of sync with the VGA counters (e.g., missing pixels due to underrun), the display tears silently. The `assert_no_output_underrun` SVA in `sparevideo_top` catches this at sim time.
+- **No `tuser`/`tlast` input**: the controller does not track frame/line boundaries in the pixel stream — it relies entirely on its own internal counters. If the pixel stream goes out of sync with the VGA counters (e.g., missing pixels due to underrun), the display tears silently. The top-level spec §8 formalizes an underrun invariant.
 - **`rst_n_i` held externally**: `sparevideo_top` keeps `rst_n_i` deasserted until the first SOF pixel exits the output FIFO (`vga_started` logic). If the VGA controller is reset mid-stream (e.g., mid-frame), the counters restart from 0 immediately, causing a partial frame of corruption.
 - **`frame_start_o` / `line_start_o` unused in top level**: these outputs are available for upstream flow-control or debug but are currently tied off.
 
