@@ -11,7 +11,7 @@
   - [5.1 Coefficient equations](#51-coefficient-equations)
   - [5.2 Pipeline](#52-pipeline)
   - [5.3 Resource cost](#53-resource-cost)
-  - [5.4 Verified corner cases](#54-verified-corner-cases)
+  - [5.4 Design corner cases](#54-design-corner-cases)
 - [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
 - [7. Timing](#7-timing)
 - [8. Shared Types](#8-shared-types)
@@ -89,7 +89,7 @@ The `+32768` offset for Cb/Cr keeps intermediate sums non-negative for all valid
 
 The module uses 9 constant-coefficient multiplications (3 channels × 3 outputs). A synthesis tool typically infers these as DSP block primitives or optimized LUT-based multipliers. No RAM is consumed. The single pipeline register stage adds 24 flip-flops (3 × 8-bit outputs).
 
-### 5.4 Verified corner cases
+### 5.4 Design corner cases
 
 | RGB | Y | Cb | Cr |
 |-----|---|----|----|
@@ -99,8 +99,6 @@ The module uses 9 constant-coefficient multiplications (3 channels × 3 outputs)
 | `(255,0,0)` — red | 76 | 85 | 255 |
 | `(0,255,0)` — green | 149 | 43 | 21 |
 | `(0,0,255)` — blue | 28 | 255 | 107 |
-
-Unit testbench (`hw/ip/rgb2ycrcb/tb/tb_rgb2ycrcb.sv`) checks all 6 cases with ±1 LSB tolerance.
 
 ---
 
