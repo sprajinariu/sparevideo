@@ -128,8 +128,7 @@ Clean on spot-check. §1 cleanly defers role/motivation to `axis_motion_detect`.
 
 ### 3.6 `axis_motion_detect-arch.md`
 
-- **[P]** §9 Known Limitations: "matches the Python motion model" (two occurrences) — rewrite without the Python reference; the EMA convergence is the design rationale.
-- **[P]** §10 References: **keep** the OpenCV Background Subtraction tutorial link — it is a concept reference, same class as the AXI4-Stream spec link.
+Clean on verification (grep found no Python / TB / plusarg matches). §10 References' OpenCV Background Subtraction tutorial link stays — it is a concept reference, same class as the AXI4-Stream spec link.
 
 ### 3.7 `axis_ccl-arch.md`
 
