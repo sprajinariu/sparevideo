@@ -4,7 +4,7 @@ green CCL bboxes overlaid. Debug view of CCL output."""
 import numpy as np
 
 from models.motion import (
-    _rgb_to_y, _gauss3x3, _ema_update, _compute_mask,
+    _rgb_to_y, _gauss3x3, _selective_ema_update, _compute_mask,
     _draw_bboxes, PRIME_FRAMES, N_OUT, N_LABELS_INT,
     MIN_COMPONENT_PIXELS, MAX_CHAIN_DEPTH,
 )
@@ -24,19 +24,35 @@ def _mask_to_grey_canvas(mask):
     return out
 
 
-def run(frames, thresh=16, alpha_shift=3, gauss_en=True, **kwargs):
+def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
+        **kwargs):
+    """ccl_bbox reference model.
+
+    Frame 0: hard-init bg = Y_smooth; mask forced to zero; no bboxes drawn.
+    Frame N>0: selective EMA — motion pixels at slow rate, non-motion at fast.
+    """
     if not frames:
         return []
 
     h, w = frames[0].shape[:2]
-    y_ref = np.zeros((h, w), dtype=np.uint8)
+    y_bg = np.zeros((h, w), dtype=np.uint8)
     bboxes_state = [None] * N_OUT
+    primed = False
 
     outputs = []
     for i, frame in enumerate(frames):
         y_cur = _rgb_to_y(frame)
         y_cur_filt = _gauss3x3(y_cur) if gauss_en else y_cur
-        mask = _compute_mask(y_cur_filt, y_ref, thresh)
+
+        if not primed:
+            # Frame 0: hard-init bg, mask forced to zero
+            mask = np.zeros((h, w), dtype=bool)
+            y_bg = y_cur_filt.copy()
+            primed = True
+        else:
+            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                         alpha_shift, alpha_shift_slow)
 
         canvas = _mask_to_grey_canvas(mask)
         out = _draw_bboxes(canvas, bboxes_state)
@@ -48,10 +64,9 @@ def run(frames, thresh=16, alpha_shift=3, gauss_en=True, **kwargs):
             min_component_pixels=MIN_COMPONENT_PIXELS,
             max_chain_depth=MAX_CHAIN_DEPTH,
         )[0]
-        primed = (i >= PRIME_FRAMES)
-        bboxes_state = new_bboxes if primed else [None] * N_OUT
+        primed_for_bbox = (i >= PRIME_FRAMES)
+        bboxes_state = new_bboxes if primed_for_bbox else [None] * N_OUT
 
-        y_ref = _ema_update(y_cur_filt, y_ref, alpha_shift)
         outputs.append(out)
 
     return outputs

@@ -220,13 +220,12 @@ def test_mask_static_scene_converged():
         assert not out[i].any(), f"Frame {i} should be all-black after EMA convergence"
 
 
-def test_mask_frame0_mostly_white():
-    """Frame 0: Y_ref is zero-initialized, so non-black input → mostly white."""
+def test_mask_frame0_all_black():
+    """Frame 0: hard-init priming — bg is set to Y_smooth, mask forced to zero."""
     frame = np.full((8, 16, 3), 128, dtype=np.uint8)
     out = run_model("mask", [frame])
-    # Luma of (128,128,128) = (77*128 + 150*128 + 29*128)>>8 = 32768>>8 = 128
-    # |128 - 0| = 128 > 16 → motion everywhere
-    assert np.all(out[0] == 255), "Frame 0 should be all-white (everything is motion vs zero ref)"
+    # Frame 0 is the priming frame: mask is forced to zero regardless of input.
+    assert np.all(out[0] == 0), "Frame 0 should be all-black (priming frame, mask forced to zero)"
 
 
 def test_mask_output_strictly_bw():
@@ -449,9 +448,14 @@ def test_ema_convergence_static():
 
 
 def test_ema_step_change_motion_then_absorbed():
-    """After a step change, motion is detected then absorbed as bg converges."""
+    """After a step change, motion is detected then absorbed as bg converges.
+
+    With selective EMA, motion pixels update at the slow rate (alpha_shift_slow).
+    To test full convergence, we set alpha_shift_slow=alpha_shift so that motion
+    pixels converge at the same rate as non-motion pixels.
+    """
     h, w = 4, 4
-    # Static scene at luma ~39 (R=100, G=0, B=0 → Y = (77*100)>>8 = 30)
+    # Static scene at luma ~30 (R=100, G=0, B=0 → Y = (77*100)>>8 = 30)
     static_frame = np.zeros((h, w, 3), dtype=np.uint8)
     static_frame[:, :, 0] = 100  # R=100 → Y=30
 
@@ -462,7 +466,8 @@ def test_ema_step_change_motion_then_absorbed():
     bright_frame = np.full((h, w, 3), 200, dtype=np.uint8)  # Y ≈ 200
     frames.extend([bright_frame.copy() for _ in range(30)])
 
-    out = run_model("mask", frames, alpha_shift=3)
+    # Use alpha_shift_slow=alpha_shift so motion pixels converge at same speed.
+    out = run_model("mask", frames, alpha_shift=3, alpha_shift_slow=3)
 
     # After bg converges to static (~frame 45-49), mask should be black
     assert not out[49].any(), "Frame 49 should be all-black (bg converged to static)"
@@ -470,7 +475,7 @@ def test_ema_step_change_motion_then_absorbed():
     # Frame 50 (step change): large diff → motion (white pixels)
     assert out[50].any(), "Frame 50 should detect motion after step change"
 
-    # After many more frames, bg converges to bright value → no motion
+    # After many more frames at alpha_shift_slow=3, bg converges to bright → no motion
     assert not out[79].any(), "Frame 79 should be all-black (bg converged to bright)"
 
 
