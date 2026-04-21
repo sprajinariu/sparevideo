@@ -16,7 +16,7 @@
 - [6. Clock Domains](#6-clock-domains)
 - [7. Region Descriptor Model](#7-region-descriptor-model)
   - [7.1 Future CSR register file (deferred)](#71-future-csr-register-file-deferred)
-- [8. Assertions (SVA, Verilator only)](#8-assertions-sva-verilator-only)
+- [8. Assertions](#8-assertions)
 - [9. Known Limitations](#9-known-limitations)
 - [10. Resources](#10-resources)
 - [11. References](#11-references)
@@ -101,7 +101,7 @@ sparevideo_top (top level)
 | `CCL_MAX_CHAIN_DEPTH` | pkg (8) | Safety cap on parent-pointer chain walks during the EOF fold phase |
 | `CCL_PRIME_FRAMES` | pkg (2) | Number of frames after reset during which `u_ccl` suppresses all bbox outputs, giving the EMA background model time to converge |
 
-`ctrl_flow_i` is a quasi-static sideband signal (set before simulation, not changed mid-frame). It is driven by the testbench via the `+CTRL_FLOW=passthrough|motion|mask|ccl_bbox` plusarg. All defaults reference `sparevideo_pkg`.
+`ctrl_flow_i` is a quasi-static sideband signal (set before the frame, not changed mid-frame). All defaults reference `sparevideo_pkg`.
 
 ---
 
@@ -159,7 +159,7 @@ The mask and video paths are consumed by **different modules that do not synchro
 
 1. **`u_ccl` is a pure sink on its mask input** — it accepts one mask bit per cycle whenever the upstream strobes valid, and it produces **no mask output stream** at all. It never stalls the mask stream once the upstream broadcast handshake is complete, and it never touches the video stream. All accumulation (per-label min/max/count, union-find) is internal.
 2. **Bboxes are committed at end-of-frame, used during the *next* frame.** After EOF, `u_ccl` runs a four-phase resolution FSM inside the vertical blanking interval (path-compress → fold → top-N select → reset) and then performs a `PHASE_SWAP` that atomically promotes the new `N_OUT` bbox slots into the front register bank. These outputs are stable for the entire duration of the next frame. `u_overlay_bbox` reads them as a static sideband while processing that next frame's video.
-3. **Adding stages to the mask path (Gaussian, future morphology, stricter CCL variants) just delays when the EOF resolution happens within the vblank.** As long as the full resolution FSM completes before the next frame's first pixel reaches the overlay, the bbox is ready in time. The testbench's V_BLANK (2+2+16 lines) is sized to cover the worst-case cycle budget at 320×240.
+3. **Adding stages to the mask path (Gaussian, future morphology, stricter CCL variants) just delays when the EOF resolution happens within the vblank.** As long as the full resolution FSM completes before the next frame's first pixel reaches the overlay, the bbox is ready in time. Vblank headroom must exceed the CCL worst-case EOF-FSM cycle budget (see [axis_ccl-arch.md](axis_ccl-arch.md) §6.7).
 
 As a result, any new mask-path stage between `u_motion_detect` and `u_ccl` can be inserted without touching the video path.
 
@@ -267,15 +267,17 @@ The control-flow mux selects between:
 
 ### 5.1 Submodule roles
 
-1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
-2. **u_fork**: zero-latency 1-to-2 broadcast fork. Splits the DSP-domain stream so that `fork_b` (RGB) feeds the overlay directly while `fork_a` (RGB) feeds the motion detect mask pipeline. Per-output acceptance tracking prevents duplicate transfers on asymmetric consumer stalls. Instantiated only in the motion pipeline path; the fork input `tvalid` is gated to 0 in passthrough mode.
-3. **u_motion_detect**: converts each pixel to Y8 (`u_rgb2ycrcb`), reads the per-pixel background model from `u_ram` port A, computes `|Y_cur − bg|`, and emits a **1-bit motion mask**. The mask condition is `diff > THRESH` (polarity-agnostic — flags both arrival and departure pixels, works for bright-on-dark, dark-on-bright, and colour scenes). Writes an EMA-updated background value back to RAM on acceptance: `bg_new = bg + ((Y_cur - bg) >>> ALPHA_SHIFT)`. This temporally smooths the background model, suppressing sensor noise and adapting to gradual lighting changes. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md) §4 for the EMA algorithm details.
-4. **u_ram**: dual-port byte RAM (port A for motion detect background model, port B reserved). Zero-initialized so frame 0 reads all-motion (background starts at 0, converges via EMA over subsequent frames).
-5. **u_ccl**: single-pass 8-connected streaming connected-component labeler. Walks the mask in raster order, assigns provisional labels with a 2-row neighbour window, maintains a union-find equivalence table (with a single equiv-write per pixel), and accumulates per-label bounding-box and area statistics in a label-indexed bank RAM. After EOF, a four-phase FSM (`PHASE_A` path-compression → `PHASE_B` fold statistics into roots → `PHASE_C` select top-`CCL_N_OUT` by area, filtering below `CCL_MIN_COMPONENT_PIXELS` → `PHASE_D` reset) runs inside the vertical blanking interval, followed by `PHASE_SWAP` which atomically promotes the resolved bbox set into a front register bank. The first `CCL_PRIME_FRAMES` frames after reset are suppressed (all `valid` bits forced 0) so the EMA background model has time to converge. `msk_tready` is beat-strobe gated (`msk_tvalid && msk_tready_final`) inside the multi-consumer broadcast. See [axis_ccl-arch.md](axis_ccl-arch.md).
-6. **u_overlay_bbox**: receives RGB pixels on its AXI4-Stream input (`ovl_in` = `fork_b` in motion mode, or `mask_grey_rgb` in ccl_bbox mode) and an `N_OUT`-wide packed-array bbox sideband from `u_ccl`. For each pixel, combinationally ORs an `N_OUT`-wide rectangle-edge hit test across all valid slots; on a hit, the pixel is replaced with `BBOX_COLOR` (bright green), otherwise pass-through. Zero added latency on the data path.
-7. **u_fifo_out**: crosses the overlaid RGB stream back to `clk_pix`. Depth 32 entries.
-8. **vga_rst_n gating**: the VGA controller is held in reset until the first `tuser=1` pixel exits `u_fifo_out`. This aligns the VGA scan to a frame boundary regardless of FIFO fill time.
-9. **u_vga**: drives horizontal/vertical counters, asserts `pixel_ready_o` during the active region, gates RGB output to 0 during blanking.
+1. **u_fifo_in**: CDC from `clk_pix` to `clk_dsp`; depth 32. Overflow detected by SVA (§8).
+2. **u_fork**: zero-latency 1-to-2 broadcast with per-output acceptance tracking, so asymmetric consumer stalls do not corrupt data. Instantiated in the motion pipeline path only; fork input `tvalid` is gated to 0 in passthrough mode.
+3. **u_motion_detect**: consumes `fork_a` RGB, emits a 1-bit motion mask via a polarity-agnostic luma-difference test against an EMA background model held in `u_ram` port A. See [axis_motion_detect-arch.md](axis_motion_detect-arch.md).
+4. **u_ram**: dual-port byte RAM. Port A owned by `u_motion_detect` for the EMA background model; port B reserved. Zero-initialized. See [ram-arch.md](ram-arch.md).
+5. **u_ccl**: single-pass 8-connected streaming connected-component labeler. Emits `N_OUT` packed bounding-box slots plus a `bbox_swap_o` strobe on the sideband; deasserts `tready` during its EOF resolution FSM so upstream stalls through vblank. See [axis_ccl-arch.md](axis_ccl-arch.md).
+6. **u_overlay_bbox**: receives RGB on its AXI4-Stream input (`ovl_in` = `fork_b` in motion mode, or `mask_grey_rgb` in ccl_bbox mode) and the `N_OUT`-wide bbox sideband from `u_ccl`; replaces pixels on any valid slot's rectangle edge with `BBOX_COLOR`, pass-through otherwise. Zero added latency. See [axis_overlay_bbox-arch.md](axis_overlay_bbox-arch.md).
+7. **u_fifo_out**: CDC from `clk_dsp` to `clk_pix`; depth 32.
+8. **vga_rst_n gating**: VGA held in reset until the first `tuser=1` pixel exits `u_fifo_out`, aligning the VGA scan to a frame boundary regardless of FIFO fill time.
+9. **u_vga**: VGA timing + RGB output — horizontal/vertical counters, active-region `pixel_ready_o`, RGB gated to 0 during blanking. See [vga_controller-arch.md](vga_controller-arch.md).
+
+**Multi-consumer mask broadcast (mask / ccl_bbox modes).** The 1-bit mask is consumed by two paths simultaneously (the B/W or grey-canvas expansion feeding `u_fifo_out`, and `u_ccl`). `msk_tready` is the AND of both consumers' readies so upstream stalls when either is not ready; `u_ccl` is fed `ccl_beat_strobe = msk_tvalid && msk_tready` as its `tvalid` so its internal `col`/`row` counters advance exactly once per globally-accepted beat.
 
 ### 5.2 AXI4-Stream protocol
 
@@ -320,7 +322,7 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 ---
 
-## 8. Assertions (SVA, Verilator only)
+## 8. Assertions
 
 | Assertion | Clock | Description |
 |-----------|-------|-------------|
@@ -331,17 +333,15 @@ When runtime configurability is needed, the descriptor table and control knobs (
 | `assert_fifo_in_no_overflow` | `clk_pix` | Sticky overflow flag from input FIFO must not be set |
 | `assert_fifo_out_no_overflow` | `clk_dsp` | Sticky overflow flag from output FIFO must not be set |
 
-`sva_drain_mode` (default 0) disables the underrun assertion after the testbench stops feeding pixels.
-
 ---
 
 ## 9. Known Limitations
 
 - **Simulation-only RAM**: `ram.sv` is a behavioral model. FPGA synthesis requires a vendor BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`).
-- **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box would span the full frame and the overlay would draw a border around the image edge. This is a known cosmetic artifact. `axis_ccl` suppresses bboxes for the first 2 frames (`PRIME_FRAMES`), matching the Python motion model, so no rectangle is drawn during EMA convergence.
+- **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box would span the full frame and the overlay would draw a border around the image edge. This is a known cosmetic artifact. `axis_ccl` suppresses bboxes for the first `CCL_PRIME_FRAMES` frames so no rectangle is drawn until the EMA background has converged.
 - **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §4.3 "Design rationale: 1-frame bbox latency". Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
-- **No AXI-Lite control**: `MOTION_THRESH` and `BBOX_COLOR` are compile-time parameters. Runtime override requires a simulation plusarg and recompile for RTL.
+- **No AXI-Lite control**: `MOTION_THRESH` and `BBOX_COLOR` are compile-time parameters. Runtime override requires synthesizing a CSR slave (see §7.1).
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
 - **Single pixel clock**: both the input source and VGA output share `clk_pix`. Independent source/display clocks would need a third clock domain.
 
@@ -370,23 +370,7 @@ Sizing formulas (W = H\_ACTIVE, H = V\_ACTIVE):
 | CCL accumulator bank | N\_LABELS\_INT × (2⌈log₂W⌉ + 2⌈log₂H⌉ + ⌈log₂(WH+1)⌉) bits |
 | CCL equivalence table | N\_LABELS\_INT × ⌈log₂(N\_LABELS\_INT)⌉ bits |
 
-Accumulator entry width: 51 b at 320×240 (COL\_W=9, ROW\_W=8, COUNT\_W=17) → 57 b at 640×480 → 65 b at 1920×1080.
-
-### `u_ram` — EMA background model
-
-`u_ram` is a dual-port byte RAM of depth `H_ACTIVE × V_ACTIVE`. It is the dominant on-chip memory and the only one that maps to BRAM on an FPGA.
-
-Port A is exclusively owned by `axis_motion_detect` (one read + one conditional write per accepted pixel; ≤ 25% of `clk_dsp` cycles at 100 MHz). Port B is reserved for future host clients.
-
-FPGA mapping (Xilinx 7-series BRAM36K, 4 KB per block in 8-bit-wide true-dual-port mode):
-
-| Resolution | Bytes | BRAM36K blocks |
-|------------|-------|---------------|
-| 320×240 | 75 kB | ~19 |
-| 640×480 | 300 kB | 75 |
-| 1920×1080 | ~1.98 MB | ~507 |
-
-The behavioral `ram.sv` requires substitution with a vendor true-dual-port BRAM primitive (`xpm_memory_tdpram`) for synthesis. See [ram-arch.md](ram-arch.md) §5.4.
+See [ram-arch.md](ram-arch.md) for port ownership semantics and the behavioral-to-BRAM substitution note.
 
 ---
 
