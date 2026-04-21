@@ -247,7 +247,7 @@ The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (defa
 make run-pipeline SIMARGS="+THRESH=32"
 ```
 
-A pixel is classified as motion when `|Y_cur - bg| > THRESH`, where `bg` is the per-pixel EMA background model (see `ALPHA_SHIFT`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
+A pixel is classified as motion when `|Y_cur - bg| > THRESH`, where `bg` is the per-pixel EMA background model (see `ALPHA_SHIFT`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. Frame 0 is a priming pass (mask forced to 0 while the bg RAM is seeded per-pixel), and the first real detection frame is frame 1. The CCL suppresses bboxes for the first 2 frames as an additional safety margin so any transient on the very first compare cycle cannot produce a spurious bbox.
 
 For the `mask` control flow, the verify step also reports motion pixel counts per frame (`motion=N/total`), which is useful for diagnosing false positives.
 

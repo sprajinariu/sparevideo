@@ -210,7 +210,7 @@ These apply to any future motion pipeline block (Gaussian, morphology, CCL, adap
 
 **Synthetic test patterns must exercise the feature meaningfully.** Rule of thumb for noise patterns: `2 × noise_amplitude > THRESH` for EMA to demonstrate value over raw differencing. The `noisy_moving_box` pattern uses `noise_amplitude=10` vs `THRESH=16`.
 
-**Departure ghosts are inherent to EMA.** When an object moves, pixels at its old position show as motion until the background converges back (~`1/alpha` frames). This is the trade-off for noise suppression, not a bug.
+**Departure ghosts under selective EMA.** With the two-rate rule, motion pixels drift at `ALPHA_SHIFT_SLOW` (default α=1/64), so the bg is barely contaminated under a normal-speed moving object. When the object leaves, `raw_motion` drops to 0 on the very next frame and the pixel immediately reverts to the fast rate — no multi-frame ghost. A ghost only appears if an object lingered long enough for the slow EMA to partially absorb it into bg; that window is ~`1/α_slow` frames (≈64 frames at default). Under the old single-rate EMA, departure ghosts lasted ~`1/alpha` frames on every departure; selective EMA suppresses this by design.
 
 **Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple ALPHA_SHIFT_SLOW values (5,6,7) × multiple sources at TOLERANCE=0.
 
