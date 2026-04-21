@@ -48,6 +48,12 @@ The background update rate differs based on whether the current pixel is flagged
 - **Non-motion pixel** — update at the fast rate (`α = 1 / (1<<ALPHA_SHIFT)`, default 1/8). This keeps tracking slow scene changes (illumination, auto-exposure).
 - **Motion pixel** — update at a slow rate (`α = 1 / (1<<ALPHA_SHIFT_SLOW)`, default 1/64). This nearly freezes the bg under a moving object, preventing contamination, while still absorbing stopped objects on a ~2-second timescale at 30 fps.
 
+**Why a separate `ALPHA_SHIFT_SLOW` parameter** (rather than reusing `ALPHA_SHIFT` or hardcoding the slow rate):
+
+- The two rates serve opposing goals. `ALPHA_SHIFT` trades bg-tracking speed for measurement noise averaging — faster helps follow lighting, slower helps reject sensor noise. `ALPHA_SHIFT_SLOW` trades trail suppression for stopped-object absorption latency — faster absorbs parked objects sooner, slower leaves less residual contamination under slow movers. Tuning either against the wrong target makes the other worse.
+- A single-rate design cannot satisfy both. Any rate fast enough to prime the bg usefully will also accumulate enough contamination under a moving object to produce a trail on departure — which is exactly the existing bug.
+- A hardcoded slow rate removes a tuning knob that will matter in integration. Real scenes (different frame rates, exposure, object speeds) will need different `ALPHA_SHIFT_SLOW` values; the sweep matrix in the verification plan already anticipates this. Keeping it as a compile-time `-G` parameter mirrors how `ALPHA_SHIFT` is exposed today.
+
 The two rates share one subtraction:
 
 ```
@@ -73,6 +79,19 @@ bg_next = !primed    ? y_smooth
 ```
 
 `raw_motion` is the unchanged threshold comparison `(|y_smooth - y_bg| > THRESH)`. `motion_core` exposes `mask_bit_o` already gated by `primed_i` so the wrapper does not re-implement the gate for the output stream.
+
+## Implementation Order
+
+**Step 1 (before any RTL/Python changes): update the docs.** Writing the intent into the architecture doc, CLAUDE.md, and README first forces the design to be pinned down in prose before code is written, and prevents the common failure mode of doc rot following the implementation. The specific updates are:
+
+- **`docs/specs/axis_motion_detect-arch.md`** — document the `primed` register, the 3:1 `bg_next` mux, the new `ALPHA_SHIFT_SLOW` parameter, and the frame-0-is-priming invariant. Remove or rewrite any prior "no first-frame priming" text; that earlier rule is superseded because selective EMA prevents the original departure-ghost failure mode.
+- **`CLAUDE.md`** "Motion pipeline — lessons learned" section:
+  - Replace the "No first-frame priming" bullet with the new rule (frame-0 hard-init + selective EMA).
+  - Add `ALPHA_SHIFT_SLOW` to the parameter-propagation example and to the verification sweep matrix.
+- **`README.md`** — update any motion-detection section that cites `ALPHA_SHIFT` or describes the EMA model; add `ALPHA_SHIFT_SLOW` to build-command examples.
+- **Top `Makefile`** — if there's help/comment text documenting `ALPHA_SHIFT`, add `ALPHA_SHIFT_SLOW` alongside.
+
+Steps 2–4 (RTL, Python model, verification) are covered by the following sections. After the implementation passes verification, this spec itself is moved to `docs/plans/old/` with a date stamp per the project convention.
 
 ## Architecture Surface
 
