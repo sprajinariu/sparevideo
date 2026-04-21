@@ -129,6 +129,7 @@ the input to `axis_overlay_bbox` independently of mask processing.
 | `V_ACTIVE` | 240 | Active lines per frame |
 | `THRESH` | 16 | Unsigned luma-difference threshold; motion detected when `diff > THRESH` |
 | `ALPHA_SHIFT` | 3 | EMA smoothing factor as a bit-shift: alpha = 1 / (1 << ALPHA_SHIFT). Default 3 → alpha = 1/8. Higher values = slower background adaptation. When 0, the EMA reduces to raw-frame write-back (bg_new = Y_cur) |
+| `ALPHA_SHIFT_SLOW` | 6 | EMA smoothing factor applied when the current pixel is flagged as motion (`raw_motion=1`). alpha = 1 / (1 << ALPHA_SHIFT_SLOW). Default 6 → alpha = 1/64. Larger than `ALPHA_SHIFT` so motion pixels barely drift the background estimate, preventing foreground bleed (trails). When a flagged pixel stays flagged (stopped object), this rate governs absorption into the background; with default 6 at 30 fps, a stopped object absorbs in ~2 s. |
 | `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (H_ACTIVE + 2 cycle latency from rgb2ycrcb, `PIPE_STAGES = H_ACTIVE + 3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
 | `RGN_BASE` | 0 | Base byte-address of the background model region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the background model region (sanity-checked at elaboration) |
@@ -225,7 +226,24 @@ This framing has two consequences that together define what the EMA buys over ra
 
 In short: raw previous-frame differencing treats every frame-to-frame change as signal. The EMA instead builds a per-pixel *model* of "normal" and flags only deviations from that model.
 
-**Why not raw-frame priming?** Writing raw `y_cur` to RAM on frame 0 was evaluated but rejected. While it fills the background model instantly, any foreground object present in frame 0 gets its luma committed to the background. When the object moves, the departure ghost persists for `~1/alpha` frames — much worse than the EMA warm-up from zero. With EMA from zero, the background only moves `y_cur >> ALPHA_SHIFT` toward the object per frame, so departure ghosts from the initial convergence clear quickly.
+#### Frame-0 hard initialization
+
+The background RAM is zero-initialized on reset, which would produce a multi-frame convergence ramp (and near-full-frame mask=1 on frame 0). Instead, a single-bit `primed` register gates the module into a one-frame priming pass:
+
+- While `primed == 0` (first frame only): every accepted pixel writes its own `Y_smooth` value directly to `bg[addr]`, and `mask_bit` is forced to 0. No EMA is applied.
+- `primed` latches to 1 on the last beat of frame 0 (`end_of_row && out_row == V_ACTIVE-1 && beat_done`). Frame 1's very first pixel sees `primed == 1`.
+- From frame 1 onward: normal threshold + selective-EMA compute path applies.
+
+An earlier design considered raw first-frame priming (write `y_cur` straight to bg, **but also compute mask**). That was rejected because any foreground object present in frame 0 would be committed to the background and then, when it moved, leave a departure ghost for `~1/alpha` frames. The current design avoids this by **suppressing the mask output during priming** and, more importantly, combining priming with selective EMA (next subsection) so subsequent frames do not keep rewriting the background under moving objects.
+
+#### Selective EMA — two rates
+
+The EMA rate differs based on the current pixel's mask bit:
+
+- **Non-motion pixel** (`raw_motion = 0`) — `alpha = 1 / (1 << ALPHA_SHIFT)`, default 1/8. Tracks slow scene changes (illumination drift, AGC).
+- **Motion pixel** (`raw_motion = 1`) — `alpha = 1 / (1 << ALPHA_SHIFT_SLOW)`, default 1/64. Nearly freezes the background under a moving object, which is what prevents trail formation. Also governs absorption of objects that stop moving; at 30 fps and default 6, a stopped object is absorbed in ~2 s.
+
+Both rates share one subtractor; the two shifts are constant fan-outs of the same signed `ema_delta`, so synthesis collapses the cost.
 
 ### 4.5 Placement rationale — no incremental RAM for EMA
 
@@ -303,17 +321,23 @@ logic       mask_bit_o = (diff > THRESH);         // 8-bit unsigned compare
 The EMA update shares the same `motion_core` instance as the threshold comparison, using signed arithmetic so the EMA step can go either direction:
 
 ```systemverilog
-// motion_core — EMA path
-logic signed [8:0] ema_delta    = {1'b0, y_cur_i} - {1'b0, y_bg_i};  // signed 9-bit
-logic signed [8:0] ema_step     = ema_delta >>> ALPHA_SHIFT;         // arithmetic right-shift
-logic        [7:0] ema_update_o = y_bg_i + ema_step[7:0];            // new bg value
+// motion_core — EMA path (shared subtract, two shifts, two adders)
+logic signed [8:0] ema_delta       = {1'b0, y_cur_i} - {1'b0, y_bg_i};   // one signed 9-bit subtract
+logic signed [8:0] ema_step_fast   = ema_delta >>> ALPHA_SHIFT;          // wire shift, α=1/(1<<ALPHA_SHIFT)
+logic signed [8:0] ema_step_slow   = ema_delta >>> ALPHA_SHIFT_SLOW;     // wire shift, α=1/(1<<ALPHA_SHIFT_SLOW)
+logic        [7:0] ema_update_o      = y_bg_i + ema_step_fast[7:0];      // non-motion branch
+logic        [7:0] ema_update_slow_o = y_bg_i + ema_step_slow[7:0];      // motion branch
 ```
 
-The EMA multiplication by `α = 1/(1 << ALPHA_SHIFT)` is implemented as an arithmetic right-shift, requiring no multiplier. When `ALPHA_SHIFT = 0`, the EMA degenerates to raw frame write-back (`bg_new = y_cur`), which matches the pre-EMA behaviour bit-for-bit and is useful for bring-up comparisons.
+`axis_motion_detect` selects among three write-back sources per pixel:
 
-The arithmetic right-shift (`>>>`) preserves the sign of `ema_delta`, so `bg` can move down as well as up when `y_cur < bg`. The shift count is the `ALPHA_SHIFT` compile-time parameter, so no multiplier or runtime shifter is synthesised; Yosys/Verilator infers a fixed wire routing. When `ALPHA_SHIFT = 0` the shift is a no-op, `ema_step = ema_delta`, and `ema_update_o = y_cur_i` — bit-for-bit raw write-back.
+```
+bg_next = !primed     ? y_smooth          // frame-0 hard init
+        :  raw_motion ? ema_update_slow_o // motion pixel → slow rate
+        :               ema_update_o      // non-motion pixel → fast rate
+```
 
-The write-back port assignment is `mem_wr_data_o <= ema_update_o`. This is the only change the EMA introduces versus a raw previous-frame buffer; the RAM region, addressing, read path, and comparison path are untouched (see §4.5 "Placement rationale — no incremental RAM for EMA").
+The selection is driven by one combinational mux feeding `mem_wr_data_o`. `raw_motion` is the unchanged threshold comparison `(|Y_smooth - bg| > THRESH)`. The mask output stream uses `mask_bit_o`, which is gated by `primed_i` inside `motion_core` so the wrapper does not re-implement the gate on the AXIS output.
 
 ### 5.5 Pixel address counter
 
@@ -406,6 +430,7 @@ There is no explicit FSM. Pipeline stall logic is purely combinational from `pip
 | `pix_addr_hold` | `axis_motion_detect` | Registered hold address — keeps `mem_rd_addr_o` stable during stall |
 | `idx_pipe` | `axis_motion_detect` | Pixel address pipeline — tracks address through stages for write-back |
 | `held_tdata` | `axis_motion_detect` | Last accepted pixel data — feeds rgb2ycrcb during stall |
+| `primed` | `axis_motion_detect` | 1-bit sticky flag — 0 during frame 0, set to 1 on the last beat of frame 0 and held. Gates the 3:1 `bg_next` mux and the `mask_bit_o` output. |
 
 ---
 
@@ -420,9 +445,9 @@ There is no explicit FSM. Pipeline stall logic is purely combinational from `pip
 | Total pixel input → mask output (`GAUSS_EN=1`) | H_ACTIVE + 3 clock cycles (323 at 320px) |
 | Throughput | 1 pixel / cycle (when `msk_tready=1`) |
 
-Frame 0: RAM is zero-initialized → all pixels read `bg=0` → mask=1 for every non-black pixel → near-full-frame "motion" mask. `axis_ccl` suppresses bbox output for the first 2 frames (`PRIME_FRAMES`; EOF FSM still runs but `PHASE_SWAP` leaves the front buffer empty) to avoid this artifact. The EMA converges from zero toward the actual scene luma over `~1/alpha` frames.
+Frame 0 (priming): `primed == 0` for all `H_ACTIVE × V_ACTIVE` beats. Each pixel writes its own `Y_smooth` to `bg[addr]` and emits `mask_bit = 0`. By the end of frame 0 the RAM holds a valid per-pixel background model. `primed` latches to 1 on the last beat; frame 1's first pixel uses normal compare + selective-EMA.
 
-EMA convergence: After a step change in a pixel's value, the background converges toward the new value over approximately `1/alpha = 1 << ALPHA_SHIFT` frames. With the default `ALPHA_SHIFT=3` (alpha=1/8), a pixel that steps from 100 to 200 will have its background reach ~200 after ~16 frames. Motion is detected (mask=1) for the first several frames until `|Y_cur - bg|` drops below `THRESH`. This is the intended behavior — transient objects are detected, then absorbed into the background.
+EMA convergence (frame ≥ 1): a pixel whose true scenery value shifts by Δ converges toward the new value at rate α per frame. For non-motion pixels α = 1/8 (full convergence in ~8 frames); for motion pixels α = 1/64 (convergence / absorption in ~64 frames). Once a pixel flagged as motion returns to matching its stored bg (object departure), the mask clears on the very next frame — there is no cleanup phase because the bg was not contaminated in the first place.
 
 ---
 
@@ -436,11 +461,12 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 
 - **No morphological post-filtering**: the binary mask is not cleaned up with erode/dilate. A single noisy pixel that survives the Gaussian pre-filter still produces a mask=1 bit. Morphological opening is deferred.
 - **Fixed THRESH**: compile-time parameter. Runtime control requires promoting to an input port and a `sparevideo_csr` AXI-Lite register.
-- **Fixed ALPHA_SHIFT**: compile-time parameter. Different scenes may benefit from different adaptation rates; runtime control would require the same CSR promotion as THRESH.
+- **Fixed ALPHA_SHIFT / ALPHA_SHIFT_SLOW**: both are compile-time parameters. Different scenes may benefit from different adaptation rates; runtime control would require promotion to input ports driven by a future `sparevideo_csr` AXI-Lite register.
 - **`Cr`/`Cb` unused**: `rgb2ycrcb` outputs `cb_o` and `cr_o`; only `y_o` is used. Lint waivers suppress `PINCONNECTEMPTY`/`UNUSEDSIGNAL`.
 - **Single-buffered**: no double-buffering. Mid-frame RAM corruption by port B clients accessing the background model region during an active frame will produce incorrect mask bits. See the host-responsibility rule in [ram-arch.md](ram-arch.md).
 - **Bbox oversizing**: the polarity-agnostic mask flags both arrival and departure pixels, so the bbox is slightly larger than the object by approximately the per-frame displacement. This is a deliberate trade-off for scene-type independence.
 - **EMA rounding bias**: the arithmetic right-shift truncates toward negative infinity, introducing a small systematic bias. For typical video luma values this is negligible (sub-LSB after a few frames).
+- **Frame-0 priming assumes a representative bg**: if the very first frame contains a foreground object, that object's luma is committed to the background in that region. Subsequent frames will flag the object as motion (since it still occupies that pixel) and selective EMA (slow rate) will absorb it over ~64 frames. Acceptable for typical scenes where bring-up starts with an empty frame; deliberate deployment with a pre-populated scene may want a reset sequence.
 
 ---
 

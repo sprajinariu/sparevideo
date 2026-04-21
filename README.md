@@ -143,8 +143,8 @@ make run-pipeline CTRL_FLOW=motion        # motion detect + N-bbox overlay — p
 make run-pipeline CTRL_FLOW=mask          # raw motion mask — B/W output for debugging
 make run-pipeline CTRL_FLOW=ccl_bbox      # mask-as-grey canvas + CCL bboxes (debug CCL directly)
 
-# EMA background model tuning
-make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
+# EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
+make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -184,6 +184,7 @@ make render
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
 | `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `ALPHA_SHIFT` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
+| `ALPHA_SHIFT_SLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `GAUSS_EN` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
@@ -217,6 +218,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
 | `ALPHA_SHIFT` | `3` | EMA background adaptation rate: `alpha = 1/(1 << N)`. Higher = slower adaptation (more noise suppression, longer departure ghosts). 0 = raw frame differencing (no EMA). Compile-time RTL parameter propagated to Verilator via `-G`. |
+| `ALPHA_SHIFT_SLOW` | `6` | EMA background adaptation rate for motion pixels: `alpha = 1/(1 << N)`. Default 6 (α=1/64). Larger than `ALPHA_SHIFT` so motion pixels barely drift bg → no trails. Also governs absorption time of stopped objects. Compile-time RTL parameter propagated via `-G`. |
 | `GAUSS_EN` | `1` | Gaussian pre-filter on Y channel: `1` = enabled (3x3 blur before motion threshold), `0` = disabled (raw Y). Reduces salt-and-pepper noise in the motion mask. Compile-time RTL parameter propagated to Verilator via `-G`. |
 
 ### Synthetic Sources

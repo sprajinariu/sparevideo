@@ -43,8 +43,8 @@ make run-pipeline CTRL_FLOW=ccl_bbox                  # mask-as-grey + CCL bboxe
 make prepare SOURCE="synthetic:gradient" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
 make sim                     # uses saved options
 
-# EMA background model tuning (ALPHA_SHIFT is a compile-time Verilator parameter)
-make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
+# EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
+make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
 
 # Other targets
 make lint                    # Verilator lint
@@ -204,15 +204,15 @@ The SVAs `assert_fifo_in_not_full` and `assert_fifo_out_not_full` (in `sparevide
 
 These apply to any future motion pipeline block (Gaussian, morphology, CCL, adaptive threshold).
 
-**No first-frame priming.** Writing raw `y_cur` to RAM on frame 0 causes departure ghosts: foreground objects in frame 0 get committed to the background, and when they move, the ghost persists for `~1/alpha` frames. The EMA starts from zero and converges naturally. The bbox is already suppressed for the first 2 frames, so the convergence cost is acceptable.
+**Frame-0 hard-init + selective EMA.** The background RAM is primed in frame 0 by writing `y_smooth` directly (mask forced to 0 for that frame), then from frame 1 onward the EMA rate is selected per pixel: `ALPHA_SHIFT` (fast, α=1/8) when the pixel is *not* flagged as motion, `ALPHA_SHIFT_SLOW` (slow, α=1/64) when it *is*. The slow rate on motion pixels prevents foreground contamination (trails) while still absorbing stopped objects over ~1/α_slow frames. This combination supersedes the earlier "no first-frame priming" rule, whose failure mode (departure ghosts from frame-0 foreground) is prevented by the selective rate, not by avoiding priming.
 
-**Compile-time RTL parameters must propagate through the full Makefile chain.** Any new `-G` parameter (e.g., KERNEL_SIZE, MAX_LABELS) needs: top Makefile `?=` default → SIM_VARS → dv/sim/Makefile `?=` default → VLT_FLAGS `-G` → tb_sparevideo.sv parameter → DUT. The config stamp in dv/sim/Makefile must include it so parameter changes trigger recompilation.
+**Compile-time RTL parameters must propagate through the full Makefile chain.** Any new `-G` parameter (e.g., `ALPHA_SHIFT_SLOW`, `KERNEL_SIZE`, `MAX_LABELS`) needs: top Makefile `?=` default → SIM_VARS → dv/sim/Makefile `?=` default → VLT_FLAGS `-G` → tb_sparevideo.sv parameter → DUT. The config stamp in dv/sim/Makefile must include it so parameter changes trigger recompilation.
 
 **Synthetic test patterns must exercise the feature meaningfully.** Rule of thumb for noise patterns: `2 × noise_amplitude > THRESH` for EMA to demonstrate value over raw differencing. The `noisy_moving_box` pattern uses `noise_amplitude=10` vs `THRESH=16`.
 
 **Departure ghosts are inherent to EMA.** When an object moves, pixels at its old position show as motion until the background converges back (~`1/alpha` frames). This is the trade-off for noise suppression, not a bug.
 
-**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple sources at TOLERANCE=0.
+**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple ALPHA_SHIFT_SLOW values (5,6,7) × multiple sources at TOLERANCE=0.
 
 **Vblank FSM modules must deassert tready for the full FSM duration.** `axis_ccl` deasserts `tready` during PHASE_A..PHASE_SWAP (the EOF resolution FSM) so pixels cannot arrive while internal state is exclusively owned by the FSM. Per-pixel writes are additionally gated on `PHASE_IDLE`, but those gates alone are not sufficient — without the tready deassert, the FIFO upstream can push pixels that advance `line_buf` and `col`/`row` without updating `equiv[]` or `acc_*[]`, silently corrupting the labeling state. Vblank timing must exceed the worst-case FSM cycle budget; see `axis_ccl-arch.md §6.7`.
 
