@@ -52,14 +52,7 @@ It is nearly a pure sink on its AXIS port: `tready` is asserted during streaming
 
 ## 2. Module Hierarchy
 
-`axis_ccl` is a leaf module — no submodules. It is instantiated in [`sparevideo_top`](sparevideo-top-arch.md) as `u_ccl`, downstream of the motion-detect mask output and in parallel with the RGB path that feeds [`axis_overlay_bbox`](axis_overlay_bbox-arch.md).
-
-```
-sparevideo_top
-├── axis_motion_detect (u_motion_detect)  ← produces msk_*
-├── axis_ccl           (u_ccl)            ← this module
-└── axis_overlay_bbox  (u_overlay)        ← consumes N_OUT × {min_x,max_x,min_y,max_y,valid}
-```
+`axis_ccl` is a leaf module. It is instantiated in [`sparevideo_top`](sparevideo-top-arch.md) as `u_ccl`, between [`axis_motion_detect`](axis_motion_detect-arch.md) (producer of the mask stream) and [`axis_overlay_bbox`](axis_overlay_bbox-arch.md) (consumer of the `N_OUT` bbox sideband).
 
 ---
 
@@ -75,7 +68,7 @@ sparevideo_top
 | `N_OUT` | 8 (from pkg) | Output bbox slots exposed on the sideband. |
 | `MIN_COMPONENT_PIXELS` | 16 (from pkg) | Minimum pixel count for a component to survive Phase C. |
 | `MAX_CHAIN_DEPTH` | 8 (from pkg) | Upper bound on Phase A per-label chase steps. |
-| `PRIME_FRAMES` | 2 (from pkg) | Number of initial frames for which PHASE_SWAP skips the front-buffer update. Matches `motion` Python model so the EMA has time to converge before any bbox is reported. |
+| `PRIME_FRAMES` | 2 (from pkg) | Number of initial frames for which PHASE_SWAP skips the front-buffer update, giving the upstream EMA background model time to converge before any bbox is reported. |
 
 ### 3.2 Ports
 
@@ -99,7 +92,7 @@ sparevideo_top
 | `bbox_swap_o` | output | 1 | 1-cycle strobe pulsed at PHASE_SWAP — indicates a new frame's bboxes are now visible on the front buffer. |
 | `bbox_empty_o` | output | 1 | Asserted when no slot is valid (i.e. `bbox_valid_o == '0`) — convenience signal for downstream. |
 
-`s_axis_tready_o` is high during streaming and low during the EOF resolution FSM (§6.7). In the multi-consumer broadcast in `sparevideo_top` (mask display and CCL_BBOX modes) the mask stream is consumed by both `axis_ccl` and a passthrough path; the top-level AND-combines the tready signals so the upstream stalls when *either* consumer is not ready. `axis_ccl` is additionally fed a `ccl_beat_strobe = msk_tvalid && msk_tready` as its `tvalid` so it advances exactly once per globally-accepted beat, rather than once per raw-upstream beat — without this, cycles stalled by the other consumer would be double-counted by the internal col/row counters. See `sparevideo_top.sv` `ccl_beat_strobe`.
+`s_axis_tready_o` is high during streaming and low during the EOF resolution FSM (§6.7). For how the parent wires this module into a multi-consumer broadcast in mask-display and ccl_bbox modes, see [sparevideo-top-arch.md](sparevideo-top-arch.md) §5.1.
 
 ---
 
@@ -122,7 +115,7 @@ sparevideo_top
 | **Accumulator** | The per-label running stats (`acc_min_x[L]`, `acc_max_x[L]`, `acc_min_y[L]`, `acc_max_y[L]`, `acc_count[L]`) — effectively a bbox-in-progress. Updated once per accepted foreground pixel. |
 | **Sentinel** | The initial value of each accumulator field, chosen so the first foreground pixel automatically wins the min/max comparator. `min_*` sentinels are set to the maximum possible coordinate; `max_*` sentinels are set to 0; `count` starts at 0. |
 | **Fold** | At EOF, copying a non-root label's accumulator into its root's accumulator (element-wise min/min/max/max/sum) and zeroing the non-root. Phase B does this. |
-| **Prime frames** | The first `PRIME_FRAMES` frames after reset, during which the module computes bboxes internally but hides them (the front buffer stays empty). `axis_motion_detect`'s EMA background starts at zero, so early frames read as mostly-foreground and would produce huge spurious bboxes; suppressing output until the EMA has converged avoids that — and matches the Python `motion` model's own warm-up window so RTL and model agree bit-for-bit. See §6.6. |
+| **Prime frames** | The first `PRIME_FRAMES` frames after reset, during which the module computes bboxes internally but hides them (the front buffer stays empty). `axis_motion_detect`'s EMA background starts at zero, so early frames read as mostly-foreground and would produce huge spurious bboxes; suppressing output until the EMA has converged avoids that. See §6.6. |
 
 #### Storage model
 
@@ -241,8 +234,6 @@ On a 2-distinct merge, we unconditionally write `equiv[max_label] = min_label`. 
 
 Leaving the table partially compressed during the frame is safe: Phase A at EOF walks every label and flattens chains to roots (bounded by `MAX_CHAIN_DEPTH`) before the accumulator fold.
 
-The Python reference model in `py/models/ccl.py` matches this discipline exactly — a single `equiv[hi] = lo` write on merge, no pre-chase. Chasing in the model would over-merge compared to the RTL on adversarial noisy masks where two labels that would later unify have not yet been chained by pixel order.
-
 ### 4.4 Overflow semantics
 
 `next_free` starts at 1 and saturates at `N_LABELS_INT` (it is `LABEL_W+1` bits wide so the comparison `next_free < N_LABELS_INT` is exact, no wrap). Once saturated, any new component is assigned label 0. Label 0's accumulator pools all overflow pixels. If that pool exceeds `MIN_COMPONENT_PIXELS` it surfaces as a spurious catch-all bbox — documented, not a correctness bug.
@@ -351,14 +342,14 @@ any_above   = |{nb_nw, nb_n, nb_ne} ≠ 0
 min_above   = min(nb_nw, nb_n, nb_ne), treating 0 as absent
 any_nonzero = any_above || (nb_w ≠ 0)
 
-if !any_nonzero:                 pick = next_free, or 0 on overflow
-else if !any_above:              pick = nb_w
+if !any_nonzero:                 pick = next_free, or 0 on overflow   // pick       : label to assign to current pixel
+else if !any_above:              pick = nb_w                          //              (written to line_buf, w_label, indexes acc_*)
 else if nb_w == 0:               pick = min_above
 else if nb_w == min_above:       pick = nb_w                    (single label, no merge)
 else:                            pick = min(nb_w, min_above)
-                                 need_merge = 1
-                                 merge_hi   = max(nb_w, min_above)
-                                 merge_lo   = min(nb_w, min_above)
+                                 need_merge = 1                       // need_merge : two distinct labels seen — record equivalence
+                                 merge_hi   = max(nb_w, min_above)    // merge_hi   : larger label (equiv[] key, child in union-find)
+                                 merge_lo   = min(nb_w, min_above)    // merge_lo   : smaller label (equiv[] value, parent/root)
 ```
 
 `min_above` is computed as a chain of three comparators (not a parameterized `min`-reduction). Since `{nb_nw, nb_n, nb_ne}` can contribute at most one non-zero label (invariant §4.2), the particular tie-breaking order between them is irrelevant — at least two of the three inputs are 0 whenever any foreground is present.
@@ -399,7 +390,22 @@ Sentinels ensure the first foreground pixel always wins the `<`/`>` comparators.
 
 ### 5.8 Output double-buffer
 
+**Why two buffers.** The overlay consumer reads the `N_OUT` slots continuously throughout the active region (every pixel checks "am I on the border of any valid bbox?"). If Phase C wrote directly to the visible buffer, the overlay would see a mix of new and old slots as Phase C walks through them, producing a torn frame with mixed-generation rectangles. Double-buffering decouples the two sides: Phase C writes `back_*` at its own pace during vblank; the overlay reads the stable `front_*` from the previous frame. The swap happens during vblank, when the overlay is inactive anyway, so the transition is never observed mid-rectangle.
+
 Two independent register banks: `front_*` (visible on the ports) and `back_*` (written by Phase C). At PHASE_SWAP, `front_* <= back_*` is a bulk register-to-register copy (not a memory op), so the swap is a single-cycle atomic transition from the consumer's perspective. `bbox_swap_o` is a 1-cycle strobe on the swap cycle.
+
+Each bank is a family of 5 `N_OUT`-entry arrays — one entry per bbox slot:
+
+| Field | Per-slot width | Role |
+|-------|----------------|------|
+| `*_valid` | 1 | slot occupied |
+| `*_min_x` | `COL_W` | left edge |
+| `*_max_x` | `COL_W` | right edge |
+| `*_min_y` | `ROW_W` | top edge |
+| `*_max_y` | `ROW_W` | bottom edge |
+
+`front_*` is driven onto the output ports (`bbox_valid_o`, `bbox_min_x_o`, `bbox_max_x_o`, `bbox_min_y_o`, `bbox_max_y_o`). 
+`back_*` is Phase C's scratch space.
 
 `back_valid` is cleared at the end of PHASE_SWAP so PHASE_C of the *next* frame starts from an empty slate (slots it does not fill stay de-asserted).
 
@@ -426,6 +432,8 @@ Total: ~5.6 kb distributed RAM + ~640 FFs. No BRAM. No DSP. No shared RAM.
 
 ### 6.1 EOF detection
 
+*Detects the last pixel of the active region and triggers the vblank FSM.*
+
 ```
 is_eof   = accept_d1 && tlast_d1 && (row_d1 == V_ACTIVE - 1)
 is_eof_r = register(is_eof)    // 1-cycle delay so last-pixel acc write has committed
@@ -434,6 +442,8 @@ is_eof_r = register(is_eof)    // 1-cycle delay so last-pixel acc write has comm
 `is_eof_r` drives PHASE_IDLE → PHASE_A. The 1-cycle delay between `is_eof` and entering Phase A gives the last pixel's accumulator RMW (scheduled on the same cycle as `is_eof`) time to land before Phase A reads start.
 
 ### 6.2 Phase A — path compression
+
+*Rewrites each `equiv[L]` to point directly at its root, so Phase B can fold in one hop.*
 
 For each label `L = 1..N_LABELS_INT-1`:
 
@@ -452,6 +462,8 @@ Bounded by `MAX_CHAIN_DEPTH = 8`, which is well above the chain depth observed o
 
 ### 6.3 Phase B — accumulator fold
 
+*Merges each non-root's accumulator into its root and clears the non-root.*
+
 For each label `L` with `equiv[L] ≠ L` and `acc_count[L] ≠ 0`:
 
 ```
@@ -464,9 +476,16 @@ cycle 2 (commit):   acc[equiv[L]] ← merge(acc[equiv[L]], fold_src)
                     advance L
 ```
 
+Where:
+- `fold_src` — snapshot of the non-root's accumulator tuple `(min_x, max_x, min_y, max_y, count)`, taken on cycle 1 so cycle 2 can read a different address without a structural hazard.
+- `fold_dst_lbl` — the root label that will absorb `fold_src`. Equals `equiv[L]` after Phase A (path compression guarantees all non-roots point directly to their root, so this is one read, no chase).
+- `fold_wr_pending` — 1-cycle flag marking "cycle 1 captured, commit the write on cycle 2".
+
 Two cycles per fold candidate covers the 1R1W latency of the distributed-RAM-style accumulator arrays. Non-folded labels (roots, or non-roots with count=0) advance in a single cycle.
 
 ### 6.4 Phase C — min-size filter + top-N selection
+
+*Drops components below `MIN_COMPONENT_PIXELS` and writes the largest `N_OUT` survivors into `back_*`.*
 
 For each output slot `s = 0..N_OUT-1`:
 
@@ -490,9 +509,13 @@ Note: Label 0 is scanned — overflow-pooled pixels can produce a catch-all bbox
 
 ### 6.5 Phase D — reset for next frame
 
-Walks `L = 0..N_LABELS_INT-1`, restoring each row to the sentinel state described in §5.7: `equiv[L] ← L`, `acc_min_x[L] ← H-1`, `acc_max_x[L] ← 0`, `acc_min_y[L] ← V-1`, `acc_max_y[L] ← 0`, `acc_count[L] ← 0`. After the last label, `next_free ← 1` and PHASE_D → PHASE_SWAP.
+*Restores `equiv[]` and all accumulators to their sentinel values so the next frame starts clean.*
+
+Walks `L = 0..N_LABELS_INT-1`, restoring each row to the sentinel state described in §5.7. After the last label, `next_free ← 1` and PHASE_D → PHASE_SWAP.
 
 ### 6.6 PHASE_SWAP — front-buffer commit + priming
+
+*Atomically copies `back_* → front_*` (except during the prime window) and pulses `bbox_swap_o`.*
 
 ```
 if prime_cnt ≥ PRIME_FRAMES:
@@ -506,7 +529,7 @@ phase ← PHASE_IDLE
 
 During the priming window, back-buffer data is computed and then *discarded* — the front buffer stays all-invalid so the overlay draws no rectangles. `bbox_swap_o` still pulses, so downstream consumers see a consistent "new frame ready, contents empty" handshake.
 
-*Why this exists.* `axis_motion_detect`'s EMA background model starts at zero. On frame 0 every pixel differs maximally from the (empty) background, so the mask is mostly foreground and CCL would report one or more frame-filling bboxes — an obvious visual artifact. The EMA converges within `~1/ALPHA` frames; with the default `ALPHA_SHIFT=2` (α=1/4), two frames is enough to suppress the worst of it. Matching `PRIME_FRAMES` to the Python `motion` model's prime window also keeps RTL and model bit-identical at `TOLERANCE=0`; without the match, the first two frames would flag as verification diffs even though the RTL is correct.
+*Why this exists.* `axis_motion_detect`'s EMA background model starts at zero. On frame 0 every pixel differs maximally from the (empty) background, so the mask is mostly foreground and CCL would report one or more frame-filling bboxes — an obvious visual artifact. The EMA converges within `~1/ALPHA` frames; with the default `ALPHA_SHIFT=2` (α=1/4), two frames is enough to suppress the worst of it.
 
 ### 6.7 Cycle budget
 
@@ -519,9 +542,9 @@ During the priming window, back-buffer data is computed and then *discarded* —
 | SWAP | 1 | — |
 | **Total** | — | **~1,280 worst case** |
 
-Vblank at real VGA 640×480 @ 60 Hz on a 100 MHz DSP clock is ~144 kcycles — ~100× headroom. The project TB uses `V_BLANK_TOTAL = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH = 20` lines at 320×240 with `H_TOTAL ≈ 336` — ~6.7 kcycles, ~5× headroom.
+Vblank at real VGA 640×480 @ 60 Hz on a 100 MHz DSP clock is ~144 kcycles — ~100× headroom.
 
-This headroom is a **correctness** constraint, not just a throughput one: the per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are gated on `phase == PHASE_IDLE`. If a pixel is accepted while the FSM is still in any of `PHASE_A..PHASE_SWAP`, its label/accumulator update is silently dropped, while `line_buf`, `w_label`, and `col`/`row` still advance — corrupting the labeling state when streaming resumes. The RTL defends against this two ways: (a) `s_axis_tready_o = (phase == PHASE_IDLE)` structurally back-pressures the upstream for the FSM duration; (b) a Verilator-only SVA `assert_no_accept_during_eof_fsm` traps any handshake that sneaks through. Integrators must still size their inter-frame idle window to exceed the cycle budget above — the FIFOs in front of `axis_ccl` have finite depth and will eventually reflect the stall upstream.
+This headroom is a **correctness** constraint, not just a throughput one: the per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are gated on `phase == PHASE_IDLE`. If a pixel is accepted while the FSM is still in any of `PHASE_A..PHASE_SWAP`, its label/accumulator update is silently dropped, while `line_buf`, `w_label`, and `col`/`row` still advance — corrupting the labeling state when streaming resumes. The RTL defends against this two ways: (a) `s_axis_tready_o = (phase == PHASE_IDLE)` structurally back-pressures the upstream for the FSM duration; (b) an SVA `assert_no_accept_during_eof_fsm` traps any handshake during the FSM. Integrating designs must still size the inter-frame idle window to exceed the cycle budget above, since the FIFOs in front of `axis_ccl` have finite depth.
 
 ---
 
@@ -553,7 +576,7 @@ Module parameter defaults reference the package constants. Override at instantia
 
 ## 9. Known Limitations
 
-- **Single equiv write per pixel can over-split vs. full union-find.** On noisy masks, two labels that would eventually unify via a third label may not merge within one frame if the chains haven't been built up by raster order. This is an accepted spec trade-off: the 1W port budget is tight, and over-splitting is safer than mis-merging. The Python model matches this exactly, so RTL and model agree bit-for-bit.
+- **Single equiv write per pixel can over-split vs. full union-find.** On noisy masks, two labels that would eventually unify via a third label may not merge within one frame if the chains haven't been built up by raster order. This is an accepted spec trade-off: the 1W port budget is tight, and over-splitting is safer than mis-merging.
 - **`MAX_CHAIN_DEPTH = 8` is a hard bound.** Chains deeper than 8 leave tail labels referencing a *non-root* (Phase A writes `equiv[L] ← chase_root` even when the chase terminates on the depth limit rather than on a fixed point). Phase B then folds `acc[L]` into `acc[equiv[L]]`, which is itself a non-root, so the component ends up split between the root accumulator and the partially-chased midpoint. On natural masks, observed chain depth is small (≤3) and this has no visible effect. If `N_LABELS_INT` is raised substantially without a proportional bump to `MAX_CHAIN_DEPTH`, the silent-split behavior can degrade top-K selection — the split halves compete against each other for slots rather than being unified.
 - **Label 0 overflow can produce a catch-all bbox.** When `N_LABELS_INT` is exhausted mid-frame, subsequent new components pool into label 0. If the pool exceeds `MIN_COMPONENT_PIXELS`, Phase C emits a spurious union-of-everything bbox. Mitigation: raise `N_LABELS_INT`; or add label recycling (future work).
 - **Homogeneous object fragmentation is inherited from the mask.** EMA-based motion detection marks only leading/trailing edges of solid-color objects. CCL correctly labels these as separate components — there is no within-frame way to reunite them. Follow-ups (morphological closing, bbox-merge post-pass) are documented in `docs/plans/old/2026-04-20_block4-ccl.md`.
@@ -564,8 +587,5 @@ Module parameter defaults reference the package constants. Override at instantia
 
 ## 10. References
 
-- **Block 4 short plan:** [docs/plans/old/2026-04-20_block4-ccl.md](../plans/old/2026-04-20_block4-ccl.md) — motivation, algorithm, cycle budget, verification plan.
-- **Detailed implementation plan:** [docs/plans/old/2026-04-20_block4-ccl-implementation.md](../plans/old/2026-04-20_block4-ccl-implementation.md) — task-by-task plan used to drive the implementation.
 - **Parent pipeline:** [axis_motion_detect-arch.md](axis_motion_detect-arch.md), [axis_overlay_bbox-arch.md](axis_overlay_bbox-arch.md), [sparevideo-top-arch.md](sparevideo-top-arch.md).
-- **Python reference model:** `py/models/ccl.py` — algorithm-equivalent to the RTL; cross-checked against `scipy.ndimage.label` for refinement (our bboxes ⊆ scipy's components) on sparse synthetic masks.
 - **Rosenfeld, A. & Pfaltz, J.L., "Sequential operations in digital picture processing," JACM 13(4), 1966** — classical two-pass raster CCL with equivalence table. This module's per-pixel logic is the streaming adaptation.
