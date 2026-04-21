@@ -3,7 +3,8 @@
 // Empty pin connections in sparevideo_top intentionally tie off unused
 // outputs of vendored verilog-axis modules.
 lint_off -rule PINCONNECTEMPTY -file "*sparevideo_top.sv"
-// axis_motion_detect ties off unused axis_gauss3x3 valid_o output.
+// axis_motion_detect has empty pin connections on internal sub-module
+// instances where the output is intentionally unused at this level.
 lint_off -rule PINCONNECTEMPTY -file "*axis_motion_detect.sv"
 // vga_controller and pattern_gen lack `timescale; harmless mismatch
 // against vendored verilog-axis files that do have one.

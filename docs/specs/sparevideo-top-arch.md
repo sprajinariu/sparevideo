@@ -1,5 +1,27 @@
 # sparevideo Top-Level Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Parameters](#31-parameters)
+- [4. Concept Description](#4-concept-description)
+  - [4.1 Dual-path pipeline: what is the "mask"?](#41-dual-path-pipeline-what-is-the-mask)
+  - [4.2 Mask/video latency independence](#42-maskvideo-latency-independence)
+  - [4.3 Design rationale: 1-frame bbox latency](#43-design-rationale-1-frame-bbox-latency)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Submodule roles](#51-submodule-roles)
+  - [5.2 AXI4-Stream protocol](#52-axi4-stream-protocol)
+- [6. Clock Domains](#6-clock-domains)
+- [7. Region Descriptor Model](#7-region-descriptor-model)
+  - [7.1 Future CSR register file (deferred)](#71-future-csr-register-file-deferred)
+- [8. Assertions (SVA, Verilator only)](#8-assertions-sva-verilator-only)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `sparevideo_top` is the top-level video processing pipeline. It accepts an AXI4-Stream RGB888 video input on a 25 MHz pixel clock (`clk_pix`), crosses the stream into a 100 MHz DSP clock domain, runs a **control-flow-selectable** processing pipeline, crosses back to the pixel clock, and drives a VGA controller to produce analogue RGB + hsync/vsync output.
@@ -56,7 +78,7 @@ sparevideo_top (top level)
 | `vga_g_o` | output | 8 | Green channel (0 during blanking) |
 | `vga_b_o` | output | 8 | Blue channel (0 during blanking) |
 
-### Parameters
+### 3.1 Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -88,7 +110,7 @@ Clock domain crossing (CDC) is handled by asynchronous FIFOs at the pipeline bou
 
 The processing pipeline itself (motion detection → bbox reduction → overlay) is documented in the individual module architecture documents. At the top level, the concern is how these modules are interconnected, how control flow selects between them, and how CDC and timing constraints are satisfied.
 
-### Dual-path pipeline: what is the "mask"?
+### 4.1 Dual-path pipeline: what is the "mask"?
 
 In motion/mask modes, the pipeline processes two parallel streams forked from the same input video. A top-level `axis_fork` (`u_fork`) broadcasts the DSP-domain input to two consumers:
 
@@ -120,7 +142,7 @@ So the full pipeline's job is: **video in → detect which pixels changed → fi
 
 In mask mode (`ctrl_flow_i = 2'b10`) the 1-bit mask is instead expanded to 24-bit black/white and fed directly to the output FIFO for debug visualization — bypassing both `u_bbox_reduce` and `u_overlay_bbox`.
 
-### Mask/video latency independence
+### 4.2 Mask/video latency independence
 
 The mask and video paths are consumed by **different modules that do not synchronize per-pixel** with each other, so adding stages to the mask path does not require compensating delay on the video path. Three invariants make this work:
 
@@ -130,7 +152,7 @@ The mask and video paths are consumed by **different modules that do not synchro
 
 As a result, any new mask-path stage between `u_motion_detect` and `u_bbox_reduce` can be inserted without touching the video path.
 
-### Design rationale: 1-frame bbox latency
+### 4.3 Design rationale: 1-frame bbox latency
 
 The bbox drawn on frame N is computed from motion observed during frame N−1. This is a deliberate architectural choice, not an accident of the implementation. A same-frame overlay is technically possible but strictly worse at this resolution:
 
@@ -218,7 +240,7 @@ The control-flow mux selects between:
 - **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. Both fork outputs are active; `u_fork` provides RGB to the overlay while also feeding `u_motion_detect` for mask/bbox. This is the default path.
 - **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure.
 
-### Submodule roles
+### 5.1 Submodule roles
 
 1. **u_fifo_in**: decouples the `clk_pix`-domain source from the DSP pipeline. Depth 32 entries. Overflow detected by SVA.
 2. **u_fork**: zero-latency 1-to-2 broadcast fork. Splits the DSP-domain stream so that `fork_b` (RGB) feeds the overlay directly while `fork_a` (RGB) feeds the motion detect mask pipeline. Per-output acceptance tracking prevents duplicate transfers on asymmetric consumer stalls. Instantiated only in the motion pipeline path; the fork input `tvalid` is gated to 0 in passthrough mode.
@@ -230,7 +252,7 @@ The control-flow mux selects between:
 8. **vga_rst_n gating**: the VGA controller is held in reset until the first `tuser=1` pixel exits `u_fifo_out`. This aligns the VGA scan to a frame boundary regardless of FIFO fill time.
 9. **u_vga**: drives horizontal/vertical counters, asserts `pixel_ready_o` during the active region, gates RGB output to 0 during blanking.
 
-### AXI4-Stream protocol
+### 5.2 AXI4-Stream protocol
 
 - `tdata[23:0]` = `{R[7:0], G[7:0], B[7:0]}`, RGB888.
 - `tuser[0]` = SOF — asserted only on pixel `(0, 0)` of each frame.
@@ -267,7 +289,7 @@ The BG_MODEL region stores the per-pixel EMA background estimate (8-bit luma). E
 
 A compile-time guard checks that `BASE + SIZE ≤ RAM_DEPTH`. Each client module receives its `RGN_BASE` and `RGN_SIZE` as parameters; it adds `RGN_BASE` to its internal counter to form the physical address, so the RAM module itself has no knowledge of partitions.
 
-### Future CSR register file (deferred)
+### 7.1 Future CSR register file (deferred)
 
 When runtime configurability is needed, the descriptor table and control knobs (`MOTION_THRESH`, `BBOX_COLOR`) migrate to a `sparevideo_csr` AXI-Lite slave on a new top-level port. Client module parameters become input ports of the same width; CSR values are latched on SOF to prevent mid-frame glitches.
 
@@ -292,7 +314,7 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 - **Simulation-only RAM**: `ram.sv` is a behavioral model. FPGA synthesis requires a vendor BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`).
 - **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box spans the full frame and the overlay draws a border around the image edge. This is a known cosmetic artifact. `axis_bbox_reduce` suppresses the bbox for the first 2 frames.
-- **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §4 "Design rationale: 1-frame bbox latency". Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
+- **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §4.3 "Design rationale: 1-frame bbox latency". Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
 - **No AXI-Lite control**: `MOTION_THRESH` and `BBOX_COLOR` are compile-time parameters. Runtime override requires a simulation plusarg and recompile for RTL.
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).

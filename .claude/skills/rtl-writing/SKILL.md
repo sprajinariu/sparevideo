@@ -14,6 +14,7 @@ Produce clean, lint-passing SystemVerilog RTL that follows the coding guidelines
 - [ ] Architecture document exists and is up to date
 - [ ] All port names and widths match the interface table in the arch doc
 - [ ] `sparevideo_pkg.sv` has all required types — do not define types inline in modules
+- [ ] Check for existing modules that can be reused instead of writing new code (e.g. third_party/verilog-axis)
 
 ## File Template
 

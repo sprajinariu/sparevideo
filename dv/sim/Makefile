@@ -24,6 +24,7 @@ FRAMES      ?= 4
 MODE        ?= text
 CTRL_FLOW   ?= motion
 ALPHA_SHIFT ?= 3
+GAUSS_EN    ?= 1
 INFILE      ?= ../data/input.txt
 OUTFILE     ?= ../data/output.txt
 
@@ -72,7 +73,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
-            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GGAUSS_EN=$(GAUSS_EN) \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -86,7 +87,7 @@ VLT_FLAGS = --binary -sv --timing \
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(GAUSS_EN)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(GAUSS_EN)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo

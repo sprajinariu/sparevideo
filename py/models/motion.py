@@ -26,33 +26,17 @@ PRIME_FRAMES = 2
 
 
 def _gauss3x3(y_frame):
-    """3x3 Gaussian blur matching RTL causal streaming filter.
+    """True centered 3x3 Gaussian blur.
 
-    Kernel: [1 2 1; 2 4 2; 1 2 1] / 16.
-
-    The RTL uses a causal streaming architecture (2-deep line buffers +
-    2-deep column shift registers) that centers the convolution at (r-1, c-1)
-    relative to scan position (r, c). To match this, the model computes
-    a standard centered convolution, then shifts the result by (-1, -1) —
-    i.e., for output pixel (r, c), the Gaussian is centered at (r-1, c-1).
-    Edge replication (np.pad mode='edge') handles border pixels, matching
-    the RTL's clamp-at-edge behavior.
+    Kernel: [1 2 1; 2 4 2; 1 2 1] / 16. For output pixel (r, c) the kernel
+    is centered at (r, c). Edge replication (np.pad mode='edge') handles
+    border pixels, matching the RTL's clamp-at-edge behavior.
 
     Integer arithmetic with >>4 truncation, not floating-point.
     """
     h, w = y_frame.shape
+    padded = np.pad(y_frame, 1, mode='edge')
 
-    # Pad by 2 on each side: 1 for the kernel radius, 1 for the causal offset.
-    # After convolution on the padded array, the causal-offset output for pixel
-    # (r, c) is at padded position (r, c) — i.e., kernel centered at (r-1, c-1)
-    # in the original image coordinates.
-    padded = np.pad(y_frame, 2, mode='edge')
-
-    # Convolution centered at (r-1, c-1) for each output pixel (r, c):
-    # padded[r-1+dr, c-1+dc] with dr,dc in {0,1,2} → padded[r+1+dr, c+1+dc]
-    # after accounting for the pad=2 offset.
-    # But since we want center=(r-1,c-1), that's padded index (r-1+2, c-1+2)
-    # for the center, so the 3x3 window starts at padded[r, c].
     result = np.zeros((h, w), dtype=np.uint16)
     for dr in range(3):
         for dc in range(3):

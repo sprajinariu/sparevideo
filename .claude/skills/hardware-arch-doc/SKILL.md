@@ -96,6 +96,8 @@ Link online links that were used as reference for this module.
 - Write in present tense ("the decoder produces", not "the decoder will produce").
 - Every signal mentioned in the document must match exactly the RTL port name.
 - Update this document whenever the RTL interface changes — the document and the RTL must stay in sync.
+- **Contents section**: add a `## Contents` table of contents immediately after the title, with markdown anchor links to every section and sub-section. Place a `---` separator between Contents and section 1.
+- **Sub-header numbering**: number sub-headers with the full `H.SH` scheme (e.g. `### 3.1 Parameters`, `### 3.2 Ports`). Use this scheme whenever a section has sub-headers; omit numbering only for sections with no sub-headers at all.
 
 ## After Writing
 
@@ -103,3 +105,4 @@ Link online links that were used as reference for this module.
 2. Update `README.md` to reflect the new module status.
 3. Update the top-level design spec (`sparevideo-top-arch.md`) if the module design deviates from it.
 4. Update the architecture doc to reflect any RTL update.
+5. Update the Contents section to reflect any new sections or sub-sections added during writing.

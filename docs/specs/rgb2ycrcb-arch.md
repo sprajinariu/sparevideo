@@ -1,5 +1,25 @@
 # `rgb2ycrcb` Architecture
 
+## Contents
+
+- [1. Purpose and Scope](#1-purpose-and-scope)
+- [2. Module Hierarchy](#2-module-hierarchy)
+- [3. Interface Specification](#3-interface-specification)
+  - [3.1 Ports](#31-ports)
+- [4. Concept Description](#4-concept-description)
+- [5. Internal Architecture](#5-internal-architecture)
+  - [5.1 Coefficient equations](#51-coefficient-equations)
+  - [5.2 Pipeline](#52-pipeline)
+  - [5.3 Resource cost](#53-resource-cost)
+  - [5.4 Verified corner cases](#54-verified-corner-cases)
+- [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
+- [7. Timing](#7-timing)
+- [8. Shared Types](#8-shared-types)
+- [9. Known Limitations](#9-known-limitations)
+- [10. References](#10-references)
+
+---
+
 ## 1. Purpose and Scope
 
 `rgb2ycrcb` converts a single 8-bit RGB888 pixel to 8-bit YCrCb using Rec.601-inspired fixed-point coefficients. It is a single-cycle pipeline: one `always_ff` stage that registers the top byte of each 17-bit MAC sum. Coefficient choices guarantee that all intermediate values are non-negative and fit within 17 bits without saturation. It does **not** implement the full Rec.601 standard (no studio-swing offsets), process multiple pixels in parallel, or buffer frames.
@@ -14,7 +34,7 @@
 
 ## 3. Interface Specification
 
-### Ports
+### 3.1 Ports
 
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
@@ -43,7 +63,7 @@ In this design, the Rec.601 floating-point coefficients are approximated as 8-bi
 
 ## 5. Internal Architecture
 
-### Coefficient equations
+### 5.1 Coefficient equations
 
 ```
 Y  = ( 77·R + 150·G +  29·B         ) >> 8
@@ -53,7 +73,7 @@ Cr = (128·R - 107·G -  21·B + 32768 ) >> 8
 
 The `+32768` offset for Cb/Cr keeps intermediate sums non-negative for all valid 8-bit inputs, eliminating the need for saturation logic. The `>>8` is implemented as `sum[15:8]` (bit-select, no logic).
 
-### Pipeline
+### 5.2 Pipeline
 
 **Cycle C (combinational)**:
 - `y_sum_c  = 17'(77·R) + 17'(150·G) + 17'(29·B)` — result ∈ [0, 65280]
@@ -65,11 +85,11 @@ The `+32768` offset for Cb/Cr keeps intermediate sums non-negative for all valid
 - `cb_o <= cb_sum_c[15:8]`
 - `cr_o <= cr_sum_c[15:8]`
 
-### Resource cost
+### 5.3 Resource cost
 
 The module uses 9 constant-coefficient multiplications (3 channels × 3 outputs). A synthesis tool typically infers these as DSP block primitives or optimized LUT-based multipliers. No RAM is consumed. The single pipeline register stage adds 24 flip-flops (3 × 8-bit outputs).
 
-### Verified corner cases
+### 5.4 Verified corner cases
 
 | RGB | Y | Cb | Cr |
 |-----|---|----|----|

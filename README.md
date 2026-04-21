@@ -62,7 +62,7 @@ hw/ip/rgb2ycrcb/tb/
 └── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
 
 hw/ip/gauss3x3/tb/
-└── tb_axis_gauss3x3.sv        6 tests: uniform/impulse/gradient/checkerboard/stall/SOF reset
+└── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
 
 hw/ip/motion/tb/
 ├── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
@@ -191,7 +191,7 @@ make render
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
-make test-ip-gauss3x3        # axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF
+make test-ip-gauss3x3        # axis_gauss3x3: 11 tests, centered Gaussian + latency + busy_o fallback
 make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
 make test-ip-bbox-reduce     # axis_bbox_reduce: 9 tests, edge cases, SOF reset
 make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure
