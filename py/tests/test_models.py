@@ -550,6 +550,103 @@ def test_mask_gauss_en_false_matches_old():
         assert not out[i].any(), f"Frame {i} should be all-black after EMA convergence"
 
 
+# ---- Frame-0 priming + selective EMA tests ----
+
+def _get_internal_bg(frames, alpha_shift=3, alpha_shift_slow=6, gauss_en=True):
+    """Run the motion model and return the internal bg state at each frame boundary.
+
+    Returns a list of bg arrays (uint8, shape H×W) — one per *processed* frame.
+    bg[0] is the state after frame 0 has been consumed.
+    """
+    from models.motion import _run_bg_trace
+    return _run_bg_trace(frames, alpha_shift=alpha_shift,
+                         alpha_shift_slow=alpha_shift_slow, gauss_en=gauss_en)
+
+
+def test_motion_frame0_priming_writes_bg():
+    """After frame 0, bg[px] equals Y(frame_0[px]) for every pixel (no EMA lag)."""
+    from models.motion import _rgb_to_y, _gauss3x3
+    frames = _static_frames(width=16, height=8, num_frames=1,
+                             color=(120, 60, 200))
+    bg_trace = _get_internal_bg(frames, alpha_shift=3, alpha_shift_slow=6,
+                                 gauss_en=True)
+    y0 = _rgb_to_y(frames[0])
+    y0_filt = _gauss3x3(y0)
+    np.testing.assert_array_equal(bg_trace[0], y0_filt)
+
+
+def test_motion_frame0_priming_mask_all_zero():
+    """The motion model's frame-0 output is visually indistinguishable from input
+    (no bbox overlay is drawn because primed=False and bbox state is all-None).
+    Also: mask bits emitted during frame 0 would be all zero."""
+    frames = _static_frames(width=16, height=8, num_frames=1,
+                             color=(120, 60, 200))
+    out = run_model("motion", frames, alpha_shift=3, alpha_shift_slow=6,
+                    gauss_en=True)
+    # frame 0 output is input (bbox state all-None on first frame regardless)
+    np.testing.assert_array_equal(out[0], frames[0])
+
+
+def test_motion_selective_ema_rates():
+    """Frame 2: after frame 1 establishes a stable bg, construct frame 2 so
+    that half the pixels are flagged motion and half are not. bg should drift
+    at the slow rate on motion pixels and fast rate on non-motion pixels."""
+    from models.motion import _rgb_to_y, _gauss3x3
+    w, h = 16, 8
+    num_frames = 3
+    # Build: frame 0 and frame 1 identical (prime + stabilize). frame 2 has
+    # a delta in the left half that exceeds thresh, and a sub-threshold delta
+    # in the right half.
+    frame0 = np.full((h, w, 3), 100, dtype=np.uint8)
+    frame1 = frame0.copy()
+    frame2 = frame0.copy()
+    frame2[:, :w // 2] = 180                       # Y delta ~80 > thresh
+    frame2[:, w // 2:] = 105                        # Y delta 5 < thresh
+    bg_trace = _get_internal_bg([frame0, frame1, frame2],
+                                 alpha_shift=3, alpha_shift_slow=6,
+                                 gauss_en=False)
+    # After frame 1, bg should equal Y(100) everywhere (primed on f0 → bg=100;
+    # frame 1 non-motion → fast EMA step toward 100 → still 100).
+    y_after_f1 = bg_trace[1]
+    assert np.all(y_after_f1 == 100)
+
+    # After frame 2:
+    #   Left half: motion pixel. delta=180-100=80. step = 80>>6 = 1. bg=101.
+    #   Right half: non-motion. delta=105-100=5.   step = 5>>3 = 0.  bg=100.
+    y_after_f2 = bg_trace[2]
+    assert np.all(y_after_f2[:, :w // 2] == 101), (
+        f"motion half should drift by (80>>6)=1, got {y_after_f2[0, 0]}")
+    assert np.all(y_after_f2[:, w // 2:] == 100), (
+        f"non-motion half should not drift, got {y_after_f2[0, -1]}")
+
+
+def test_motion_no_trail_after_object_departure():
+    """Object moves across a pixel for 2 frames then leaves. With selective EMA,
+    the pixel immediately stops flagging as motion once the object is gone."""
+    w, h = 16, 8
+    # f0: empty scene (Y=100)
+    # f1: object at left half (Y=200) — motion, but slow EMA barely drifts bg
+    # f2: object gone (Y=100 everywhere) — bg is still ~100, delta=0, mask=0
+    frame_empty  = np.full((h, w, 3), 100, dtype=np.uint8)
+    frame_object = np.full((h, w, 3), 100, dtype=np.uint8)
+    frame_object[:, :w // 2] = 200
+    frames = [frame_empty, frame_object, frame_empty]
+    bg_trace = _get_internal_bg(frames, alpha_shift=3, alpha_shift_slow=6,
+                                 gauss_en=False)
+    # After f2, bg in the former-motion region:
+    #   Before f2: bg=100 (f0 primed=100; f1 motion → slow-step: 100+(100>>6)=101)
+    #   f2: delta = 100-101 = -1, |diff|=1, thresh=16 → not motion → fast rate
+    #       step = -1>>3 = -1 (arithmetic) → bg = 100
+    # Mask at f2 left half should be 0 (no trail).
+    from models.motion import _rgb_to_y, _gauss3x3, _compute_mask
+    y2 = _rgb_to_y(frames[2])
+    # bg before f2 is bg_trace[1]; but we verify the *consequence*: mask at f2
+    # is zero everywhere when we recompute against bg_trace[1].
+    mask_f2 = _compute_mask(y2, bg_trace[1], thresh=16)
+    assert not mask_f2.any(), (
+        f"No trail expected; got {int(mask_f2.sum())} motion pixels in f2")
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":

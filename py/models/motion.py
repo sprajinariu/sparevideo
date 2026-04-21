@@ -104,42 +104,97 @@ def _draw_bboxes(frame, bboxes):
     return out
 
 
-def run(frames, thresh=16, alpha_shift=3, gauss_en=True, **kwargs):
+def _selective_ema_update(y_cur, bg_prev, mask, alpha_shift, alpha_shift_slow):
+    """Two-rate EMA update (bit-exact with RTL).
+
+    Motion pixels update at the slow rate, non-motion at the fast rate.
+    Both rates share one subtraction; two arithmetic right-shifts; uint8 wrap.
+    """
+    delta = y_cur.astype(np.int16) - bg_prev.astype(np.int16)
+    step_fast = delta >> alpha_shift        # numpy >> is arithmetic for signed
+    step_slow = delta >> alpha_shift_slow
+    step = np.where(mask, step_slow, step_fast)
+    new_bg = bg_prev.astype(np.int16) + step
+    return np.clip(new_bg, 0, 255).astype(np.uint8)
+
+
+def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+                  gauss_en=True):
+    """Run the motion model's bg trajectory for inspection. Returns a list of
+    bg arrays — one per frame, representing the RAM state after that frame is
+    processed. Does not produce visual output.
+    """
+    if not frames:
+        return []
+    h, w = frames[0].shape[:2]
+    y_bg = np.zeros((h, w), dtype=np.uint8)
+    primed = False
+    trace = []
+    for i, frame in enumerate(frames):
+        y_cur = _rgb_to_y(frame)
+        y_cur_filt = _gauss3x3(y_cur) if gauss_en else y_cur
+        if not primed:
+            y_bg = y_cur_filt.copy()
+            primed = True
+        else:
+            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                          alpha_shift, alpha_shift_slow)
+        trace.append(y_bg.copy())
+    return trace
+
+
+def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
+        **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).
 
-    1. RGB -> Y (optional Gaussian pre-filter).
-    2. Motion mask from |Y - EMA_bg|.
-    3. CCL on the mask -> up to N_OUT bboxes per frame.
-    4. Overlay this frame's bboxes from the PREVIOUS frame (1-frame delay).
-    5. Priming: first 2 frames suppressed (all slots None).
+    Frame 0: priming — bg[px] = Y_smooth(frame_0[px]), mask forced to 0.
+    Frame N>0: selective EMA — motion pixels drift at slow rate, non-motion at
+    fast rate.
     """
     if not frames:
         return []
 
     h, w = frames[0].shape[:2]
-    y_ref = np.zeros((h, w), dtype=np.uint8)
+    y_bg = np.zeros((h, w), dtype=np.uint8)
+    primed = False
     bboxes_state = [None] * N_OUT
 
     outputs = []
     for i, frame in enumerate(frames):
         y_cur = _rgb_to_y(frame)
         y_cur_filt = _gauss3x3(y_cur) if gauss_en else y_cur
-        mask = _compute_mask(y_cur_filt, y_ref, thresh)
 
-        out = _draw_bboxes(frame, bboxes_state)
+        if not primed:
+            # Frame 0 — hard-init bg, mask forced to zero
+            mask = np.zeros((h, w), dtype=bool)
+            out = _draw_bboxes(frame, bboxes_state)  # bboxes_state all-None
+            new_bboxes = run_ccl(
+                [mask],
+                n_out=N_OUT,
+                n_labels_int=N_LABELS_INT,
+                min_component_pixels=MIN_COMPONENT_PIXELS,
+                max_chain_depth=MAX_CHAIN_DEPTH,
+            )[0]
+            y_bg = y_cur_filt.copy()
+            primed = True
+        else:
+            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            out = _draw_bboxes(frame, bboxes_state)
+            new_bboxes = run_ccl(
+                [mask],
+                n_out=N_OUT,
+                n_labels_int=N_LABELS_INT,
+                min_component_pixels=MIN_COMPONENT_PIXELS,
+                max_chain_depth=MAX_CHAIN_DEPTH,
+            )[0]
+            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                          alpha_shift, alpha_shift_slow)
 
-        new_bboxes = run_ccl(
-            [mask],
-            n_out=N_OUT,
-            n_labels_int=N_LABELS_INT,
-            min_component_pixels=MIN_COMPONENT_PIXELS,
-            max_chain_depth=MAX_CHAIN_DEPTH,
-        )[0]
+        # Bbox priming suppression (unchanged)
+        primed_for_bbox = (i >= PRIME_FRAMES)
+        bboxes_state = new_bboxes if primed_for_bbox else [None] * N_OUT
 
-        primed = (i >= PRIME_FRAMES)
-        bboxes_state = new_bboxes if primed else [None] * N_OUT
-
-        y_ref = _ema_update(y_cur_filt, y_ref, alpha_shift)
         outputs.append(out)
 
     return outputs
