@@ -32,6 +32,9 @@ module sparevideo_top #(
     // EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
     // Default 3 → alpha = 1/8. Higher = slower adaptation.
     parameter int ALPHA_SHIFT   = 3,
+    // EMA background adaptation rate on MOTION pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
+    // Default 6 → alpha = 1/64. Larger than ALPHA_SHIFT so moving objects barely drift bg.
+    parameter int ALPHA_SHIFT_SLOW = 6,
     // Gaussian pre-filter: 1 = enabled (3x3 Gaussian on Y before motion compare),
     // 0 = bypass (raw Y). Default enabled.
     parameter int GAUSS_EN      = 1
@@ -269,11 +272,12 @@ module sparevideo_top #(
     );
 
     axis_motion_detect #(
-        .H_ACTIVE    (H_ACTIVE),
-        .V_ACTIVE    (V_ACTIVE),
-        .THRESH      (MOTION_THRESH),
-        .ALPHA_SHIFT (ALPHA_SHIFT),
-        .GAUSS_EN    (GAUSS_EN),
+        .H_ACTIVE         (H_ACTIVE),
+        .V_ACTIVE         (V_ACTIVE),
+        .THRESH           (MOTION_THRESH),
+        .ALPHA_SHIFT      (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW),
+        .GAUSS_EN         (GAUSS_EN),
         .RGN_BASE    (RGN_Y_PREV_BASE),
         .RGN_SIZE    (RGN_Y_PREV_SIZE)
     ) u_motion_detect (

@@ -20,8 +20,9 @@
 module tb_sparevideo #(
     parameter int H_ACTIVE    = 320,
     parameter int V_ACTIVE    = 240,
-    parameter int ALPHA_SHIFT = 3,
-    parameter int GAUSS_EN    = 1
+    parameter int ALPHA_SHIFT      = 3,
+    parameter int ALPHA_SHIFT_SLOW = 6,
+    parameter int GAUSS_EN         = 1
 );
 
 `ifdef VERILATOR
@@ -106,8 +107,9 @@ module tb_sparevideo #(
         .V_FRONT_PORCH (V_FRONT_PORCH),
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH),
-        .ALPHA_SHIFT   (ALPHA_SHIFT),
-        .GAUSS_EN      (GAUSS_EN)
+        .ALPHA_SHIFT      (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW),
+        .GAUSS_EN         (GAUSS_EN)
     ) u_dut (
         .clk_pix_i       (clk_pix),
         .clk_dsp_i       (clk_dsp),
