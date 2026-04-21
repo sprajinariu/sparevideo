@@ -18,7 +18,8 @@
   - [7.1 Future CSR register file (deferred)](#71-future-csr-register-file-deferred)
 - [8. Assertions (SVA, Verilator only)](#8-assertions-sva-verilator-only)
 - [9. Known Limitations](#9-known-limitations)
-- [10. References](#10-references)
+- [10. Resources](#10-resources)
+- [11. References](#11-references)
 
 ---
 
@@ -346,7 +347,39 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 ---
 
-## 10. References
+## 10. Resources
+
+At the default 320×240 resolution, one on-chip memory exceeds 1 kB:
+
+| Memory | Module | Size | Technology |
+|--------|--------|------|------------|
+| EMA background model | `u_ram` | **75 kB** (320×240 × 8 b) | Behavioral TDPRAM → BRAM on FPGA |
+
+All other memories are below 1 kB:
+
+| Memory | Module | Size | Technology |
+|--------|--------|------|------------|
+| Gaussian line buffers (×2) | `u_motion_detect` (`GAUSS_EN=1`) | 640 B (2 × 320 × 8 b) | Distributed LUT-RAM |
+| CCL label line buffer | `u_ccl` | 240 B (320 × 6 b) | Distributed LUT-RAM |
+| CCL accumulator bank (×5 arrays) | `u_ccl` | 408 B (64 × 51 b) | Distributed LUT-RAM |
+| CCL equivalence table | `u_ccl` | 48 B (64 × 6 b) | Distributed LUT-RAM |
+| CDC FIFO (×2) | `u_fifo_in`, `u_fifo_out` | ~104 B each (32 × 26 b) | Vendored axis_async_fifo, depth 32 |
+
+CCL sizes use defaults: `N_LABELS_INT=64`, `H_ACTIVE=320`, `V_ACTIVE=240`. Per-label accumulator width is 9+9+8+8+17 = 51 bits (`min_x`, `max_x`, `min_y`, `max_y`, `count`). FIFO entry width is 26 bits (24 b `tdata` + `tlast` + `tuser`).
+
+### `u_ram` — EMA background model (75 kB)
+
+`u_ram` is a dual-port byte RAM parameterized to `DEPTH = H_ACTIVE × V_ACTIVE` (76,800 bytes at 320×240). It is the dominant on-chip memory in the pipeline and the only component that would map to BRAM on an FPGA.
+
+Port A is exclusively owned by `axis_motion_detect` for per-pixel EMA background storage (one read + one conditional write per accepted pixel). At `clk_dsp = 100 MHz`, port A is occupied ≤ 25% of cycles, bounded by the 25 MHz input pixel rate via the input FIFO. Port B is reserved for future host clients.
+
+FPGA mapping at 320×240: approximately **19 Xilinx 7-series BRAM36K blocks** (each provides 4 KB in 8-bit-wide true-dual-port mode). The behavioral `ram.sv` requires substitution with a vendor true-dual-port BRAM primitive (`xpm_memory_tdpram`) for synthesis. See [ram-arch.md](ram-arch.md) §5.4.
+
+Scaling: RAM cost is linear in frame area. At 640×480 the background model grows to 300 kB (≈75 BRAM36K); at 1920×1080 it reaches ~2 MB (≈512 BRAM36K).
+
+---
+
+## 11. References
 
 - [AMBA AXI4-Stream Protocol Specification — Arm](https://developer.arm.com/documentation/ihi0051/latest/)
 - [alexforencich/verilog-axis — GitHub (MIT)](https://github.com/alexforencich/verilog-axis)
