@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Do not include `Co-Authored-By` trailers in commit messages.
 
+## Documentation Conventions
+
+All design specs, architecture docs, and implementation plans live under `docs/plans/` — **never** under `docs/superpowers/specs/` or any other skill-default location. Brainstorming specs go to `docs/plans/YYYY-MM-DD-<topic>-design.md`. Implementation plans follow the same `docs/plans/` prefix.
+
 ## Project Overview
 
 sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with CCL-driven N-way bounding-box overlay, mask display, or a `ccl_bbox` debug mode that shows the mask as a grey canvas under the CCL bboxes), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
