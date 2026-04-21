@@ -210,6 +210,10 @@ These apply to any future motion pipeline block (Gaussian, morphology, CCL, adap
 
 **Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple sources at TOLERANCE=0.
 
+**Vblank FSM modules must deassert tready for the full FSM duration.** `axis_ccl` deasserts `tready` during PHASE_A..PHASE_SWAP (the EOF resolution FSM) so pixels cannot arrive while internal state is exclusively owned by the FSM. Per-pixel writes are additionally gated on `PHASE_IDLE`, but those gates alone are not sufficient — without the tready deassert, the FIFO upstream can push pixels that advance `line_buf` and `col`/`row` without updating `equiv[]` or `acc_*[]`, silently corrupting the labeling state. Vblank timing must exceed the worst-case FSM cycle budget; see `axis_ccl-arch.md §6.7`.
+
+**Beat-strobe pattern for multi-consumer mask broadcast.** `axis_ccl` is fed `ccl_beat_strobe = msk_tvalid && msk_tready` as its `tvalid`, not raw `msk_tvalid`. In mask-display and ccl_bbox modes, the mask is consumed by two paths simultaneously; in those modes `msk_tready` is the AND of both consumers' readies. If one consumer stalls, the upstream stalls too and `msk_tvalid && msk_tready` goes low — so `axis_ccl` does not advance its internal `col`/`row` counters on the stalled cycle. Using raw `msk_tvalid` instead would cause the counters to race ahead, producing wrong neighbour reads and corrupted labels.
+
 ### Python environment
 
 - All Python tooling runs from the venv at `.venv/`. Never use system Python directly.

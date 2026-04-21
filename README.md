@@ -66,7 +66,7 @@ hw/ip/gauss3x3/tb/
 
 hw/ip/motion/tb/
 ├── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
-├── tb_axis_ccl.sv             7 tests: single blob, hollow, disjoint, U-merge, overflow, back-to-back
+├── tb_axis_ccl.sv             9 tests: single blob, hollow, disjoint, U-merge, min-size filter, overflow, back-to-back, mid-frame gaps, priming
 └── tb_axis_overlay_bbox.sv    8 tests: empty/full/single-pixel, backpressure
 
 dv/sv/

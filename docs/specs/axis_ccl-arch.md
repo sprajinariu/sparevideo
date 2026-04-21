@@ -8,6 +8,7 @@
   - [3.1 Parameters](#31-parameters)
   - [3.2 Ports](#32-ports)
 - [4. Concept Description](#4-concept-description)
+  - [4.0 Plain-language overview](#40-plain-language-overview)
   - [4.1 Streaming union-find](#41-streaming-union-find)
   - [4.2 The ≤2-distinct-labels invariant](#42-the-2-distinct-labels-invariant)
   - [4.3 Single equiv write per pixel](#43-single-equiv-write-per-pixel)
@@ -44,6 +45,8 @@
 The module replaces the earlier single-global-bbox reducer (`axis_bbox_reduce`). Two people walking in opposite corners now produce two distinct bboxes instead of one frame-spanning rectangle.
 
 It is nearly a pure sink on its AXIS port: `tready` is asserted during streaming (`PHASE_IDLE`) and deasserted only while the EOF resolution FSM is running (`PHASE_A..PHASE_SWAP`). All multi-cycle work (path compression, accumulator fold, top-N selection, reset) is scheduled during the vertical-blanking interval, and the tready deassert is both the structural invariant that makes per-pixel writes gatable on `PHASE_IDLE` and the back-pressure that stalls upstream if vblank is too short. `axis_ccl` does **not** perform morphological closing, temporal merging, or cross-frame object association; it has no dependency on the shared Y-ref RAM used by `axis_motion_detect`.
+
+> **New to this module?** §4.0 gives a plain-language walkthrough of the algorithm and defines the terms (*label*, *equivalence*, *root*, *chain*, *chase*, *fold*, *sentinel*, *prime frames*) used throughout the rest of this spec.
 
 ---
 
@@ -102,6 +105,112 @@ sparevideo_top
 
 ## 4. Concept Description
 
+### 4.0 Plain-language overview
+
+`axis_ccl` consumes a 1-bit motion mask, one pixel per clock, in raster order (left-to-right, top-to-bottom). Each foreground pixel gets assigned an integer **label** such that two pixels sharing a label are part of the same connected blob (8-connected: horizontal, vertical, and diagonal neighbours all count). While labels are being assigned, the module maintains a running bounding box (min/max x, min/max y) and a pixel count per label. At end-of-frame — during the vertical-blanking interval, when no pixels are arriving — it resolves any label **equivalences** that piled up during labeling, merges the per-label stats accordingly, picks the top-`N_OUT` largest blobs above a minimum-size threshold, and publishes their bounding boxes on a sideband. Because the resolve runs in vblank, the bboxes for frame N become visible at the start of frame N+1 — a one-frame lag is architectural (§7).
+
+#### Glossary
+
+| Term | Meaning in this module |
+|------|------------------------|
+| **Label** | A small positive integer ID (`1..N_LABELS_INT-1`) assigned to a foreground pixel. Pixels belonging to the same blob should eventually share one label. Label 0 means background (or overflow — §4.4). |
+| **Equivalence** | A recorded statement "label A and label B are really the same blob." Stored as `equiv[A] = B` (with A > B by convention). Discovered mid-frame when a pixel's neighbourhood contains two distinct non-zero labels. |
+| **Root** (canonical root) | The smallest label in an equivalence chain — the one whose accumulator ends up holding the whole blob. A label `L` is its own root when `equiv[L] == L`. |
+| **Chain** | A sequence `equiv[L1]=L2, equiv[L2]=L3, …` that can form when merges happen in an order that doesn't flatten the table in one step. Chains are unavoidable with a 1-write-per-pixel budget (§4.3). |
+| **Chase** | Walking `equiv[]` from a label until you reach a root (a fixed point, `equiv[x]==x`). Done in Phase A, bounded by `MAX_CHAIN_DEPTH` to keep the cycle budget finite. |
+| **Path compression** | After a chase finds the root, overwriting `equiv[L] ← root` so the next chase from `L` terminates in one step. Phase A performs this. |
+| **Accumulator** | The per-label running stats (`acc_min_x[L]`, `acc_max_x[L]`, `acc_min_y[L]`, `acc_max_y[L]`, `acc_count[L]`) — effectively a bbox-in-progress. Updated once per accepted foreground pixel. |
+| **Sentinel** | The initial value of each accumulator field, chosen so the first foreground pixel automatically wins the min/max comparator. `min_*` sentinels are set to the maximum possible coordinate; `max_*` sentinels are set to 0; `count` starts at 0. |
+| **Fold** | At EOF, copying a non-root label's accumulator into its root's accumulator (element-wise min/min/max/max/sum) and zeroing the non-root. Phase B does this. |
+| **Prime frames** | The first `PRIME_FRAMES` frames after reset, during which the module computes bboxes internally but hides them (the front buffer stays empty). `axis_motion_detect`'s EMA background starts at zero, so early frames read as mostly-foreground and would produce huge spurious bboxes; suppressing output until the EMA has converged avoids that — and matches the Python `motion` model's own warm-up window so RTL and model agree bit-for-bit. See §6.6. |
+
+#### Storage model
+
+State maintained during a frame, by size:
+
+| Structure | Indexed by | Width | Purpose |
+|---|---|---|---|
+| `line_buf` | column (`0..H_ACTIVE-1`) | `LABEL_W` bits | **One-row-deep** rolling label history. Holds the previous row's labels to the right of the scan position (source of `NW / N / NE`) and the current row's labels to the left (the `W` neighbour itself is kept in a separate register for timing). |
+| `equiv[]` | label (`0..N_LABELS_INT-1`) | `LABEL_W` bits | Global equivalence table. `equiv[L]` is the label `L` has been recorded equivalent to. Updated in-frame on merges; chased and flattened at EOF by Phase A. |
+| `acc_min_x`, `acc_max_x`, `acc_min_y`, `acc_max_y`, `acc_count` | label | coordinate / count | Per-label running bbox and pixel count — the bbox-in-progress for each label. |
+| `next_free` | (scalar) | `LABEL_W+1` bits | Next label to allocate; saturates at `N_LABELS_INT` (overflow, §4.4). |
+| Pipeline registers | — | few bits each | `line_rd_data_r`, `shift_n`, `shift_nw`, `w_label`, and stage-1 payload registers (§5.1). |
+| Output double-buffer | slot (`0..N_OUT-1`) | `1 + 2·COL_W + 2·ROW_W` | `front_*` visible on the output ports; `back_*` written by Phase C. Swapped atomically at `PHASE_SWAP` (§6.6). |
+
+**No full-frame label image is stored.** Full CCL conceptually labels every pixel, but at EOF all we want is bboxes. Bboxes are a *reduction* (min/max/count) that can be maintained incrementally, so we never need to store per-pixel labels past the one-row window needed to compute neighbours. Each pixel's label lives in `line_buf` only until the next row overwrites it. Once a row has passed, the only surviving trace of its labels is the contribution already aggregated into `acc_*[]`. This is what keeps the datapath in a few kb of distributed RAM instead of the ~460 kb a per-pixel label array would cost (`H_ACTIVE · V_ACTIVE · LABEL_W` bits at defaults). Everything at EOF — Phases A–D and the `N_OUT` bboxes — is computed from `equiv[]` and `acc_*[]` alone.
+
+#### How it works, walked through
+
+**Per-pixel (active region).** For every foreground mask pixel at `(row, col)`, the module examines the four already-labeled 8-connected neighbours that have already been processed — NW, N, NE from the previous row, and W to the immediate left:
+
+```
+   NW  N  NE
+    W  *
+```
+
+Four cases:
+- **All four are background** → start a new component: allocate a fresh label from `next_free`.
+- **Exactly one non-zero label appears** (anywhere in the window) → inherit it.
+- **Two distinct non-zero labels appear** → the current foreground pixel is adjacent to both, so the two labels must describe the same blob. The pixel takes the smaller of the two, and we record `equiv[larger] = smaller`. Those two labels will be folded at EOF. (§4.2 shows that two is the *most* distinct non-zero labels the window can ever hold, which is why one `equiv[]` write per pixel is sufficient.)
+- Three-or-four matching neighbours is just a sub-case of the single-label path.
+
+*Local vs. global.* Two separate things happen on a merge: the current pixel is given the label `smaller` and that label is stored in `line_buf[col_d1]` (a **per-pixel** write, touching only this one field); and `equiv[larger] = smaller` is written to the **global** equivalence table (a single table shared across the whole frame). Earlier-row pixels that were already stored as `larger` are *not* rewritten — they keep their stored label, and the `equiv[]` entry carries the "these two labels describe one blob" fact forward to EOF. Phase A then chases `equiv[larger]` to a root and Phase B folds `acc[larger]` into `acc[root]`, which is how the earlier-row pixels' contributions end up accounted for under the canonical label.
+
+A raster-order invariant guarantees `{NW, N, NE, W}` can hold at most *two* distinct non-zero labels — see §4.2. That is what lets us get away with a single `equiv[]` write per pixel.
+
+**Example: a U-shape that only merges at the bottom.**
+
+```
+    col:   0  1  2  3  4
+  row 0:   .  X  .  X  .     new label 1 at (0,1); new label 2 at (0,3)
+  row 1:   .  X  .  X  .     inherit 1 at (1,1); inherit 2 at (1,3)
+  row 2:   .  X  .  X  .     inherit 1 at (2,1); inherit 2 at (2,3)
+  row 3:   .  X  X  X  .     at (3,1): N=1 → label 1
+                              at (3,2): W=1, NE=2 → pick=1, record equiv[2]=1
+                              at (3,3): W=1, N=2  → pick=1 (equiv[2]=1 already set)
+
+  Labels as stored (just before EOF):
+           .  1  .  2  .
+           .  1  .  2  .
+           .  1  .  2  .
+           .  1  1  1  .
+
+  equiv[] at EOF:    equiv[1]=1 (root), equiv[2]=1   (label 2 resolves to label 1)
+  acc_count at EOF:  [_, 5, 3, 0, …]                (label 1 owns 5 px, label 2 owns 3 px)
+
+  Phase A (compress):  both entries already point at a root → no change.
+  Phase B (fold):      acc[1] ← merge(acc[1], acc[2]); acc_count[2] ← 0.
+  Phase C (top-N):     label 1 survives with count=8; bbox = cols 1..3, rows 0..3.
+```
+
+**At end-of-frame (vblank).** Four FSM phases run back-to-back, then a swap:
+1. **Phase A — path compression.** For each label, chase `equiv[]` until a root is hit, then overwrite `equiv[L]` with that root. Every label now points directly at its root.
+2. **Phase B — fold.** For each non-root label with a non-zero pixel count, add its accumulator to its root's accumulator and clear the non-root.
+3. **Phase C — top-N selection.** Scan every label's pixel count, reject anything below `MIN_COMPONENT_PIXELS`, pick the top `N_OUT` by count, write survivors into the back buffer.
+4. **Phase D — reset.** Restore `equiv[L] ← L` and all accumulators to their sentinels, ready for the next frame. `PHASE_SWAP` then copies back → front (except during prime frames) and pulses `bbox_swap_o`.
+
+While this FSM runs, `s_axis_tready_o` is deasserted: upstream pixels wait until the module is back in `PHASE_IDLE`.
+
+#### Frame lifecycle at a glance
+
+```
+   ┌──────────── active region ────────────┐┌── vblank ───┐┌──── next active ────
+   │ label + accumulate, 1 pix/cycle       ││ A→B→C→D→SWAP││ (bboxes for previous
+   │   tready = 1                          ││ tready = 0  ││  frame now visible)
+   └───────────────────────────────────────┘└─────────────┘└──────────────────────
+                                                  │        ▲
+                                                  │        └── bbox_swap_o pulses
+                                                  │            (front buffer now
+                                                  │             holds frame-N bboxes)
+                                                  │
+                                                  └── EOF FSM: ~1,280 cycles worst
+                                                      case (§6.7). Vblank headroom
+                                                      ~5× in the TB, ~100× at real
+                                                      VGA 640×480@60 Hz.
+```
+
+Consequence: bboxes describing frame N are painted onto frame N+1's pixels. See §7 for the full latency breakdown.
+
 ### 4.1 Streaming union-find
 
 Classical raster CCL makes two passes over the image: one to assign provisional labels while recording label equivalences, and a second to relabel everything to canonical roots. We stream: per-pixel labeling happens in one raster pass as pixels arrive; equivalence resolution happens in the vblank window between the last pixel of frame N and the first pixel of frame N+1.
@@ -144,31 +253,54 @@ The Python reference model in `py/models/ccl.py` matches this discipline exactly
 
 ### 5.1 Data flow overview
 
-Two pipeline stages. Stage 0 issues a line-buffer read one column ahead of the scan position. Stage 1 presents the 3-neighbour previous-row window `{NW, N, NE}` plus the `W` register, makes the label decision, and fires the line-buffer write, the conditional `equiv` write, and the accumulator RMW.
+For each accepted mask beat, the datapath does three things:
+
+1. **Assemble neighbours.** Gather `{NW, N, NE, W}` for the current pixel; mask border positions to 0.
+2. **Compute the label.** Combinational logic over those four neighbours produces `pick` and, on a 2-label merge, `need_merge / merge_hi / merge_lo`.
+3. **Issue writes.** Update `line_buf` with `pick`; on a foreground pixel, update `equiv[]`, `acc_*[]`, `next_free`, and `w_label`.
+
+**How the three neighbours arrive together.** `line_buf` has a registered read (1-cycle latency) and only one read port, but the label decision needs `NW`, `N`, and `NE` on the same cycle. The read address is issued one column ahead of the current scan position, and the registered result feeds a 2-deep shift register. On each cycle: `line_rd_data_r = NE`, `shift_n = N`, `shift_nw = NW` — all three available at once. The `W` neighbour is the label just written for the previous pixel, held in `w_label`.
+
+**Active only during `PHASE_IDLE`.** During the EOF FSM, `s_axis_tready_o = 0` blocks new beats from arriving, and per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are additionally gated on `phase == PHASE_IDLE`. The FSM has exclusive access to that state during vblank.
+
+**Dataflow.**
 
 ```
-   s_axis_tdata_i ─► [stage 0]                    [stage 1]
-                        │                             │
-              line_rd_addr = col+1 (wrap)             │
-                        │                             │
-                        ▼                             │
-             line_rd_data_r (from line_buf) ──┐       │
-                                              │  shift chain (2 FFs)
-                                              ▼       ▼
-                                     ┌──────── shift_n, shift_nw ────────┐
-                                     │                                   │
-   col_d1, row_d1, tdata_d1 ─────► [label decision:                      │
-   (plus tuser_d1 → force (0,0))    edge-mask NW/N/NE/W,                 │
-                                    compute pick_label,                  │
-                                    need_merge / merge_hi / merge_lo]    │
-                                          │                              │
-                                          ├───► line_buf[col_d1] <= pick │
-                                          ├───► equiv[merge_hi] <= merge_lo  (if merge)
-                                          ├───► acc[pick] RMW            │
-                                          └───► w_label <= pick          │
+   col ──► +1 (wrap) ──► line_buf[rd] ──► line_rd_data_r ──► shift_n ──► shift_nw    ← §5.2, §5.3
+                          (1R1W RAM)          (NE)            (N)         (NW)
+
+                                                  w_label   (W)
+                                                      │
+                                                      ▼
+                                        ┌────────── edge-mask ───────────┐  ← §5.4
+                                        │   4 muxes, one per neighbour   │ ◄─ at_col0
+                                        │   border → 0, else pass-thru   │ ◄─ at_row0
+                                        │                                │ ◄─ at_colmax
+                                        └───────────────┬────────────────┘
+                                                        │ nb_nw / nb_n / nb_ne / nb_w
+                                                        ▼
+                                        ┌────────── label decision ──────┐  ← §5.5
+                                        │  (a) all bg   → pick = new     │ ◄─ next_free
+                                        │  (b) one lbl  → pick = that    │
+                                        │  (c) two lbls → pick = min;    │
+                                        │                 need_merge=1   │
+                                        └───────────────┬────────────────┘
+                                                        │ pick, need_merge,
+                                                        │ merge_hi, merge_lo
+                                                        ▼
+                                        ┌────────── writes (if accept) ──┐  ← §5.6
+                                        │  line_buf[col_d1] ← pick or 0  │
+                                        │  w_label          ← pick or 0  │
+                                        │                                │
+                                        │  equiv[merge_hi] ← merge_lo    │
+                                        │                  (if merge)    │
+                                        │                                │
+                                        │  acc_*[pick] ← RMW min/max/cnt │  ← RMW = read-modify-write
+                                        │  next_free   ← +1 (if new lbl) │
+                                        └────────────────────────────────┘
 ```
 
-All per-pixel writes are gated on `phase == PHASE_IDLE` in the consolidated `always_ff`, so the FSM phases have exclusive write access to `equiv[]`, `acc_*[]`, and `next_free` during vblank.
+For per-memory detail — counters and SOF handling (`col_d1 / row_d1` reset on `tuser`), line buffer organisation, edge-mask conditions, label-decision arithmetic, accumulator sentinels — see §5.2 through §5.7.
 
 ### 5.2 Row/column counters and SOF handling
 
@@ -181,7 +313,7 @@ col_d1 <= s_axis_tuser_i ? '0 : col;
 row_d1 <= s_axis_tuser_i ? '0 : row;
 ```
 
-Without this override, the first foreground pixel of a frame was getting accumulated at `row=V_ACTIVE` (one past the last valid row) — producing rogue bboxes with `max_y = V_ACTIVE`.
+Without this override, the first foreground pixel of a frame would get wrongly accumulated at `row=V_ACTIVE` (one past the last valid row) — producing rogue bboxes with `max_y = V_ACTIVE`.
 
 ### 5.3 Label line buffer and 2-deep shift chain
 
@@ -219,7 +351,7 @@ any_above   = |{nb_nw, nb_n, nb_ne} ≠ 0
 min_above   = min(nb_nw, nb_n, nb_ne), treating 0 as absent
 any_nonzero = any_above || (nb_w ≠ 0)
 
-if !any_nonzero:                pick = allocate_new() or 0 on overflow
+if !any_nonzero:                 pick = next_free, or 0 on overflow
 else if !any_above:              pick = nb_w
 else if nb_w == 0:               pick = min_above
 else if nb_w == min_above:       pick = nb_w                    (single label, no merge)
@@ -233,19 +365,21 @@ else:                            pick = min(nb_w, min_above)
 
 ### 5.6 Per-pixel writes
 
-All writes are conditioned on `write_fg = accept_d1 && tdata_d1` (a stage-1 foreground beat) AND `phase == PHASE_IDLE`:
+All per-pixel writes are conditioned on a foreground beat (`write_fg = accept_d1 && tdata_d1`) AND `phase == PHASE_IDLE`, except for `line_buf` and `w_label` which update on any accepted beat.
 
-| Memory | When | Address | Data |
-|--------|------|---------|------|
-| `line_buf[col_d1]` | every `accept_d1` | `col_d1` | `write_fg ? pick : 0` |
-| `equiv[merge_hi]` | `write_fg && need_merge` | `merge_hi` | `merge_lo` |
-| `acc_min_x[pick]` | `write_fg && col_d1 < acc_min_x[pick]` | `pick` | `col_d1` |
-| `acc_max_x[pick]` | `write_fg && col_d1 > acc_max_x[pick]` | `pick` | `col_d1` |
-| `acc_min_y[pick]` | `write_fg && row_d1 < acc_min_y[pick]` | `pick` | `row_d1` |
-| `acc_max_y[pick]` | `write_fg && row_d1 > acc_max_y[pick]` | `pick` | `row_d1` |
-| `acc_count[pick]` | `write_fg` | `pick` | `acc_count[pick] + 1` |
-| `next_free` | `write_fg && !any_nonzero && next_free < N_LABELS_INT` | — | `next_free + 1` |
-| `w_label` | every `accept_d1` | — | `tuser\|tlast → 0; else write_fg ? pick : 0` |
+| Memory | Operation | Fires when |
+|--------|-----------|-----------|
+| `line_buf[col_d1]` | ← `write_fg ? pick : 0` | every `accept_d1` |
+| `equiv[merge_hi]` | ← `merge_lo` | `write_fg && need_merge` |
+| `acc_min_x[pick]` | ← `min(acc_min_x[pick], col_d1)` | `write_fg` |
+| `acc_max_x[pick]` | ← `max(acc_max_x[pick], col_d1)` | `write_fg` |
+| `acc_min_y[pick]` | ← `min(acc_min_y[pick], row_d1)` | `write_fg` |
+| `acc_max_y[pick]` | ← `max(acc_max_y[pick], row_d1)` | `write_fg` |
+| `acc_count[pick]` | ← `acc_count[pick] + 1` | `write_fg` |
+| `next_free` | ← `next_free + 1` | `write_fg && !any_nonzero && next_free < N_LABELS_INT` |
+| `w_label` | ← `(tuser\|tlast) ? 0 : (write_fg ? pick : 0)` | every `accept_d1` |
+
+The four `acc_min_*` / `acc_max_*` rows are implemented as gated conditional writes (e.g. write only if `col_d1 < acc_min_x[pick]`); the `min`/`max` notation in the table describes the functional result. Sentinels in §5.7 ensure the first foreground pixel always wins the comparator.
 
 `line_buf` is always written on an accepted beat (even if the pixel is background), so the prior row's label at `col_d1` is overwritten with 0 when the current pixel is background. This keeps the line buffer representing the most recent row without a separate clear pass.
 
@@ -370,7 +504,9 @@ bbox_swap_o ← 1      (1-cycle pulse)
 phase ← PHASE_IDLE
 ```
 
-During the priming window, back-buffer data is computed and then *discarded* — the front buffer stays all-invalid so the overlay draws no rectangles. `bbox_swap_o` still pulses, so downstream consumers see a consistent "new frame ready, contents empty" handshake. `PRIME_FRAMES` matches the Python `motion` model's prime window.
+During the priming window, back-buffer data is computed and then *discarded* — the front buffer stays all-invalid so the overlay draws no rectangles. `bbox_swap_o` still pulses, so downstream consumers see a consistent "new frame ready, contents empty" handshake.
+
+*Why this exists.* `axis_motion_detect`'s EMA background model starts at zero. On frame 0 every pixel differs maximally from the (empty) background, so the mask is mostly foreground and CCL would report one or more frame-filling bboxes — an obvious visual artifact. The EMA converges within `~1/ALPHA` frames; with the default `ALPHA_SHIFT=2` (α=1/4), two frames is enough to suppress the worst of it. Matching `PRIME_FRAMES` to the Python `motion` model's prime window also keeps RTL and model bit-identical at `TOLERANCE=0`; without the match, the first two frames would flag as verification diffs even though the RTL is correct.
 
 ### 6.7 Cycle budget
 
@@ -390,6 +526,8 @@ This headroom is a **correctness** constraint, not just a throughput one: the pe
 ---
 
 ## 7. Timing
+
+**Three latency regimes.** (1) *Stream path:* zero. `axis_ccl` is effectively a sink on its AXIS port — it does not forward pixels. The RGB path that the overlay ultimately draws onto has its own pipeline and is unaffected by this module. (2) *Sideband produce-time:* ~1,280 cycles worst case from the last mask pixel of a frame to the `bbox_swap_o` pulse (§6.7), fitting comfortably inside a single vblank. (3) *Frame-level:* **one frame.** The bboxes describing frame N become visible only at the start of frame N+1, because `PHASE_SWAP` runs in the vblank between them. During the first `PRIME_FRAMES` frames after reset the front buffer stays empty (§6.6), so real bboxes are first observable on frame `PRIME_FRAMES + 1` — overlay sees no rectangles before then.
 
 | Operation | Latency |
 |-----------|---------|
