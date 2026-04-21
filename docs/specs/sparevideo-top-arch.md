@@ -349,33 +349,44 @@ When runtime configurability is needed, the descriptor table and control knobs (
 
 ## 10. Resources
 
-At the default 320×240 resolution, one on-chip memory exceeds 1 kB:
+**Bold** entries exceed 1 kB. CCL defaults: `N_LABELS_INT=64`. FIFO depth fixed at 32 entries, 26 bits wide (24 b `tdata` + `tlast` + `tuser`).
 
-| Memory | Module | Size | Technology |
-|--------|--------|------|------------|
-| EMA background model | `u_ram` | **75 kB** (320×240 × 8 b) | Behavioral TDPRAM → BRAM on FPGA |
+| Memory | Module | 320×240 | 640×480 | 1920×1080 | Technology |
+|--------|--------|---------|---------|-----------|------------|
+| EMA background model | `u_ram` | **75 kB** | **300 kB** | **~1.98 MB** | Behavioral TDPRAM → BRAM on FPGA |
+| Gaussian line buffers (×2) | `u_motion_detect` (`GAUSS_EN=1`) | 640 B | **1.25 kB** | **3.75 kB** | Distributed LUT-RAM |
+| CCL label line buffer | `u_ccl` | 240 B | 480 B | **1.41 kB** | Distributed LUT-RAM |
+| CCL accumulator bank (×5 arrays) | `u_ccl` | 408 B | 456 B | 520 B | Distributed LUT-RAM |
+| CCL equivalence table | `u_ccl` | 48 B | 48 B | 48 B | Distributed LUT-RAM |
+| CDC FIFOs (×2) | `u_fifo_in`, `u_fifo_out` | ~104 B ea. | ~104 B ea. | ~104 B ea. | axis_async_fifo, depth 32 |
 
-All other memories are below 1 kB:
+Sizing formulas (W = H\_ACTIVE, H = V\_ACTIVE):
 
-| Memory | Module | Size | Technology |
-|--------|--------|------|------------|
-| Gaussian line buffers (×2) | `u_motion_detect` (`GAUSS_EN=1`) | 640 B (2 × 320 × 8 b) | Distributed LUT-RAM |
-| CCL label line buffer | `u_ccl` | 240 B (320 × 6 b) | Distributed LUT-RAM |
-| CCL accumulator bank (×5 arrays) | `u_ccl` | 408 B (64 × 51 b) | Distributed LUT-RAM |
-| CCL equivalence table | `u_ccl` | 48 B (64 × 6 b) | Distributed LUT-RAM |
-| CDC FIFO (×2) | `u_fifo_in`, `u_fifo_out` | ~104 B each (32 × 26 b) | Vendored axis_async_fifo, depth 32 |
+| Memory | Formula |
+|--------|---------|
+| EMA background model | W × H bytes |
+| Gaussian line buffers | 2 × W bytes |
+| CCL label line buffer | W × ⌈log₂(N\_LABELS\_INT)⌉ bits |
+| CCL accumulator bank | N\_LABELS\_INT × (2⌈log₂W⌉ + 2⌈log₂H⌉ + ⌈log₂(WH+1)⌉) bits |
+| CCL equivalence table | N\_LABELS\_INT × ⌈log₂(N\_LABELS\_INT)⌉ bits |
 
-CCL sizes use defaults: `N_LABELS_INT=64`, `H_ACTIVE=320`, `V_ACTIVE=240`. Per-label accumulator width is 9+9+8+8+17 = 51 bits (`min_x`, `max_x`, `min_y`, `max_y`, `count`). FIFO entry width is 26 bits (24 b `tdata` + `tlast` + `tuser`).
+Accumulator entry width: 51 b at 320×240 (COL\_W=9, ROW\_W=8, COUNT\_W=17) → 57 b at 640×480 → 65 b at 1920×1080.
 
-### `u_ram` — EMA background model (75 kB)
+### `u_ram` — EMA background model
 
-`u_ram` is a dual-port byte RAM parameterized to `DEPTH = H_ACTIVE × V_ACTIVE` (76,800 bytes at 320×240). It is the dominant on-chip memory in the pipeline and the only component that would map to BRAM on an FPGA.
+`u_ram` is a dual-port byte RAM of depth `H_ACTIVE × V_ACTIVE`. It is the dominant on-chip memory and the only one that maps to BRAM on an FPGA.
 
-Port A is exclusively owned by `axis_motion_detect` for per-pixel EMA background storage (one read + one conditional write per accepted pixel). At `clk_dsp = 100 MHz`, port A is occupied ≤ 25% of cycles, bounded by the 25 MHz input pixel rate via the input FIFO. Port B is reserved for future host clients.
+Port A is exclusively owned by `axis_motion_detect` (one read + one conditional write per accepted pixel; ≤ 25% of `clk_dsp` cycles at 100 MHz). Port B is reserved for future host clients.
 
-FPGA mapping at 320×240: approximately **19 Xilinx 7-series BRAM36K blocks** (each provides 4 KB in 8-bit-wide true-dual-port mode). The behavioral `ram.sv` requires substitution with a vendor true-dual-port BRAM primitive (`xpm_memory_tdpram`) for synthesis. See [ram-arch.md](ram-arch.md) §5.4.
+FPGA mapping (Xilinx 7-series BRAM36K, 4 KB per block in 8-bit-wide true-dual-port mode):
 
-Scaling: RAM cost is linear in frame area. At 640×480 the background model grows to 300 kB (≈75 BRAM36K); at 1920×1080 it reaches ~2 MB (≈512 BRAM36K).
+| Resolution | Bytes | BRAM36K blocks |
+|------------|-------|---------------|
+| 320×240 | 75 kB | ~19 |
+| 640×480 | 300 kB | 75 |
+| 1920×1080 | ~1.98 MB | ~507 |
+
+The behavioral `ram.sv` requires substitution with a vendor true-dual-port BRAM primitive (`xpm_memory_tdpram`) for synthesis. See [ram-arch.md](ram-arch.md) §5.4.
 
 ---
 
