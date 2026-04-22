@@ -54,6 +54,7 @@ module axis_motion_detect #(
     parameter int THRESH           = 16,
     parameter int ALPHA_SHIFT      = 3,    // alpha = 1/(1 << ALPHA_SHIFT), default 1/8 — non-motion rate
     parameter int ALPHA_SHIFT_SLOW = 6,    // alpha = 1/(1 << ALPHA_SHIFT_SLOW), default 1/64 — motion rate
+    parameter int GRACE_FRAMES     = 8,    // fast-EMA grace frames after priming; 0 disables
     parameter int GAUSS_EN         = 1,    // 1 = Gaussian pre-filter enabled, 0 = bypass (raw Y)
     parameter int RGN_BASE         = 0,
     parameter int RGN_SIZE         = H_ACTIVE * V_ACTIVE
@@ -83,7 +84,8 @@ module axis_motion_detect #(
     output logic                                    mem_wr_en_o
 );
 
-    localparam int IDX_W = $clog2(H_ACTIVE * V_ACTIVE);
+    localparam int IDX_W       = $clog2(H_ACTIVE * V_ACTIVE);
+    localparam int GRACE_CNT_W = (GRACE_FRAMES > 0) ? $clog2(GRACE_FRAMES + 1) : 1;
 
     // s_axis_tlast_i is kept for AXIS port symmetry but not consumed here —
     // output tlast is regenerated from out_col/out_row counters. Sink it into
@@ -277,6 +279,22 @@ module axis_motion_detect #(
             primed <= 1'b1;
     end
 
+    // ---- Grace-window counter: fast-EMA override for first GRACE_FRAMES frames after priming. ----
+    // While `in_grace == 1`, bg_next always uses ema_update (fast rate), regardless of raw_motion.
+    // This suppresses the frame-0 hard-init ghost (any object present in frame 0 contaminates
+    // bg[P_original]; without grace, the slow EMA keeps that ghost alive for ~1/α_slow frames).
+    logic [GRACE_CNT_W-1:0] grace_cnt;
+    logic                   in_grace;
+
+    assign in_grace = primed && (grace_cnt < (GRACE_CNT_W)'(GRACE_FRAMES));
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i)
+            grace_cnt <= '0;
+        else if (beat_done_eof && in_grace)
+            grace_cnt <= grace_cnt + 1'b1;
+    end
+
     // ---- Motion core (combinational: threshold + EMA, two rates) ----
     logic       mask_bit;
     logic       raw_motion;
@@ -297,16 +315,16 @@ module axis_motion_detect #(
         .ema_update_slow_o  (ema_update_slow)
     );
 
-    // ---- Memory write-back: priming (hard-init) / motion (slow EMA) / non-motion (fast EMA) ----
+    // ---- Memory write-back: priming (hard-init) / grace (fast EMA) / motion (slow EMA) / non-motion (fast EMA) ----
     // Fire on beat_done so each accepted output writes exactly once.
     logic [7:0] bg_next;
     always_comb begin
         if (!primed)
             bg_next = y_smooth;        // frame-0 hard-init
-        else if (raw_motion)
-            bg_next = ema_update_slow; // motion pixel → slow rate
+        else if (in_grace || !raw_motion)
+            bg_next = ema_update;      // grace-window or non-motion pixel → fast rate
         else
-            bg_next = ema_update;      // non-motion pixel → fast rate
+            bg_next = ema_update_slow; // motion pixel (post-grace) → slow rate
     end
 
     always_ff @(posedge clk_i) begin

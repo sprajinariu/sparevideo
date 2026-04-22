@@ -33,6 +33,7 @@ module tb_axis_motion_detect #(
     localparam int THRESH      = 16;
     localparam int ALPHA_SHIFT      = 3;
     localparam int ALPHA_SHIFT_SLOW = 6;
+    localparam int GRACE_FRAMES     = 8;
     localparam int NUM_PIX     = H * V;
     localparam int CLK_PERIOD  = 10;
 
@@ -123,6 +124,7 @@ module tb_axis_motion_detect #(
         .THRESH           (THRESH),
         .ALPHA_SHIFT      (ALPHA_SHIFT),
         .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW),
+        .GRACE_FRAMES     (GRACE_FRAMES),
         .GAUSS_EN         (GAUSS_EN),
         .RGN_BASE         (0),
         .RGN_SIZE         (NUM_PIX)
@@ -171,6 +173,10 @@ module tb_axis_motion_detect #(
     // primed starts 0, flips to 1 after the last beat of frame 0 is accepted.
     // The TB mirrors the RTL by updating its golden model identically.
     logic tb_primed = 1'b0;
+
+    // TB-side tracking of the DUT's grace counter.
+    // Increments once per frame while tb_primed==1 and tb_grace_cnt < GRACE_FRAMES.
+    int tb_grace_cnt = 0;
 
     // ---- Capture arrays ----
     logic        cap_msk [NUM_PIX];
@@ -295,7 +301,10 @@ module tb_axis_motion_detect #(
 
     // Update y_prev[] using EMA on effective Y (raw or Gaussian-filtered).
     // Frame 0 (tb_primed==0): hard-init bg from current frame, then flip tb_primed.
-    // Frame 1+ (tb_primed==1): selective EMA — slow rate on motion pixels, fast on non-motion.
+    // Frame 1+ (tb_primed==1): grace-window or selective EMA.
+    //   Grace window (tb_grace_cnt < GRACE_FRAMES): fast rate unconditionally,
+    //   then increment tb_grace_cnt (mirrors RTL beat_done_eof + in_grace).
+    //   Post-grace: slow rate on motion pixels, fast on non-motion.
     task automatic update_y_prev(input logic [23:0] pixels [NUM_PIX]);
         logic signed [8:0] delta, step_fast, step_slow, step;
         logic [7:0] yc;
@@ -308,14 +317,21 @@ module tb_axis_motion_detect #(
             tb_primed = 1'b1;
         end else begin
             for (int i = 0; i < NUM_PIX; i++) begin
-                yc        = y_eff[i];
-                delta     = {1'b0, yc} - {1'b0, y_prev[i]};
-                step_fast = delta >>> ALPHA_SHIFT;
-                step_slow = delta >>> ALPHA_SHIFT_SLOW;
+                yc         = y_eff[i];
+                delta      = {1'b0, yc} - {1'b0, y_prev[i]};
+                step_fast  = delta >>> ALPHA_SHIFT;
+                step_slow  = delta >>> ALPHA_SHIFT_SLOW;
                 raw_motion = ((yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc)) > THRESH[7:0];
-                step      = raw_motion ? step_slow : step_fast;
+                // Grace-window override: use fast rate unconditionally while in grace
+                if ((tb_grace_cnt < GRACE_FRAMES) || !raw_motion)
+                    step = step_fast;
+                else
+                    step = step_slow;
                 y_prev[i] = y_prev[i] + step[7:0];
             end
+            // Mirror RTL grace_cnt increment: once per frame, while in_grace.
+            if (tb_grace_cnt < GRACE_FRAMES)
+                tb_grace_cnt = tb_grace_cnt + 1;
         end
     endtask
 
