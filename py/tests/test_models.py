@@ -112,20 +112,6 @@ def test_motion_static_scene():
                                       err_msg=f"Frame {i} should be passthrough after EMA convergence")
 
 
-def test_motion_color_bars_static():
-    """Color bars (static): output equals input after EMA convergence."""
-    frames = load_frames("synthetic:color_bars", width=64, height=32, num_frames=60)
-    out = run_model("motion", frames)
-
-    # Frame 0: passthrough (no prior bbox)
-    np.testing.assert_array_equal(out[0], frames[0])
-
-    # After EMA convergence, static color bars produce no motion -> no overlay
-    for i in range(55, 60):
-        np.testing.assert_array_equal(out[i], frames[i],
-                                      err_msg=f"Frame {i} should be passthrough after EMA convergence")
-
-
 def test_motion_moving_box_has_overlay():
     """Moving box: frames after priming+delay should have green bbox pixels."""
     frames = load_frames("synthetic:moving_box", width=64, height=48, num_frames=6)

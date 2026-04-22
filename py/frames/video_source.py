@@ -4,10 +4,9 @@ Supported sources:
   - Path to MP4/AVI video file (requires opencv)
   - Path to directory of PNG/JPG images
   - "synthetic:<pattern>" where pattern is one of:
-      color_bars, gradient, checkerboard, moving_box,
-      moving_box_h, moving_box_v, moving_box_reverse,
-      dark_moving_box, two_boxes, noisy_moving_box,
-      lighting_ramp
+      moving_box, dark_moving_box, two_boxes, noisy_moving_box,
+      lighting_ramp, textured_static, entering_object, multi_speed,
+      stopping_object, lit_moving_object
 """
 
 import sys
@@ -103,13 +102,7 @@ def _load_image_dir(path, width, height, num_frames):
 
 def _generate_synthetic(pattern, width, height, num_frames):
     generators = {
-        "color_bars": _gen_color_bars,
-        "gradient": _gen_gradient,
-        "checkerboard": _gen_checkerboard,
         "moving_box": _gen_moving_box,
-        "moving_box_h": _gen_moving_box_h,
-        "moving_box_v": _gen_moving_box_v,
-        "moving_box_reverse": _gen_moving_box_reverse,
         "dark_moving_box": _gen_dark_moving_box,
         "two_boxes": _gen_two_boxes,
         "noisy_moving_box": _gen_noisy_moving_box,
@@ -342,41 +335,6 @@ def _gen_lit_moving_object(width, height, num_frames):
     return frames
 
 
-def _gen_color_bars(width, height, num_frames):
-    """8 vertical color bars: white, yellow, cyan, green, magenta, red, blue, black."""
-    colors = [
-        (255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0),
-        (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0),
-    ]
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    bar_w = width // 8
-    for i, color in enumerate(colors):
-        x0 = i * bar_w
-        x1 = (i + 1) * bar_w if i < 7 else width
-        frame[:, x0:x1] = color
-    return [frame.copy() for _ in range(num_frames)]
-
-
-def _gen_gradient(width, height, num_frames):
-    """Red gradient horizontal, green gradient vertical."""
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    for y in range(height):
-        for x in range(width):
-            frame[y, x, 0] = int(x * 255 / max(width - 1, 1))
-            frame[y, x, 1] = int(y * 255 / max(height - 1, 1))
-    return [frame.copy() for _ in range(num_frames)]
-
-
-def _gen_checkerboard(width, height, num_frames):
-    """16x16 pixel checkerboard."""
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    for y in range(height):
-        for x in range(width):
-            if ((x // 16) ^ (y // 16)) & 1:
-                frame[y, x] = (255, 255, 255)
-    return [frame.copy() for _ in range(num_frames)]
-
-
 def _gen_moving_box(width, height, num_frames):
     """A red box that moves diagonally across frames."""
     box_w, box_h = width // 4, height // 4
@@ -388,48 +346,6 @@ def _gen_moving_box(width, height, num_frames):
         cx = int(t * (width - box_w))
         cy = int(t * (height - box_h))
         frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
-        frames.append(frame)
-    return frames
-
-
-def _gen_moving_box_h(width, height, num_frames):
-    """A red box moving horizontally (left to right)."""
-    box_w, box_h = width // 6, height // 6
-    cy = (height - box_h) // 2
-    frames = []
-    for i in range(num_frames):
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        t = i / max(num_frames - 1, 1)
-        cx = int(t * (width - box_w))
-        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
-        frames.append(frame)
-    return frames
-
-
-def _gen_moving_box_v(width, height, num_frames):
-    """A green box moving vertically (top to bottom)."""
-    box_w, box_h = width // 6, height // 6
-    cx = (width - box_w) // 2
-    frames = []
-    for i in range(num_frames):
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        t = i / max(num_frames - 1, 1)
-        cy = int(t * (height - box_h))
-        frame[cy : cy + box_h, cx : cx + box_w] = (0, 255, 0)
-        frames.append(frame)
-    return frames
-
-
-def _gen_moving_box_reverse(width, height, num_frames):
-    """A blue box moving diagonally from bottom-right to top-left."""
-    box_w, box_h = width // 4, height // 4
-    frames = []
-    for i in range(num_frames):
-        frame = np.zeros((height, width, 3), dtype=np.uint8)
-        t = i / max(num_frames - 1, 1)
-        cx = int((1 - t) * (width - box_w))
-        cy = int((1 - t) * (height - box_h))
-        frame[cy : cy + box_h, cx : cx + box_w] = (0, 0, 255)
         frames.append(frame)
     return frames
 
