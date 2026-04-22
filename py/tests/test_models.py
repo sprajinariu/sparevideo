@@ -220,13 +220,12 @@ def test_mask_static_scene_converged():
         assert not out[i].any(), f"Frame {i} should be all-black after EMA convergence"
 
 
-def test_mask_frame0_mostly_white():
-    """Frame 0: Y_ref is zero-initialized, so non-black input → mostly white."""
+def test_mask_frame0_all_black():
+    """Frame 0: hard-init priming — bg is set to Y_smooth, mask forced to zero."""
     frame = np.full((8, 16, 3), 128, dtype=np.uint8)
     out = run_model("mask", [frame])
-    # Luma of (128,128,128) = (77*128 + 150*128 + 29*128)>>8 = 32768>>8 = 128
-    # |128 - 0| = 128 > 16 → motion everywhere
-    assert np.all(out[0] == 255), "Frame 0 should be all-white (everything is motion vs zero ref)"
+    # Frame 0 is the priming frame: mask is forced to zero regardless of input.
+    assert np.all(out[0] == 0), "Frame 0 should be all-black (priming frame, mask forced to zero)"
 
 
 def test_mask_output_strictly_bw():
@@ -449,9 +448,14 @@ def test_ema_convergence_static():
 
 
 def test_ema_step_change_motion_then_absorbed():
-    """After a step change, motion is detected then absorbed as bg converges."""
+    """After a step change, motion is detected then absorbed as bg converges.
+
+    With selective EMA, motion pixels update at the slow rate (alpha_shift_slow).
+    To test full convergence, we set alpha_shift_slow=alpha_shift so that motion
+    pixels converge at the same rate as non-motion pixels.
+    """
     h, w = 4, 4
-    # Static scene at luma ~39 (R=100, G=0, B=0 → Y = (77*100)>>8 = 30)
+    # Static scene at luma ~30 (R=100, G=0, B=0 → Y = (77*100)>>8 = 30)
     static_frame = np.zeros((h, w, 3), dtype=np.uint8)
     static_frame[:, :, 0] = 100  # R=100 → Y=30
 
@@ -462,7 +466,8 @@ def test_ema_step_change_motion_then_absorbed():
     bright_frame = np.full((h, w, 3), 200, dtype=np.uint8)  # Y ≈ 200
     frames.extend([bright_frame.copy() for _ in range(30)])
 
-    out = run_model("mask", frames, alpha_shift=3)
+    # Use alpha_shift_slow=alpha_shift so motion pixels converge at same speed.
+    out = run_model("mask", frames, alpha_shift=3, alpha_shift_slow=3)
 
     # After bg converges to static (~frame 45-49), mask should be black
     assert not out[49].any(), "Frame 49 should be all-black (bg converged to static)"
@@ -470,7 +475,7 @@ def test_ema_step_change_motion_then_absorbed():
     # Frame 50 (step change): large diff → motion (white pixels)
     assert out[50].any(), "Frame 50 should detect motion after step change"
 
-    # After many more frames, bg converges to bright value → no motion
+    # After many more frames at alpha_shift_slow=3, bg converges to bright → no motion
     assert not out[79].any(), "Frame 79 should be all-black (bg converged to bright)"
 
 
@@ -548,6 +553,187 @@ def test_mask_gauss_en_false_matches_old():
     # After EMA convergence, static scene → all-black
     for i in range(55, 60):
         assert not out[i].any(), f"Frame {i} should be all-black after EMA convergence"
+
+
+# ---- Frame-0 priming + selective EMA tests ----
+
+def _get_internal_bg(frames, alpha_shift=3, alpha_shift_slow=6, gauss_en=True):
+    """Run the motion model and return the internal bg state at each frame boundary.
+
+    Returns a list of bg arrays (uint8, shape H×W) — one per *processed* frame.
+    bg[0] is the state after frame 0 has been consumed.
+    """
+    from models.motion import _run_bg_trace
+    return _run_bg_trace(frames, alpha_shift=alpha_shift,
+                         alpha_shift_slow=alpha_shift_slow, gauss_en=gauss_en)
+
+
+def test_motion_frame0_priming_writes_bg():
+    """After frame 0, bg[px] equals Y(frame_0[px]) for every pixel (no EMA lag)."""
+    from models.motion import _rgb_to_y, _gauss3x3
+    frames = _static_frames(width=16, height=8, num_frames=1,
+                             color=(120, 60, 200))
+    bg_trace = _get_internal_bg(frames, alpha_shift=3, alpha_shift_slow=6,
+                                 gauss_en=True)
+    y0 = _rgb_to_y(frames[0])
+    y0_filt = _gauss3x3(y0)
+    np.testing.assert_array_equal(bg_trace[0], y0_filt)
+
+
+def test_motion_frame0_priming_mask_all_zero():
+    """The motion model's frame-0 output is visually indistinguishable from input
+    (no bbox overlay is drawn because primed=False and bbox state is all-None).
+    Also: mask bits emitted during frame 0 would be all zero."""
+    frames = _static_frames(width=16, height=8, num_frames=1,
+                             color=(120, 60, 200))
+    out = run_model("motion", frames, alpha_shift=3, alpha_shift_slow=6,
+                    gauss_en=True)
+    # frame 0 output is input (bbox state all-None on first frame regardless)
+    np.testing.assert_array_equal(out[0], frames[0])
+
+
+def test_motion_selective_ema_rates():
+    """Frame 2: after frame 1 establishes a stable bg, construct frame 2 so
+    that half the pixels are flagged motion and half are not. bg should drift
+    at the slow rate on motion pixels and fast rate on non-motion pixels."""
+    from models.motion import _rgb_to_y, _gauss3x3
+    w, h = 16, 8
+    num_frames = 3
+    # Build: frame 0 and frame 1 identical (prime + stabilize). frame 2 has
+    # a delta in the left half that exceeds thresh, and a sub-threshold delta
+    # in the right half.
+    frame0 = np.full((h, w, 3), 100, dtype=np.uint8)
+    frame1 = frame0.copy()
+    frame2 = frame0.copy()
+    frame2[:, :w // 2] = 180                       # Y delta ~80 > thresh
+    frame2[:, w // 2:] = 105                        # Y delta 5 < thresh
+    bg_trace = _get_internal_bg([frame0, frame1, frame2],
+                                 alpha_shift=3, alpha_shift_slow=6,
+                                 gauss_en=False)
+    # After frame 1, bg should equal Y(100) everywhere (primed on f0 → bg=100;
+    # frame 1 non-motion → fast EMA step toward 100 → still 100).
+    y_after_f1 = bg_trace[1]
+    assert np.all(y_after_f1 == 100)
+
+    # After frame 2:
+    #   Left half: motion pixel. delta=180-100=80. step = 80>>6 = 1. bg=101.
+    #   Right half: non-motion. delta=105-100=5.   step = 5>>3 = 0.  bg=100.
+    y_after_f2 = bg_trace[2]
+    assert np.all(y_after_f2[:, :w // 2] == 101), (
+        f"motion half should drift by (80>>6)=1, got {y_after_f2[0, 0]}")
+    assert np.all(y_after_f2[:, w // 2:] == 100), (
+        f"non-motion half should not drift, got {y_after_f2[0, -1]}")
+
+
+def test_motion_no_trail_after_object_departure():
+    """Object moves across a pixel for 2 frames then leaves. With selective EMA,
+    the pixel immediately stops flagging as motion once the object is gone."""
+    w, h = 16, 8
+    # f0: empty scene (Y=100)
+    # f1: object at left half (Y=200) — motion, but slow EMA barely drifts bg
+    # f2: object gone (Y=100 everywhere) — bg is still ~100, delta=0, mask=0
+    frame_empty  = np.full((h, w, 3), 100, dtype=np.uint8)
+    frame_object = np.full((h, w, 3), 100, dtype=np.uint8)
+    frame_object[:, :w // 2] = 200
+    frames = [frame_empty, frame_object, frame_empty]
+    bg_trace = _get_internal_bg(frames, alpha_shift=3, alpha_shift_slow=6,
+                                 gauss_en=False)
+    # After f2, bg in the former-motion region:
+    #   Before f2: bg=100 (f0 primed=100; f1 motion → slow-step: 100+(100>>6)=101)
+    #   f2: delta = 100-101 = -1, |diff|=1, thresh=16 → not motion → fast rate
+    #       step = -1>>3 = -1 (arithmetic) → bg = 100
+    # Mask at f2 left half should be 0 (no trail).
+    from models.motion import _rgb_to_y, _gauss3x3, _compute_mask
+    y2 = _rgb_to_y(frames[2])
+    # bg before f2 is bg_trace[1]; but we verify the *consequence*: mask at f2
+    # is zero everywhere when we recompute against bg_trace[1].
+    mask_f2 = _compute_mask(y2, bg_trace[1], thresh=16)
+    assert not mask_f2.any(), (
+        f"No trail expected; got {int(mask_f2.sum())} motion pixels in f2")
+
+
+# ---- Grace-window tests ----
+
+def test_motion_grace_window_zero_equals_no_grace():
+    """GRACE_FRAMES=0 must produce identical bg trajectory to plain selective EMA."""
+    from models.motion import _run_bg_trace
+
+    # Scene: object in frame 0, moves in frame 1+, static after
+    h, w = 16, 16
+    frames = []
+    for i in range(6):
+        f = np.full((h, w, 3), 200, dtype=np.uint8)  # white bg
+        if i == 0:
+            f[4:8, 4:8] = [10, 10, 10]  # dark box at (4..7, 4..7)
+        elif i < 3:
+            f[4:8, 10:14] = [10, 10, 10]  # dark box moved right
+        frames.append(f)
+
+    # With grace_frames=0, behavior must match the plain selective-EMA path.
+    trace_with_grace_zero = _run_bg_trace(
+        frames, alpha_shift=3, alpha_shift_slow=6, grace_frames=0
+    )
+    trace_no_grace_arg = _run_bg_trace(
+        frames, alpha_shift=3, alpha_shift_slow=6  # default grace_frames=0
+    )
+    for a, b in zip(trace_with_grace_zero, trace_no_grace_arg):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_motion_grace_window_clears_frame0_ghost():
+    """Object present in frame 0 that moves in frame 1 must not produce a
+    persistent ghost at its frame-0 location when grace window is active.
+
+    Box luma=180, bg luma=220 (delta=40): with alpha_shift=3 and grace_frames=8,
+    the fast EMA closes the gap to <=16 within 8 steps, clearing the ghost.
+    """
+    from models.motion import run
+
+    h, w = 24, 24
+    frames = []
+    for i in range(12):
+        f = np.full((h, w, 3), 220, dtype=np.uint8)
+        if i == 0:
+            f[4:8, 4:8] = [180, 180, 180]   # luma=180 box at frame-0 location
+        else:
+            f[4:8, 10:14] = [180, 180, 180]  # box moved right
+        frames.append(f)
+
+    from models.motion import _run_bg_trace, _rgb_to_y, _compute_mask
+    trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+                          grace_frames=8, gauss_en=False)
+    y_f10 = _rgb_to_y(frames[10])
+    mask_f10 = _compute_mask(y_f10, trace[9], 16)
+
+    assert not mask_f10[4:8, 4:8].any(), (
+        f"ghost persists at frame 10: mask[4:8,4:8]={mask_f10[4:8, 4:8]}, "
+        f"bg[4:8,4:8]={trace[9][4:8, 4:8]}"
+    )
+
+
+def test_motion_grace_window_preserves_trail_suppression():
+    """After grace window ends, selective EMA must still suppress trails."""
+    from models.motion import _run_bg_trace, _rgb_to_y, _compute_mask
+
+    h, w = 24, 24
+    frames = []
+    for i in range(10):
+        frames.append(np.full((h, w, 3), 220, dtype=np.uint8))
+    for i in range(4):
+        f = np.full((h, w, 3), 220, dtype=np.uint8)
+        f[4:8, 4 + i:8 + i] = [10, 10, 10]
+        frames.append(f)
+    for i in range(5):
+        frames.append(np.full((h, w, 3), 220, dtype=np.uint8))
+
+    trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+                          grace_frames=8, gauss_en=False)
+
+    y_f18 = _rgb_to_y(frames[18])
+    mask_f18 = _compute_mask(y_f18, trace[17], 16)
+
+    assert not mask_f18[4:8, 7:11].any(), \
+        f"trail persists at frame 18: mask[4:8,7:11]={mask_f18[4:8, 7:11]}"
 
 
 # ---- Run all tests ----

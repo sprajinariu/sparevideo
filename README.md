@@ -143,8 +143,13 @@ make run-pipeline CTRL_FLOW=motion        # motion detect + N-bbox overlay — p
 make run-pipeline CTRL_FLOW=mask          # raw motion mask — B/W output for debugging
 make run-pipeline CTRL_FLOW=ccl_bbox      # mask-as-grey canvas + CCL bboxes (debug CCL directly)
 
-# EMA background model tuning
-make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 FRAMES=8
+# EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
+make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
+
+# Grace window tuning — suppress frame-0 hard-init ghosts
+make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=8 FRAMES=12
+make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=16 FRAMES=12
+make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=0 FRAMES=12  # disable grace (regression baseline)
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -184,6 +189,8 @@ make render
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
 | `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `ALPHA_SHIFT` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
+| `ALPHA_SHIFT_SLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
+| `GRACE_FRAMES` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `GAUSS_EN` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
@@ -217,6 +224,8 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
 | `ALPHA_SHIFT` | `3` | EMA background adaptation rate: `alpha = 1/(1 << N)`. Higher = slower adaptation (more noise suppression, longer departure ghosts). 0 = raw frame differencing (no EMA). Compile-time RTL parameter propagated to Verilator via `-G`. |
+| `ALPHA_SHIFT_SLOW` | `6` | EMA background adaptation rate for motion pixels: `alpha = 1/(1 << N)`. Default 6 (α=1/64). Larger than `ALPHA_SHIFT` so motion pixels barely drift bg → no trails. Also governs absorption time of stopped objects. Compile-time RTL parameter propagated via `-G`. |
+| `GRACE_FRAMES` | `8` | Frames after priming where bg updates use the fast EMA rate unconditionally. Suppresses frame-0 hard-init ghosts. Set to 0 to disable. |
 | `GAUSS_EN` | `1` | Gaussian pre-filter on Y channel: `1` = enabled (3x3 blur before motion threshold), `0` = disabled (raw Y). Reduces salt-and-pepper noise in the motion mask. Compile-time RTL parameter propagated to Verilator via `-G`. |
 
 ### Synthetic Sources
@@ -245,7 +254,7 @@ The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (defa
 make run-pipeline SIMARGS="+THRESH=32"
 ```
 
-A pixel is classified as motion when `|Y_cur - bg| > THRESH`, where `bg` is the per-pixel EMA background model (see `ALPHA_SHIFT`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. The first 2 frames after reset are suppressed (bbox forced empty) to avoid false detections from zeroed RAM.
+A pixel is classified as motion when `|Y_cur - bg| > THRESH`, where `bg` is the per-pixel EMA background model (see `ALPHA_SHIFT`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. Frame 0 is a priming pass (mask forced to 0 while the bg RAM is seeded per-pixel), and the first real detection frame is frame 1. The CCL suppresses bboxes for the first 2 frames as an additional safety margin so any transient on the very first compare cycle cannot produce a spurious bbox.
 
 For the `mask` control flow, the verify step also reports motion pixel counts per frame (`motion=N/total`), which is useful for diagnosing false positives.
 

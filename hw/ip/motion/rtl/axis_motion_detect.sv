@@ -49,13 +49,16 @@
 // memory port and connects to the shared `ram` port A at the top level.
 
 module axis_motion_detect #(
-    parameter int H_ACTIVE    = 320,
-    parameter int V_ACTIVE    = 240,
-    parameter int THRESH      = 16,
-    parameter int ALPHA_SHIFT = 3,    // EMA alpha = 1 / (1 << ALPHA_SHIFT), default 1/8
-    parameter int GAUSS_EN    = 1,    // 1 = Gaussian pre-filter enabled, 0 = bypass (raw Y)
-    parameter int RGN_BASE    = 0,
-    parameter int RGN_SIZE    = H_ACTIVE * V_ACTIVE
+    parameter int H_ACTIVE         = 320,
+    parameter int V_ACTIVE         = 240,
+    parameter int THRESH           = 16,
+    parameter int ALPHA_SHIFT      = 3,    // alpha = 1/(1 << ALPHA_SHIFT), default 1/8 — non-motion rate
+    parameter int ALPHA_SHIFT_SLOW  = 6,   // alpha = 1/(1 << ALPHA_SHIFT_SLOW), default 1/64 — post-grace motion rate
+    parameter int GRACE_FRAMES      = 8,   // aggressive-EMA grace frames after priming; 0 disables
+    parameter int GRACE_ALPHA_SHIFT = 1,   // alpha during grace = 1/(1 << GRACE_ALPHA_SHIFT), default 1/2
+    parameter int GAUSS_EN          = 1,   // 1 = Gaussian pre-filter enabled, 0 = bypass (raw Y)
+    parameter int RGN_BASE         = 0,
+    parameter int RGN_SIZE         = H_ACTIVE * V_ACTIVE
 ) (
     input  logic        clk_i,
     input  logic        rst_n_i,
@@ -82,7 +85,8 @@ module axis_motion_detect #(
     output logic                                    mem_wr_en_o
 );
 
-    localparam int IDX_W = $clog2(H_ACTIVE * V_ACTIVE);
+    localparam int IDX_W       = $clog2(H_ACTIVE * V_ACTIVE);
+    localparam int GRACE_CNT_W = (GRACE_FRAMES > 0) ? $clog2(GRACE_FRAMES + 1) : 1;
 
     // s_axis_tlast_i is kept for AXIS port symmetry but not consumed here —
     // output tlast is regenerated from out_col/out_row counters. Sink it into
@@ -261,22 +265,81 @@ module axis_motion_detect #(
 
     assign mem_rd_addr_o = ($bits(mem_rd_addr_o))'(RGN_BASE) + rd_addr_next;
 
-    // ---- Motion core (combinational: threshold + EMA) ----
+    // ---- Priming flag: latches on end_of_frame of frame 0, held thereafter. ----
+    // While primed==0, the write-back path stores y_smooth directly (hard-init)
+    // and mask_bit is forced to 0 inside motion_core.
+    logic primed;
+    logic beat_done_eof;
+
+    assign beat_done_eof = pipe_valid && !pipe_stall && end_of_frame;
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i)
+            primed <= 1'b0;
+        else if (beat_done_eof)
+            primed <= 1'b1;
+    end
+
+    // ---- Grace-window counter: fast-EMA override for first GRACE_FRAMES frames after priming. ----
+    // While `in_grace == 1`, bg_next always uses ema_update (fast rate), regardless of raw_motion.
+    // This suppresses the frame-0 hard-init ghost (any object present in frame 0 contaminates
+    // bg[P_original]; without grace, the slow EMA keeps that ghost alive for ~1/α_slow frames).
+    logic [GRACE_CNT_W-1:0] grace_cnt;
+    logic                   in_grace;
+
+    /* verilator lint_off UNSIGNED */
+    assign in_grace = primed && (grace_cnt < (GRACE_CNT_W)'(GRACE_FRAMES));
+    /* verilator lint_on UNSIGNED */
+
+    always_ff @(posedge clk_i) begin
+        if (!rst_n_i)
+            grace_cnt <= '0;
+        else if (beat_done_eof && in_grace)
+            grace_cnt <= grace_cnt + 1'b1;
+    end
+
+    // ---- Motion core (combinational: threshold + EMA, three rates) ----
     logic       mask_bit;
+    logic       raw_motion;
     logic [7:0] ema_update;
+    logic [7:0] ema_update_slow;
+    logic [7:0] ema_update_grace;
 
     motion_core #(
-        .THRESH      (THRESH),
-        .ALPHA_SHIFT (ALPHA_SHIFT)
+        .THRESH            (THRESH),
+        .ALPHA_SHIFT       (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW  (ALPHA_SHIFT_SLOW),
+        .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT)
     ) u_core (
-        .y_cur_i      (y_smooth),   // smoothed Y when GAUSS_EN=1, raw Y when 0
-        .y_bg_i       (mem_rd_data_i),
-        .mask_bit_o   (mask_bit),
-        .ema_update_o (ema_update)
+        .y_cur_i             (y_smooth),
+        .y_bg_i              (mem_rd_data_i),
+        .primed_i            (primed),
+        .mask_bit_o          (mask_bit),
+        .raw_motion_o        (raw_motion),
+        .ema_update_o        (ema_update),
+        .ema_update_slow_o   (ema_update_slow),
+        .ema_update_grace_o  (ema_update_grace)
     );
 
-    // ---- Memory write-back: store EMA-updated background ----
+    // ---- Memory write-back: priming / grace (aggressive) / motion (slow) / non-motion (fast) ----
     // Fire on beat_done so each accepted output writes exactly once.
+    //
+    // Grace uses its own faster rate (GRACE_ALPHA_SHIFT, default α=1/2) so
+    // bg converges below THRESH within ~4-5 frames regardless of d₀, ensuring
+    // a clean handoff to selective EMA — any residual delta at grace end would
+    // otherwise latch into the slow rate and leave a ~1/α_slow-frame ghost.
+    logic [7:0] bg_next;
+    always_comb begin
+        if (!primed)
+            bg_next = y_smooth;         // frame-0 hard-init
+        else if (in_grace)
+            bg_next = ema_update_grace; // grace window → aggressive rate
+        else if (!raw_motion)
+            bg_next = ema_update;       // post-grace non-motion → fast rate
+        else
+            bg_next = ema_update_slow;  // post-grace motion → slow rate
+    end
+
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
             mem_wr_en_o   <= 1'b0;
@@ -285,12 +348,18 @@ module axis_motion_detect #(
         end else begin
             mem_wr_en_o   <= beat_done;
             mem_wr_addr_o <= ($bits(mem_wr_addr_o))'(RGN_BASE) + out_addr;
-            mem_wr_data_o <= ema_update;
+            mem_wr_data_o <= bg_next;
         end
     end
 
     // ---- Output: mask ----
-    assign m_axis_msk_tdata_o  = mask_bit;
+    // Gated by !in_grace so the mask is 0 during the grace window. Without this
+    // gate, the ghost region at the frame-0 object location is visible in the
+    // mask (and reaches CCL) until the fast EMA converges below THRESH, which
+    // at high-contrast deltas takes longer than GRACE_FRAMES itself. Blanking
+    // the mask during grace gives a clean warm-up period: bg converges silently,
+    // then the first real mask appears at frame GRACE_FRAMES+1.
+    assign m_axis_msk_tdata_o  = mask_bit && !in_grace;
     assign m_axis_msk_tvalid_o = pipe_valid;
     assign m_axis_msk_tlast_o  = end_of_row;
     assign m_axis_msk_tuser_o  = (out_col == '0) && (out_row == '0);

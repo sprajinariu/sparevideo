@@ -32,9 +32,22 @@ module sparevideo_top #(
     // EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
     // Default 3 → alpha = 1/8. Higher = slower adaptation.
     parameter int ALPHA_SHIFT   = 3,
+    // EMA background adaptation rate on MOTION pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
+    // Default 6 → alpha = 1/64. Larger than ALPHA_SHIFT so moving objects barely drift bg.
+    parameter int ALPHA_SHIFT_SLOW = 6,
+    // Aggressive-EMA grace window after priming: for GRACE_FRAMES frames, bg
+    // updates at the GRACE_ALPHA_SHIFT rate regardless of raw_motion, and the
+    // mask is blanked. Suppresses frame-0 hard-init ghosts.
+    parameter int GRACE_FRAMES      = 8,
+    // EMA rate during the grace window: alpha = 1 / (1 << GRACE_ALPHA_SHIFT).
+    // Default 1 → α=1/2 so delta halves per frame. Chosen separately from
+    // ALPHA_SHIFT because grace needs aggressive convergence (to get below
+    // THRESH before selective EMA takes over) while steady-state wants
+    // smoothing against sensor noise.
+    parameter int GRACE_ALPHA_SHIFT = 1,
     // Gaussian pre-filter: 1 = enabled (3x3 Gaussian on Y before motion compare),
     // 0 = bypass (raw Y). Default enabled.
-    parameter int GAUSS_EN      = 1
+    parameter int GAUSS_EN          = 1
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
@@ -269,13 +282,16 @@ module sparevideo_top #(
     );
 
     axis_motion_detect #(
-        .H_ACTIVE    (H_ACTIVE),
-        .V_ACTIVE    (V_ACTIVE),
-        .THRESH      (MOTION_THRESH),
-        .ALPHA_SHIFT (ALPHA_SHIFT),
-        .GAUSS_EN    (GAUSS_EN),
-        .RGN_BASE    (RGN_Y_PREV_BASE),
-        .RGN_SIZE    (RGN_Y_PREV_SIZE)
+        .H_ACTIVE          (H_ACTIVE),
+        .V_ACTIVE          (V_ACTIVE),
+        .THRESH            (MOTION_THRESH),
+        .ALPHA_SHIFT       (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW  (ALPHA_SHIFT_SLOW),
+        .GRACE_FRAMES      (GRACE_FRAMES),
+        .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT),
+        .GAUSS_EN          (GAUSS_EN),
+        .RGN_BASE          (RGN_Y_PREV_BASE),
+        .RGN_SIZE          (RGN_Y_PREV_SIZE)
     ) u_motion_detect (
         .clk_i               (clk_dsp_i),
         .rst_n_i             (rst_dsp_n_i),

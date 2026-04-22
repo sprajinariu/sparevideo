@@ -16,6 +16,14 @@ CTRL_FLOW ?= motion
 TOLERANCE ?= 0
 # EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
 ALPHA_SHIFT ?= 3
+# EMA background adaptation rate on motion pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
+ALPHA_SHIFT_SLOW ?= 6
+# Aggressive-EMA grace window after priming (frames). Default 8. Set to 0 to disable.
+GRACE_FRAMES ?= 8
+# EMA rate during the grace window: alpha = 1 / (1 << GRACE_ALPHA_SHIFT).
+# Default 1 → α=1/2, chosen so delta halves per frame and converges below THRESH
+# within ~4-5 frames regardless of d₀.
+GRACE_ALPHA_SHIFT ?= 1
 # Gaussian pre-filter: 1=enabled, 0=disabled.
 GAUSS_EN ?= 1
 
@@ -35,7 +43,7 @@ endif
 SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
            MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) \
-           ALPHA_SHIFT=$(ALPHA_SHIFT) GAUSS_EN=$(GAUSS_EN) \
+           ALPHA_SHIFT=$(ALPHA_SHIFT) ALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) GRACE_FRAMES=$(GRACE_FRAMES) GRACE_ALPHA_SHIFT=$(GRACE_ALPHA_SHIFT) GAUSS_EN=$(GAUSS_EN) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
@@ -78,7 +86,10 @@ help:
 	@echo "    MODE=text|binary                 File format"
 	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default motion)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
-	@echo "    ALPHA_SHIFT=3                    EMA adaptation rate: alpha=1/(1<<N) (default 3)"
+	@echo "    ALPHA_SHIFT=3                    EMA adaptation (non-motion pixel): alpha=1/(1<<N) (default 3)"
+	@echo "    ALPHA_SHIFT_SLOW=6               EMA adaptation (motion pixel): alpha=1/(1<<N) (default 6)"
+	@echo "    GRACE_FRAMES=8                   Aggressive-EMA grace window after priming (default 8)"
+	@echo "    GRACE_ALPHA_SHIFT=1              EMA shift during grace: alpha=1/(1<<N) (default 1, α=1/2)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
 	@echo "    synthetic:color_bars       8 vertical color bars (static)"
@@ -106,8 +117,8 @@ prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
 	@mkdir -p $(DATA_DIR)/renders
-	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nGAUSS_EN = %s\n' \
-		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(GAUSS_EN)' > $(DATA_DIR)/config.mk
+	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nALPHA_SHIFT_SLOW = %s\nGRACE_FRAMES = %s\nGRACE_ALPHA_SHIFT = %s\nGAUSS_EN = %s\n' \
+		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(ALPHA_SHIFT_SLOW)' '$(GRACE_FRAMES)' '$(GRACE_ALPHA_SHIFT)' '$(GAUSS_EN)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
@@ -134,10 +145,10 @@ verify:
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE) \
-		--alpha-shift $(ALPHA_SHIFT) --gauss-en $(GAUSS_EN)
+		--alpha-shift $(ALPHA_SHIFT) --alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN)
 
 RENDER_SOURCE_SAFE = $(subst _,-,$(subst :,-,$(SOURCE)))
-RENDER_OUT = $(CURDIR)/$(DATA_DIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
+RENDER_OUT = $(CURDIR)/$(DATA_DIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
 
 render:
 	@echo ""
@@ -146,7 +157,7 @@ render:
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --alpha-shift $(ALPHA_SHIFT) \
-		--gauss-en $(GAUSS_EN) --render-output $(RENDER_OUT)
+		--alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN) --render-output $(RENDER_OUT)
 
 # ---- Other targets ----
 
