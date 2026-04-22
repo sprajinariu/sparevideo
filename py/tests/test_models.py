@@ -876,24 +876,28 @@ def test_entering_object_produces_bboxes_on_both_halves():
 
 
 def test_multi_speed_produces_three_bbox_bands():
-    """multi_speed: three spatially-separated boxes produce bboxes in three horizontal bands.
+    """multi_speed: at least one post-priming frame contains three distinct bbox components.
 
-    Box A (fast, top band), Box B (medium, middle band), Box C (slow, crosses
-    diagonal). Accumulating across post-priming frames, bbox pixels must appear
-    in the top third, middle third, and bottom third of the frame.
+    Box A (fast L->R top), Box B (medium T->B middle), Box C (slow BL->TR).
+    Under 8-connectivity, a correctly-tracking CCL should emit three separate
+    bbox outlines on at least one frame; earlier frames may show merged blobs
+    due to frame-0 departure ghosts, but the steady-state later frames should
+    not. Uses scipy.ndimage.label (already a project dependency).
     """
+    from scipy.ndimage import label as _scipy_label
     H, W = 72, 96
     frames = load_frames("synthetic:multi_speed",
                          width=W, height=H, num_frames=8)
     out = run_model("motion", frames)
-    total = np.zeros((H, W), dtype=bool)
+    struct = np.ones((3, 3), dtype=int)
+    component_counts = []
     for i in range(3, 8):
-        total |= np.all(out[i] == BBOX_COLOR, axis=-1)
-    top    = total[: H // 3].any()
-    middle = total[H // 3 : 2 * H // 3].any()
-    bottom = total[2 * H // 3 :].any()
-    assert top and middle and bottom, (
-        f"bboxes expected in three bands: top={top}, middle={middle}, bottom={bottom}")
+        green = np.all(out[i] == BBOX_COLOR, axis=-1)
+        _, n = _scipy_label(green, structure=struct)
+        component_counts.append(n)
+    assert max(component_counts) >= 3, (
+        f"expected at least one post-priming frame with 3+ bbox components, "
+        f"got counts per frame={component_counts}")
 
 
 # ---- Run all tests ----
