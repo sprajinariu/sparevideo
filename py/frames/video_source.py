@@ -157,6 +157,39 @@ def _add_frame_noise(bg, rng, noise_amp=8):
     return np.clip(bg.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 
+def _place_object(rgb_frame, x0, y0, box_w, box_h, luma,
+                  sigma=2.0, kernel=5):
+    """Composite a Gaussian-blurred soft-edged box at (x0, y0) onto rgb_frame, in-place.
+
+    The object is greyscale (R=G=B=luma). Box regions partially outside the
+    frame are clipped cleanly; the function is a no-op if the box is fully
+    off-screen.
+    """
+    H, W = rgb_frame.shape[:2]
+    pad = kernel  # margin so the blur kernel never reads outside the padded canvas
+
+    # Draw a binary mask on a padded canvas so the Gaussian blur can handle
+    # boxes that touch or cross the frame edge without edge artefacts.
+    canvas_h = H + 2 * pad
+    canvas_w = W + 2 * pad
+    hard = np.zeros((canvas_h, canvas_w), dtype=np.float32)
+    y1p = max(y0 + pad, 0)
+    y2p = min(y0 + pad + box_h, canvas_h)
+    x1p = max(x0 + pad, 0)
+    x2p = min(x0 + pad + box_w, canvas_w)
+    if y1p >= y2p or x1p >= x2p:
+        return  # fully off-screen
+    hard[y1p:y2p, x1p:x2p] = 1.0
+
+    blurred = cv2.GaussianBlur(hard, (kernel, kernel), sigma)
+    soft = blurred[pad:pad + H, pad:pad + W]     # crop back to the frame
+
+    alpha = soft[..., None]                      # (H, W, 1)
+    fg = np.full_like(rgb_frame, luma)
+    out = rgb_frame.astype(np.float32) * (1.0 - alpha) + fg.astype(np.float32) * alpha
+    rgb_frame[:] = np.clip(out, 0, 255).astype(np.uint8)
+
+
 def _gen_color_bars(width, height, num_frames):
     """8 vertical color bars: white, yellow, cyan, green, magenta, red, blue, black."""
     colors = [

@@ -738,7 +738,7 @@ def test_motion_grace_window_preserves_trail_suppression():
 
 # ---- New synthetic source helpers ----
 
-from frames.video_source import _make_bg_texture, _add_frame_noise
+from frames.video_source import _make_bg_texture, _add_frame_noise, _place_object
 
 
 def test_make_bg_texture_shape_and_range():
@@ -801,6 +801,47 @@ def test_add_frame_noise_varies_frame_to_frame():
     a = _add_frame_noise(bg, rng, noise_amp=8)
     b = _add_frame_noise(bg, rng, noise_amp=8)
     assert not np.array_equal(a, b)
+
+
+def test_place_object_center_near_target_luma():
+    """Interior of a large box has luma close to the object's target luma."""
+    rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+    _place_object(rgb, x0=8, y0=8, box_w=16, box_h=16, luma=200)
+    # Deep inside the box, the blurred alpha ≈ 1 → output ≈ luma on all channels.
+    px = rgb[16, 16]
+    assert abs(int(px[0]) - 200) <= 2
+    assert abs(int(px[1]) - 200) <= 2
+    assert abs(int(px[2]) - 200) <= 2
+
+
+def test_place_object_far_outside_untouched():
+    """Pixels far from the object retain their original bg value."""
+    rgb = np.full((32, 32, 3), 50, dtype=np.uint8)
+    _place_object(rgb, x0=8, y0=8, box_w=4, box_h=4, luma=200)
+    # Pixels in the far corner should be well outside the 5x5 kernel's reach.
+    np.testing.assert_array_equal(rgb[28, 28], [50, 50, 50])
+    np.testing.assert_array_equal(rgb[0, 28], [50, 50, 50])
+    np.testing.assert_array_equal(rgb[28, 0], [50, 50, 50])
+
+
+def test_place_object_soft_edge_transition():
+    """Along an edge, intermediate pixels fall between bg and object luma."""
+    rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+    _place_object(rgb, x0=8, y0=8, box_w=16, box_h=16, luma=200)
+    # Move along a horizontal line just inside the top edge: transition from 0 → ~200.
+    # At least one pixel on that line should be strictly between (0, 200).
+    row = rgb[8, :, 0].astype(int)
+    assert np.any((row > 10) & (row < 190)), f"no soft-edge pixel found: {row}"
+
+
+def test_place_object_clips_partial_offscreen():
+    """Object partially outside the frame renders its visible portion and does not raise."""
+    rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+    _place_object(rgb, x0=-4, y0=10, box_w=12, box_h=8, luma=180)
+    # Pixels inside the visible slice should be brighter than bg.
+    assert rgb[14, 2, 0] > 50, f"expected visible portion, got {rgb[14, 2, 0]}"
+    # Pixels far from the visible slice should be untouched.
+    np.testing.assert_array_equal(rgb[14, 28], [0, 0, 0])
 
 
 # ---- Run all tests ----
