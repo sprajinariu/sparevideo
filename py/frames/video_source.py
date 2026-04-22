@@ -118,6 +118,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "entering_object": _gen_entering_object,
         "multi_speed": _gen_multi_speed,
         "stopping_object": _gen_stopping_object,
+        "lit_moving_object": _gen_lit_moving_object,
     }
     if pattern not in generators:
         raise ValueError(
@@ -300,6 +301,42 @@ def _gen_stopping_object(width, height, num_frames):
         bx = int(t_b * (width - box_w))
         by = height - box_h - height // 8
         _place_object(rgb, bx, by, box_w, box_h, luma=160)
+
+        frames.append(rgb)
+    return frames
+
+
+def _gen_lit_moving_object(width, height, num_frames):
+    """Two soft-edged boxes on a bg whose L↔R illumination gradient shifts ~2 luma/frame.
+
+    One half of the frame slowly brightens while the other dims. Tests that
+    the EMA (via selective rate + grace window) can still flag moving objects
+    under a gradual illumination change.
+    """
+    tex = _make_bg_texture(width, height)
+    rng = np.random.default_rng(seed=5)
+    box_w, box_h = max(width // 6, 1), max(height // 6, 1)
+    # Per-column ramp in [-1, +1]: scaled by shift_per_frame*i for frame i.
+    ramp = (np.arange(width) - width / 2.0) / max(width / 2.0, 1.0)
+    shift_per_frame = 2.0
+    frames = []
+    for i in range(num_frames):
+        shift = ramp * shift_per_frame * i                        # (W,)
+        shifted = np.clip(tex.astype(np.float32) + shift[None, :], 0, 255).astype(np.uint8)
+        grey = _add_frame_noise(shifted, rng)
+        rgb = np.stack([grey, grey, grey], axis=-1)
+
+        # Box A: fast L→R across the full width in num_frames frames.
+        t_a = i / max(num_frames - 1, 1)
+        ax = int(t_a * (width - box_w))
+        ay = height // 4
+        _place_object(rgb, ax, ay, box_w, box_h, luma=180)
+
+        # Box B: slow diagonal TL→BR across the diagonal in 3*num_frames frames.
+        t_b = i / max(3 * num_frames - 1, 1)
+        bx = int(t_b * (width - box_w))
+        by = int(t_b * (height - box_h))
+        _place_object(rgb, bx, by, box_w, box_h, luma=200)
 
         frames.append(rgb)
     return frames

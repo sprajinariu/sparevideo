@@ -914,6 +914,15 @@ def test_stopping_object_has_bbox_while_both_move():
     assert green.any(), "frame 3 should have bbox overlay while both boxes are moving"
 
 
+def test_lit_moving_object_bboxes_under_illumination_shift():
+    """lit_moving_object: both boxes still produce bboxes despite the time-varying lighting gradient."""
+    frames = load_frames("synthetic:lit_moving_object",
+                         width=64, height=48, num_frames=8)
+    out = run_model("motion", frames)
+    green = np.all(out[5] == BBOX_COLOR, axis=-1)
+    assert green.any(), "bbox should appear at frame 5 despite lighting shift"
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":
