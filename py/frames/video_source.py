@@ -122,6 +122,29 @@ def _generate_synthetic(pattern, width, height, num_frames):
     return generators[pattern](width, height, num_frames)
 
 
+# ---- Shared helpers for textured/noisy synthetic patterns ----
+
+def _make_bg_texture(width, height, base_luma=100, amp=20, seed=0xBE1F):
+    """Static multi-frequency sinusoid luma texture clipped to ~[base-amp, base+amp].
+
+    Returns a (height, width) uint8 array. Deterministic given `seed`.
+    """
+    rng = np.random.default_rng(seed)
+    yy, xx = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+    components = [
+        (0.05, 0.0),
+        (0.09, np.pi / 3.0),
+        (0.13, 2.0 * np.pi / 3.0),
+    ]
+    phases = rng.uniform(0.0, 2.0 * np.pi, size=len(components))
+    tex = np.zeros((height, width), dtype=np.float32)
+    for (freq, angle), phi in zip(components, phases):
+        tex += np.sin(freq * (xx * np.cos(angle) + yy * np.sin(angle)) + phi)
+    tex /= len(components)                       # normalise to ~[-1, 1]
+    tex = base_luma + amp * tex                  # shift into luma window
+    return np.clip(tex, 0, 255).astype(np.uint8)
+
+
 def _gen_color_bars(width, height, num_frames):
     """8 vertical color bars: white, yellow, cyan, green, magenta, red, blue, black."""
     colors = [

@@ -736,6 +736,36 @@ def test_motion_grace_window_preserves_trail_suppression():
         f"trail persists at frame 18: mask[4:8,7:11]={mask_f18[4:8, 7:11]}"
 
 
+# ---- New synthetic source helpers ----
+
+from frames.video_source import _make_bg_texture
+
+
+def test_make_bg_texture_shape_and_range():
+    """Texture is (H, W) uint8 with values inside the configured luma window."""
+    tex = _make_bg_texture(width=64, height=32, base_luma=100, amp=20)
+    assert tex.shape == (32, 64)
+    assert tex.dtype == np.uint8
+    # Guard against off-by-one in the normalisation — allow ±2 luma slack.
+    assert tex.min() >= 100 - 20 - 2
+    assert tex.max() <= 100 + 20 + 2
+
+
+def test_make_bg_texture_is_deterministic():
+    """Same seed → identical output; different seed → non-identical output."""
+    a = _make_bg_texture(width=32, height=16, seed=1)
+    b = _make_bg_texture(width=32, height=16, seed=1)
+    c = _make_bg_texture(width=32, height=16, seed=2)
+    np.testing.assert_array_equal(a, b)
+    assert not np.array_equal(a, c)
+
+
+def test_make_bg_texture_not_flat():
+    """Texture actually has spatial variation (not a constant field)."""
+    tex = _make_bg_texture(width=64, height=32, base_luma=100, amp=20)
+    assert int(tex.max()) - int(tex.min()) >= 10
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":
