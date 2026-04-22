@@ -844,6 +844,22 @@ def test_place_object_clips_partial_offscreen():
     np.testing.assert_array_equal(rgb[14, 28], [0, 0, 0])
 
 
+# ---- New synthetic source tests ----
+
+def test_textured_static_no_motion_after_convergence():
+    """textured_static: after EMA converges, mask is all-black (no false positives).
+
+    This is the only negative test in the new set — verifies that the
+    sinusoid+noise background does not itself produce motion.
+    """
+    frames = load_frames("synthetic:textured_static",
+                         width=64, height=48, num_frames=60)
+    out = run_model("mask", frames)
+    for i in range(55, 60):
+        assert not out[i].any(), (
+            f"frame {i} should be all-black after EMA convergence on static bg")
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":

@@ -114,6 +114,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "two_boxes": _gen_two_boxes,
         "noisy_moving_box": _gen_noisy_moving_box,
         "lighting_ramp": _gen_lighting_ramp,
+        "textured_static": _gen_textured_static,
     }
     if pattern not in generators:
         raise ValueError(
@@ -188,6 +189,20 @@ def _place_object(rgb_frame, x0, y0, box_w, box_h, luma,
     fg = np.full_like(rgb_frame, luma)
     out = rgb_frame.astype(np.float32) * (1.0 - alpha) + fg.astype(np.float32) * alpha
     rgb_frame[:] = np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _gen_textured_static(width, height, num_frames):
+    """Sinusoid-textured background with per-frame sensor noise. No moving objects.
+
+    Negative test: after EMA converges, mask must be all-black.
+    """
+    tex = _make_bg_texture(width, height)
+    rng = np.random.default_rng(seed=1)
+    frames = []
+    for _ in range(num_frames):
+        grey = _add_frame_noise(tex, rng)
+        frames.append(np.stack([grey, grey, grey], axis=-1))
+    return frames
 
 
 def _gen_color_bars(width, height, num_frames):
