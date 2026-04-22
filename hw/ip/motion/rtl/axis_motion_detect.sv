@@ -286,7 +286,9 @@ module axis_motion_detect #(
     logic [GRACE_CNT_W-1:0] grace_cnt;
     logic                   in_grace;
 
+    /* verilator lint_off UNSIGNED */
     assign in_grace = primed && (grace_cnt < (GRACE_CNT_W)'(GRACE_FRAMES));
+    /* verilator lint_on UNSIGNED */
 
     always_ff @(posedge clk_i) begin
         if (!rst_n_i)
