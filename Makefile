@@ -82,6 +82,7 @@ help:
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
 	@echo "    ALPHA_SHIFT=3                    EMA adaptation (non-motion pixel): alpha=1/(1<<N) (default 3)"
 	@echo "    ALPHA_SHIFT_SLOW=6               EMA adaptation (motion pixel): alpha=1/(1<<N) (default 6)"
+	@echo "    GRACE_FRAMES=8                   Fast-EMA grace window after priming (default 8)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
 	@echo "    synthetic:color_bars       8 vertical color bars (static)"

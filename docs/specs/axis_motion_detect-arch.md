@@ -32,7 +32,10 @@
 - [7. Timing](#7-timing)
 - [8. Shared Types](#8-shared-types)
 - [9. Known Limitations](#9-known-limitations)
-- [10. References](#10-references)
+- [10. Follow-Ups / Future Improvements](#10-follow-ups--future-improvements)
+  - [10.1 Edge-match ghost detector (Sobel-based)](#101-edge-match-ghost-detector-sobel-based)
+  - [10.2 Motion-stuck per-pixel counter (ViBe-style)](#102-motion-stuck-per-pixel-counter-vibe-style)
+- [11. References](#11-references)
 
 ---
 
@@ -131,6 +134,7 @@ the input to `axis_overlay_bbox` independently of mask processing.
 | `ALPHA_SHIFT` | 3 | EMA smoothing factor as a bit-shift: alpha = 1 / (1 << ALPHA_SHIFT). Default 3 → alpha = 1/8. Higher values = slower background adaptation. When 0, the EMA reduces to raw-frame write-back (bg_new = Y_cur) |
 | `ALPHA_SHIFT_SLOW` | 6 | EMA smoothing factor applied when the current pixel is flagged as motion (`raw_motion=1`). alpha = 1 / (1 << ALPHA_SHIFT_SLOW). Default 6 → alpha = 1/64. Larger than `ALPHA_SHIFT` so motion pixels barely drift the background estimate, preventing foreground bleed (trails). When a flagged pixel stays flagged (stopped object), this rate governs absorption into the background; with default 6 at 30 fps, a stopped object absorbs in ~2 s. |
 | `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (H_ACTIVE + 2 cycle latency from rgb2ycrcb, `PIPE_STAGES = H_ACTIVE + 3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
+| `GRACE_FRAMES` | 8 | Number of frames after priming during which bg updates use the fast EMA rate unconditionally (ignoring raw_motion). Suppresses frame-0 hard-init ghosts. Set to 0 to disable (recover pre-grace selective-EMA behavior). |
 | `RGN_BASE` | 0 | Base byte-address of the background model region in the shared RAM |
 | `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the background model region (sanity-checked at elaboration) |
 
@@ -244,6 +248,43 @@ The EMA rate differs based on the current pixel's mask bit:
 - **Motion pixel** (`raw_motion = 1`) — `alpha = 1 / (1 << ALPHA_SHIFT_SLOW)`, default 1/64. Nearly freezes the background under a moving object, which is what prevents trail formation. Also governs absorption of objects that stop moving; at 30 fps and default 6, a stopped object is absorbed in ~2 s.
 
 Both rates share one subtractor; the two shifts are constant fan-outs of the same signed `ema_delta`, so synthesis collapses the cost.
+
+### 4.4.3 Grace window
+
+Frame-0 hard-init seeds bg directly from frame-0 luma. If any pixel is
+occupied by a moving object during frame 0, that pixel's bg is contaminated
+with foreground luma. In frame 1 the object has moved on, so the pixel
+shows true background vs. a foreground-valued bg and is flagged as motion
+— a "ghost" at the object's frame-0 location.
+
+Under the plain selective-EMA rule, this ghost updates at the slow rate
+(α ≈ 1/64) and persists for ~64 frames.
+
+The grace window overrides the rate selector for the first GRACE_FRAMES
+frames after priming completes:
+
+```
+  in_grace = primed && (grace_cnt < GRACE_FRAMES)
+
+  bg_next = !primed                      ? y_smooth
+          : (in_grace || !raw_motion)    ? ema_update       (fast, α = 1/(1<<ALPHA_SHIFT))
+          :                                 ema_update_slow (slow, α = 1/(1<<ALPHA_SHIFT_SLOW))
+```
+
+`grace_cnt` is a wrapper-level register, `$clog2(GRACE_FRAMES+1)` bits,
+reset to 0 and incremented on every `beat_done_eof` while
+`primed && grace_cnt < GRACE_FRAMES`. Once `grace_cnt == GRACE_FRAMES` the
+counter saturates and the mux reverts to the plain selective-EMA rule.
+
+During the grace window the ghost decays at α ≈ 1/8 — within GRACE_FRAMES=8
+frames the bg[P_original] has moved ~66% of the way toward true background,
+and `|y_cur - bg| < THRESH` becomes true soon after (exact convergence
+depends on luma delta and THRESH). The mask output is NOT gated by grace;
+residual ghosts during grace are visible but fade quickly and CCL/bbox
+suppression (PRIME_FRAMES=2) already hides the worst of the first two frames.
+
+Setting GRACE_FRAMES=0 disables the override: in_grace is always false, and
+behavior reverts to plain selective-EMA (preserved for regression parity).
 
 ### 4.5 Placement rationale — no incremental RAM for EMA
 
@@ -477,7 +518,75 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 
 ---
 
-## 10. References
+## 10. Follow-Ups / Future Improvements
+
+### 10.1 Edge-match ghost detector (Sobel-based)
+
+If real-scene testing reveals ghosts that survive the grace window — e.g.,
+an object that was stationary throughout the first GRACE_FRAMES frames and
+then moves, or a grace window too short to let bg converge below THRESH —
+the next escalation is an edge-based ghost detector.
+
+#### Motivation
+
+A ghost region is a "phantom motion" blob with no corresponding real object.
+The defining property: the edges inside a ghost blob match the background
+model's edges (because the ghost is revealed true background), while a real
+moving object has edges that do not match the bg model (the foreground
+content differs from bg).
+
+#### Technique
+
+1. Apply a cheap edge operator (3x3 Sobel, 8-neighbor gradient magnitude) to
+   both `y_cur` and `y_bg` in parallel with the existing threshold path.
+2. For each motion pixel (raw_motion=1), compare `edge(y_cur)` and `edge(y_bg)`:
+   - If they match (within a small tolerance EDGE_MATCH_TOL), classify the
+     pixel as ghost and force `mask_bit=0` and `bg_next=ema_update` (fast
+     rate) to accelerate bg self-correction.
+   - Otherwise, normal selective-EMA rule applies.
+3. Optionally gate the ghost classifier on a blob-level statistic from CCL
+   (e.g., reject ghost-only if ≥80% of the CCL component's pixels are
+   edge-matching), to avoid false-positive ghost calls on real objects with
+   low internal texture.
+
+#### Cost estimate
+
+- One Sobel line buffer (3×H_ACTIVE × 8-bit ≈ 960 B at H=320) per image
+  (current and bg) — 2× cost shared with the existing Gaussian filter's
+  line buffers. Possibly reusable.
+- Two adder trees for gradient magnitude (|Gx| + |Gy|, not sqrt).
+- One comparator per output.
+- No change to RAM ports or data widths.
+
+#### Trigger condition
+
+Only implement this if real-scene verification reveals residual ghosts that
+tuning GRACE_FRAMES (up to ~16) cannot suppress. Synthetic `moving_box` and
+`dark_moving_box` are not expected to need it once the grace window is in
+place.
+
+#### References
+
+- Cucchiara et al., "Detecting Moving Objects, Ghosts and Shadows in Video
+  Streams," IEEE TPAMI 2003 — original object-level ghost/shadow classifier.
+- Sehairi et al., "Comparative study of motion detection methods" (arXiv:
+  1804.05459) — survey of ghost-suppression approaches.
+- MDPI Sensors 2020 — "Ghost Detection and Removal Based on Two-Layer
+  Background Model and Histogram Similarity" (more expensive, not proposed
+  here).
+
+### 10.2 Motion-stuck per-pixel counter (ViBe-style)
+
+Per-pixel counter that tracks how many consecutive frames a pixel has been
+flagged as motion. If it exceeds a threshold (e.g., 2 × GRACE_FRAMES), force
+the pixel to the fast EMA rate regardless of `raw_motion`. Cost: `log2(K)`
+bits per pixel (~4-6 bits × H×V ≈ 50-100 kbit at 320×240). Targets ghosts
+that arrive *after* the grace window. More principled than grace but more
+expensive. Consider only if grace + edge-match together still leave residuals.
+
+---
+
+## 11. References
 
 - [Background subtraction — Wikipedia](https://en.wikipedia.org/wiki/Background_subtraction)
 - [Exponential moving average — Wikipedia](https://en.wikipedia.org/wiki/Exponential_smoothing)
