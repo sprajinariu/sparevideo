@@ -217,7 +217,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
 | `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), or `mask` (raw motion mask as B/W image) |
-| `SOURCE` | `synthetic:color_bars` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
+| `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |
 | `FRAMES` | `4` | Number of frames |
@@ -232,17 +232,16 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 
 | Pattern | Description |
 |---------|-------------|
-| `synthetic:color_bars` | 8 vertical color bars (static — no motion) |
-| `synthetic:gradient` | Red horizontal + green vertical gradient (static) |
-| `synthetic:checkerboard` | 16×16 pixel checkerboard (static) |
 | `synthetic:moving_box` | Red box, diagonal top-left → bottom-right |
-| `synthetic:moving_box_h` | Red box, horizontal left → right |
-| `synthetic:moving_box_v` | Green box, vertical top → bottom |
-| `synthetic:moving_box_reverse` | Blue box, diagonal bottom-right → top-left |
 | `synthetic:dark_moving_box` | Dark box on bright background (tests polarity-agnostic mask) |
 | `synthetic:two_boxes` | Red + cyan boxes moving in opposing directions |
 | `synthetic:noisy_moving_box` | Red box on noisy background (±10 luma jitter). Tests EMA noise suppression — `ALPHA_SHIFT=0` produces false positives, `ALPHA_SHIFT>=2` suppresses them. |
 | `synthetic:lighting_ramp` | Moving box on slowly brightening background (+1 luma/frame). Tests EMA tracking of gradual lighting changes. |
+| `synthetic:textured_static` | Sinusoid-textured static background with per-frame sensor noise. Negative test — mask must be all-black after EMA convergence. |
+| `synthetic:entering_object` | Two soft-edged boxes entering from opposite edges, crossing the centre. Textured+noisy bg. |
+| `synthetic:multi_speed` | Three soft-edged boxes with distinct speeds and directions (fast L→R, medium T→B, slow diagonal). Textured+noisy bg. Exercises N-way CCL tracking. |
+| `synthetic:stopping_object` | Box A stops after half the frames; box B moves throughout. Textured+noisy bg. Exercises selective-EMA slow-rate absorption. |
+| `synthetic:lit_moving_object` | Two soft-edged boxes on a bg whose left↔right illumination gradient shifts ~2 luma/frame. Textured+noisy bg. |
 
 Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking.
 

@@ -30,7 +30,7 @@ source .venv/bin/activate
 ```bash
 # Full pipeline: prepare → compile → sim → verify → render
 make run-pipeline
-make run-pipeline SOURCE="synthetic:gradient" MODE=binary SIMULATOR=verilator
+make run-pipeline SOURCE="synthetic:moving_box" MODE=binary SIMULATOR=verilator
 
 # Control flow selection (default: motion)
 make run-pipeline CTRL_FLOW=passthrough TOLERANCE=0   # no processing, exact match
@@ -40,7 +40,7 @@ make run-pipeline CTRL_FLOW=ccl_bbox                  # mask-as-grey + CCL bboxe
 
 # 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/ALPHA_SHIFT to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
-make prepare SOURCE="synthetic:gradient" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
+make prepare SOURCE="synthetic:moving_box" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
 make sim                     # uses saved options
 
 # EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
@@ -115,7 +115,7 @@ TB blanking parameters: H: 4+8+4, V: 2+2+16 (the 16-line V_BLANK absorbs the axi
 - Text mode (`.txt`) uses space-separated 6-digit hex pixels (RRGGBB), one row per line. No headers.
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
-- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (color_bars, gradient, checkerboard, moving_box, moving_box_h, moving_box_v, moving_box_reverse, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp).
+- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (moving_box, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp, textured_static, entering_object, multi_speed, stopping_object, lit_moving_object).
 
 ## Skills
 
