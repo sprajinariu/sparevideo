@@ -21,7 +21,7 @@ from models.motion import (
 
 
 def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
-        gauss_en=True, **kwargs):
+        grace_alpha_shift=1, gauss_en=True, **kwargs):
     """Mask display reference model.
 
     Same motion detection front-end as motion.py (luma, frame-diff mask,
@@ -63,13 +63,16 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             primed = True
         else:
             # Frame N>0: grace window or selective EMA
-            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
             in_grace = grace_cnt < grace_frames
+            # During grace, mask output is forced to 0 so the frame-0 ghost
+            # region is not displayed; bg still converges at fast rate.
+            mask = np.zeros_like(raw_mask) if in_grace else raw_mask
             if in_grace:
-                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
                 grace_cnt += 1
             else:
-                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, raw_mask,
                                              alpha_shift, alpha_shift_slow)
 
         # Step 3: Expand 1-bit mask to 24-bit RGB

@@ -25,7 +25,7 @@ def _mask_to_grey_canvas(mask):
 
 
 def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
-        gauss_en=True, **kwargs):
+        grace_alpha_shift=1, gauss_en=True, **kwargs):
     """ccl_bbox reference model.
 
     Frame 0: hard-init bg = Y_smooth; mask forced to zero; no bboxes drawn.
@@ -53,13 +53,16 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             y_bg = y_cur_filt.copy()
             primed = True
         else:
-            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
             in_grace = grace_cnt < grace_frames
+            # During grace, mask is forced to 0 so the ghost region is not
+            # displayed or fed to CCL; bg still converges at fast rate.
+            mask = np.zeros_like(raw_mask) if in_grace else raw_mask
             if in_grace:
-                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
                 grace_cnt += 1
             else:
-                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, raw_mask,
                                              alpha_shift, alpha_shift_slow)
 
         canvas = _mask_to_grey_canvas(mask)

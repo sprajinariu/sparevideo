@@ -31,9 +31,10 @@ module tb_axis_motion_detect #(
     localparam int H           = 16;
     localparam int V           = 8;
     localparam int THRESH      = 16;
-    localparam int ALPHA_SHIFT      = 3;
-    localparam int ALPHA_SHIFT_SLOW = 6;
-    localparam int GRACE_FRAMES     = 8;
+    localparam int ALPHA_SHIFT       = 3;
+    localparam int ALPHA_SHIFT_SLOW  = 6;
+    localparam int GRACE_FRAMES      = 8;
+    localparam int GRACE_ALPHA_SHIFT = 1;
     localparam int NUM_PIX     = H * V;
     localparam int CLK_PERIOD  = 10;
 
@@ -119,15 +120,16 @@ module tb_axis_motion_detect #(
 
     // ---- DUT ----
     axis_motion_detect #(
-        .H_ACTIVE         (H),
-        .V_ACTIVE         (V),
-        .THRESH           (THRESH),
-        .ALPHA_SHIFT      (ALPHA_SHIFT),
-        .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW),
-        .GRACE_FRAMES     (GRACE_FRAMES),
-        .GAUSS_EN         (GAUSS_EN),
-        .RGN_BASE         (0),
-        .RGN_SIZE         (NUM_PIX)
+        .H_ACTIVE          (H),
+        .V_ACTIVE          (V),
+        .THRESH            (THRESH),
+        .ALPHA_SHIFT       (ALPHA_SHIFT),
+        .ALPHA_SHIFT_SLOW  (ALPHA_SHIFT_SLOW),
+        .GRACE_FRAMES      (GRACE_FRAMES),
+        .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT),
+        .GAUSS_EN          (GAUSS_EN),
+        .RGN_BASE          (0),
+        .RGN_SIZE          (NUM_PIX)
     ) u_dut (
         .clk_i               (clk),
         .rst_n_i             (rst_n),
@@ -267,16 +269,18 @@ module tb_axis_motion_detect #(
         for (i = 0; i < NUM_PIX; i = i + 1) begin
             yc   = y_eff[i];
             diff = (yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc);
-            // During priming (frame 0, tb_primed still 0 when this is called),
-            // mask is forced to 0. After priming, it's the threshold compare.
-            exp_msk = tb_primed ? (diff > THRESH[7:0]) : 1'b0;
+            // During priming (tb_primed still 0) OR during the grace window
+            // (tb_grace_cnt < GRACE_FRAMES), mask is forced to 0. Otherwise
+            // it's the threshold compare.
+            exp_msk = (tb_primed && (tb_grace_cnt >= GRACE_FRAMES))
+                      ? (diff > THRESH[7:0]) : 1'b0;
             if (cap_msk[i] !== exp_msk) begin
-                $display("FAIL %s msk px%0d (%0d,%0d): got=%0b exp=%0b yeff=%0d yprev=%0d d=%0d primed=%0b",
-                         label, i, i/H, i%H, cap_msk[i], exp_msk, yc, y_prev[i], diff, tb_primed);
+                $display("FAIL %s msk px%0d (%0d,%0d): got=%0b exp=%0b yeff=%0d yprev=%0d d=%0d primed=%0b grace=%0d",
+                         label, i, i/H, i%H, cap_msk[i], exp_msk, yc, y_prev[i], diff, tb_primed, tb_grace_cnt);
                 num_errors = num_errors + 1;
             end
         end
-        $display("%s: mask golden check done (primed=%0b)", label, tb_primed);
+        $display("%s: mask golden check done (primed=%0b grace=%0d)", label, tb_primed, tb_grace_cnt);
     endtask
 
     // Read RAM via port B and compare against expected EMA y_prev array.
@@ -302,11 +306,11 @@ module tb_axis_motion_detect #(
     // Update y_prev[] using EMA on effective Y (raw or Gaussian-filtered).
     // Frame 0 (tb_primed==0): hard-init bg from current frame, then flip tb_primed.
     // Frame 1+ (tb_primed==1): grace-window or selective EMA.
-    //   Grace window (tb_grace_cnt < GRACE_FRAMES): fast rate unconditionally,
-    //   then increment tb_grace_cnt (mirrors RTL beat_done_eof + in_grace).
+    //   Grace window (tb_grace_cnt < GRACE_FRAMES): GRACE_ALPHA_SHIFT rate
+    //   unconditionally, then increment tb_grace_cnt (mirrors RTL beat_done_eof + in_grace).
     //   Post-grace: slow rate on motion pixels, fast on non-motion.
     task automatic update_y_prev(input logic [23:0] pixels [NUM_PIX]);
-        logic signed [8:0] delta, step_fast, step_slow, step;
+        logic signed [8:0] delta, step_fast, step_slow, step_grace, step;
         logic [7:0] yc;
         logic raw_motion;
         compute_y_eff(pixels);
@@ -321,9 +325,13 @@ module tb_axis_motion_detect #(
                 delta      = {1'b0, yc} - {1'b0, y_prev[i]};
                 step_fast  = delta >>> ALPHA_SHIFT;
                 step_slow  = delta >>> ALPHA_SHIFT_SLOW;
+                step_grace = delta >>> GRACE_ALPHA_SHIFT;
                 raw_motion = ((yc > y_prev[i]) ? (yc - y_prev[i]) : (y_prev[i] - yc)) > THRESH[7:0];
-                // Grace-window override: use fast rate unconditionally while in grace
-                if ((tb_grace_cnt < GRACE_FRAMES) || !raw_motion)
+                // Grace window gets its own (aggressive) rate; post-grace uses
+                // selective fast/slow based on raw_motion.
+                if (tb_grace_cnt < GRACE_FRAMES)
+                    step = step_grace;
+                else if (!raw_motion)
                     step = step_fast;
                 else
                     step = step_slow;

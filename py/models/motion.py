@@ -119,14 +119,16 @@ def _selective_ema_update(y_cur, bg_prev, mask, alpha_shift, alpha_shift_slow):
 
 
 def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
-                  grace_frames=0, gauss_en=True):
+                  grace_frames=0, grace_alpha_shift=1, gauss_en=True):
     """Run the motion model's bg trajectory for inspection. Returns a list of
     bg arrays — one per frame, representing the RAM state after that frame is
     processed. Does not produce visual output.
 
     `grace_frames`: during the first K frames after priming, bg updates use
-    the fast EMA rate unconditionally (ignoring the mask). This suppresses
-    frame-0 hard-init ghosts. K=0 disables (recovers plain selective-EMA).
+    the `grace_alpha_shift` EMA rate unconditionally (ignoring the mask). This
+    suppresses frame-0 hard-init ghosts. K=0 disables (recovers plain
+    selective-EMA).
+    `grace_alpha_shift`: EMA shift during grace (default 1 → α=1/2).
     """
     if not frames:
         return []
@@ -145,7 +147,7 @@ def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
             mask = _compute_mask(y_cur_filt, y_bg, thresh)
             in_grace = grace_cnt < grace_frames
             if in_grace:
-                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
                 grace_cnt += 1
             else:
                 y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
@@ -155,14 +157,16 @@ def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
 
 
 def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
-        gauss_en=True, **kwargs):
+        grace_alpha_shift=1, gauss_en=True, **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).
 
     Frame 0: priming — bg[px] = Y_smooth(frame_0[px]), mask forced to 0.
-    Frames 1..grace_frames: fast-EMA grace window — bg updates use α = 1/(1<<alpha_shift)
-    regardless of mask. Suppresses frame-0 hard-init ghosts.
+    Frames 1..grace_frames: aggressive-EMA grace window — bg updates use
+    α = 1/(1<<grace_alpha_shift) (default α=1/2) and mask is also forced to
+    0 so the ghost region at the frame-0 object location is not visible
+    downstream. bg converges below THRESH within ~4-5 frames regardless of d₀.
     Frames > grace_frames: selective EMA — motion pixels drift at slow rate,
-    non-motion at fast rate.
+    non-motion at fast rate; mask reflects real motion.
     """
     if not frames:
         return []
@@ -192,7 +196,12 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             y_bg = y_cur_filt.copy()
             primed = True
         else:
-            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            in_grace = grace_cnt < grace_frames
+            # Mask is gated to 0 during the grace window so the ghost region
+            # does not reach CCL. bg update still runs (fast rate) so it
+            # converges silently.
+            mask = np.zeros_like(raw_mask) if in_grace else raw_mask
             out = _draw_bboxes(frame, bboxes_state)
             new_bboxes = run_ccl(
                 [mask],
@@ -201,9 +210,8 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
                 min_component_pixels=MIN_COMPONENT_PIXELS,
                 max_chain_depth=MAX_CHAIN_DEPTH,
             )[0]
-            in_grace = grace_cnt < grace_frames
             if in_grace:
-                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
                 grace_cnt += 1
             else:
                 y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
