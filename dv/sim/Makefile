@@ -25,6 +25,7 @@ MODE        ?= text
 CTRL_FLOW   ?= motion
 ALPHA_SHIFT      ?= 3
 ALPHA_SHIFT_SLOW ?= 6
+GRACE_FRAMES     ?= 8
 GAUSS_EN         ?= 1
 INFILE      ?= ../data/input.txt
 OUTFILE     ?= ../data/output.txt
@@ -74,7 +75,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
-            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) -GGAUSS_EN=$(GAUSS_EN) \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) -GGRACE_FRAMES=$(GRACE_FRAMES) -GGAUSS_EN=$(GAUSS_EN) \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -88,7 +89,7 @@ VLT_FLAGS = --binary -sv --timing \
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GAUSS_EN)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GAUSS_EN)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GAUSS_EN)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GAUSS_EN)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo

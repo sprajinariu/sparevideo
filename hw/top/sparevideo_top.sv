@@ -35,6 +35,9 @@ module sparevideo_top #(
     // EMA background adaptation rate on MOTION pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
     // Default 6 → alpha = 1/64. Larger than ALPHA_SHIFT so moving objects barely drift bg.
     parameter int ALPHA_SHIFT_SLOW = 6,
+    // Fast-EMA grace window after priming: for GRACE_FRAMES frames, bg updates
+    // at the fast rate regardless of raw_motion, suppressing frame-0 ghosts.
+    parameter int GRACE_FRAMES = 8,
     // Gaussian pre-filter: 1 = enabled (3x3 Gaussian on Y before motion compare),
     // 0 = bypass (raw Y). Default enabled.
     parameter int GAUSS_EN      = 1
@@ -277,6 +280,7 @@ module sparevideo_top #(
         .THRESH           (MOTION_THRESH),
         .ALPHA_SHIFT      (ALPHA_SHIFT),
         .ALPHA_SHIFT_SLOW (ALPHA_SHIFT_SLOW),
+        .GRACE_FRAMES     (GRACE_FRAMES),
         .GAUSS_EN         (GAUSS_EN),
         .RGN_BASE    (RGN_Y_PREV_BASE),
         .RGN_SIZE    (RGN_Y_PREV_SIZE)
