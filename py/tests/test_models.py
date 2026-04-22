@@ -699,17 +699,16 @@ def test_motion_grace_window_clears_frame0_ghost():
             f[4:8, 10:14] = [180, 180, 180]  # box moved right
         frames.append(f)
 
-    outputs = run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
-                  grace_frames=8, gauss_en=False)
-
     from models.motion import _run_bg_trace, _rgb_to_y, _compute_mask
     trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
                           grace_frames=8, gauss_en=False)
     y_f10 = _rgb_to_y(frames[10])
     mask_f10 = _compute_mask(y_f10, trace[9], 16)
 
-    assert not mask_f10[4:8, 4:8].any(), \
-        f"ghost persists at frame 10: mask[4:8,4:8]={mask_f10[4:8, 4:8]}"
+    assert not mask_f10[4:8, 4:8].any(), (
+        f"ghost persists at frame 10: mask[4:8,4:8]={mask_f10[4:8, 4:8]}, "
+        f"bg[4:8,4:8]={trace[9][4:8, 4:8]}"
+    )
 
 
 def test_motion_grace_window_preserves_trail_suppression():
