@@ -249,7 +249,7 @@ The EMA rate differs based on the current pixel's mask bit:
 
 Both rates share one subtractor; the two shifts are constant fan-outs of the same signed `ema_delta`, so synthesis collapses the cost.
 
-### 4.4.3 Grace window
+#### Grace window
 
 Frame-0 hard-init seeds bg directly from frame-0 luma. If any pixel is
 occupied by a moving object during frame 0, that pixel's bg is contaminated
@@ -272,7 +272,8 @@ frames after priming completes:
 ```
 
 `grace_cnt` is a wrapper-level register, `$clog2(GRACE_FRAMES+1)` bits,
-reset to 0 and incremented on every `beat_done_eof` while
+reset to 0 and incremented on every `beat_done` at end-of-frame
+(i.e., `beat_done && end_of_row && out_row == V_ACTIVE-1`) while
 `primed && grace_cnt < GRACE_FRAMES`. Once `grace_cnt == GRACE_FRAMES` the
 counter saturates and the mux reverts to the plain selective-EMA rule.
 
