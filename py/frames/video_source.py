@@ -117,6 +117,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "textured_static": _gen_textured_static,
         "entering_object": _gen_entering_object,
         "multi_speed": _gen_multi_speed,
+        "stopping_object": _gen_stopping_object,
     }
     if pattern not in generators:
         raise ValueError(
@@ -266,6 +267,39 @@ def _gen_multi_speed(width, height, num_frames):
         cx = int(t_c * (width - box_w))
         cy = int((1.0 - t_c) * (height - box_h))
         _place_object(rgb, cx, cy, box_w, box_h, luma=200)
+
+        frames.append(rgb)
+    return frames
+
+
+def _gen_stopping_object(width, height, num_frames):
+    """Two soft-edged boxes: box A moves for the first half then stops; box B moves throughout.
+
+    Tests selective EMA slow-rate: box A's bbox persists briefly after it
+    stops while the slow EMA drifts toward the stopped luma; box B continues
+    to produce a bbox on every frame.
+    """
+    tex = _make_bg_texture(width, height)
+    rng = np.random.default_rng(seed=4)
+    box_w, box_h = max(width // 6, 1), max(height // 6, 1)
+    half = max(num_frames // 2, 1)
+    frames = []
+    for i in range(num_frames):
+        grey = _add_frame_noise(tex, rng)
+        rgb = np.stack([grey, grey, grey], axis=-1)
+
+        # Box A: diagonal motion for frames [0, half); frozen afterwards.
+        i_a = i if i < half else half - 1
+        t_a = i_a / max(num_frames - 1, 1)
+        ax = int(t_a * (width - box_w))
+        ay = int(t_a * (height - box_h))
+        _place_object(rgb, ax, ay, box_w, box_h, luma=180)
+
+        # Box B: horizontal L→R for every frame, along the lower band.
+        t_b = i / max(num_frames - 1, 1)
+        bx = int(t_b * (width - box_w))
+        by = height - box_h - height // 8
+        _place_object(rgb, bx, by, box_w, box_h, luma=160)
 
         frames.append(rgb)
     return frames

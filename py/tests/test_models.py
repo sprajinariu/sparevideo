@@ -900,6 +900,20 @@ def test_multi_speed_produces_three_bbox_bands():
         f"got counts per frame={component_counts}")
 
 
+def test_stopping_object_has_bbox_while_both_move():
+    """stopping_object: first post-priming frame has bbox overlay while both boxes move.
+
+    Full stopped-box absorption behaviour depends on alpha_shift_slow and
+    would take 1/α_slow ≈ 64 frames to verify — out of scope for this unit
+    test. We verify only the early-frame positive case here.
+    """
+    frames = load_frames("synthetic:stopping_object",
+                        width=64, height=64, num_frames=8)
+    out = run_model("motion", frames)
+    green = np.all(out[3] == BBOX_COLOR, axis=-1)
+    assert green.any(), "frame 3 should have bbox overlay while both boxes are moving"
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":
