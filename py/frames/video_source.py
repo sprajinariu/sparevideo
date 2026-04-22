@@ -116,6 +116,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "lighting_ramp": _gen_lighting_ramp,
         "textured_static": _gen_textured_static,
         "entering_object": _gen_entering_object,
+        "multi_speed": _gen_multi_speed,
     }
     if pattern not in generators:
         raise ValueError(
@@ -227,6 +228,45 @@ def _gen_entering_object(width, height, num_frames):
         bx = int(width - t * span)              # B: right-to-left
         _place_object(rgb, ax, cy, box_w, box_h, luma=180)
         _place_object(rgb, bx, cy, box_w, box_h, luma=160)
+        frames.append(rgb)
+    return frames
+
+
+def _gen_multi_speed(width, height, num_frames):
+    """Three soft-edged boxes, each with a distinct speed and direction.
+
+    Box A (fast, L→R): crosses the full width in num_frames frames.
+    Box B (medium, T→B): crosses the full height in 2*num_frames frames.
+    Box C (slow, BL→TR diagonal): crosses the full diagonal in 4*num_frames frames.
+
+    Exercises N-way CCL tracking of spatially-separated blobs moving independently.
+    """
+    tex = _make_bg_texture(width, height)
+    rng = np.random.default_rng(seed=3)
+    box_w, box_h = max(width // 6, 1), max(height // 6, 1)
+    frames = []
+    for i in range(num_frames):
+        grey = _add_frame_noise(tex, rng)
+        rgb = np.stack([grey, grey, grey], axis=-1)
+
+        # Box A: fast L→R along the top band.
+        t_a = i / max(num_frames - 1, 1)
+        ax = int(t_a * (width - box_w))
+        ay = height // 8
+        _place_object(rgb, ax, ay, box_w, box_h, luma=180)
+
+        # Box B: medium T→B along the vertical centreline.
+        t_b = i / max(2 * num_frames - 1, 1)
+        bx = (width - box_w) // 2
+        by = int(t_b * (height - box_h))
+        _place_object(rgb, bx, by, box_w, box_h, luma=160)
+
+        # Box C: slow diagonal BL→TR.
+        t_c = i / max(4 * num_frames - 1, 1)
+        cx = int(t_c * (width - box_w))
+        cy = int((1.0 - t_c) * (height - box_h))
+        _place_object(rgb, cx, cy, box_w, box_h, luma=200)
+
         frames.append(rgb)
     return frames
 

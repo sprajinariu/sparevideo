@@ -875,6 +875,27 @@ def test_entering_object_produces_bboxes_on_both_halves():
         f"bboxes should appear on both halves: left={left}, right={right}")
 
 
+def test_multi_speed_produces_three_bbox_bands():
+    """multi_speed: three spatially-separated boxes produce bboxes in three horizontal bands.
+
+    Box A (fast, top band), Box B (medium, middle band), Box C (slow, crosses
+    diagonal). Accumulating across post-priming frames, bbox pixels must appear
+    in the top third, middle third, and bottom third of the frame.
+    """
+    H, W = 72, 96
+    frames = load_frames("synthetic:multi_speed",
+                         width=W, height=H, num_frames=8)
+    out = run_model("motion", frames)
+    total = np.zeros((H, W), dtype=bool)
+    for i in range(3, 8):
+        total |= np.all(out[i] == BBOX_COLOR, axis=-1)
+    top    = total[: H // 3].any()
+    middle = total[H // 3 : 2 * H // 3].any()
+    bottom = total[2 * H // 3 :].any()
+    assert top and middle and bottom, (
+        f"bboxes expected in three bands: top={top}, middle={middle}, bottom={bottom}")
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":
