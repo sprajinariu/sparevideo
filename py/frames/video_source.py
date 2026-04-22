@@ -145,6 +145,18 @@ def _make_bg_texture(width, height, base_luma=100, amp=20, seed=0xBE1F):
     return np.clip(tex, 0, 255).astype(np.uint8)
 
 
+def _add_frame_noise(bg, rng, noise_amp=8):
+    """Add integer per-pixel noise in [-noise_amp, +noise_amp] to a uint8 greyscale bg.
+
+    Returns a (H, W) uint8 array clipped to [0, 255]. Takes an explicit
+    `rng` so the caller controls per-frame / per-generator determinism.
+    """
+    h, w = bg.shape
+    noise = rng.integers(-noise_amp, noise_amp + 1,
+                         size=(h, w), dtype=np.int16)
+    return np.clip(bg.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+
 def _gen_color_bars(width, height, num_frames):
     """8 vertical color bars: white, yellow, cyan, green, magenta, red, blue, black."""
     colors = [

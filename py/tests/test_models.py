@@ -738,7 +738,7 @@ def test_motion_grace_window_preserves_trail_suppression():
 
 # ---- New synthetic source helpers ----
 
-from frames.video_source import _make_bg_texture
+from frames.video_source import _make_bg_texture, _add_frame_noise
 
 
 def test_make_bg_texture_shape_and_range():
@@ -764,6 +764,43 @@ def test_make_bg_texture_not_flat():
     """Texture actually has spatial variation (not a constant field)."""
     tex = _make_bg_texture(width=64, height=32, base_luma=100, amp=20)
     assert int(tex.max()) - int(tex.min()) >= 10
+
+
+def test_add_frame_noise_shape_dtype():
+    """Noise output is (H, W) uint8 — same shape and dtype as input bg."""
+    bg = np.full((16, 32), 100, dtype=np.uint8)
+    rng = np.random.default_rng(0)
+    out = _add_frame_noise(bg, rng, noise_amp=8)
+    assert out.shape == bg.shape
+    assert out.dtype == np.uint8
+
+
+def test_add_frame_noise_bounded():
+    """All output pixels are within ±noise_amp of the input bg."""
+    bg = np.full((16, 32), 100, dtype=np.uint8)
+    rng = np.random.default_rng(1)
+    out = _add_frame_noise(bg, rng, noise_amp=8)
+    diff = out.astype(np.int16) - bg.astype(np.int16)
+    assert diff.min() >= -8
+    assert diff.max() <= 8
+
+
+def test_add_frame_noise_clipping():
+    """Near 0 / 255 edges, output is clipped and never wraps."""
+    dark = np.zeros((4, 4), dtype=np.uint8)
+    bright = np.full((4, 4), 255, dtype=np.uint8)
+    rng = np.random.default_rng(2)
+    assert _add_frame_noise(dark, rng, noise_amp=8).min() >= 0
+    assert _add_frame_noise(bright, rng, noise_amp=8).max() <= 255
+
+
+def test_add_frame_noise_varies_frame_to_frame():
+    """Successive calls on the same rng yield different noise fields."""
+    bg = np.full((16, 32), 100, dtype=np.uint8)
+    rng = np.random.default_rng(3)
+    a = _add_frame_noise(bg, rng, noise_amp=8)
+    b = _add_frame_noise(bg, rng, noise_amp=8)
+    assert not np.array_equal(a, b)
 
 
 # ---- Run all tests ----
