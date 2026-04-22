@@ -115,6 +115,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "noisy_moving_box": _gen_noisy_moving_box,
         "lighting_ramp": _gen_lighting_ramp,
         "textured_static": _gen_textured_static,
+        "entering_object": _gen_entering_object,
     }
     if pattern not in generators:
         raise ValueError(
@@ -202,6 +203,31 @@ def _gen_textured_static(width, height, num_frames):
     for _ in range(num_frames):
         grey = _add_frame_noise(tex, rng)
         frames.append(np.stack([grey, grey, grey], axis=-1))
+    return frames
+
+
+def _gen_entering_object(width, height, num_frames):
+    """Two soft-edged boxes entering from opposite edges, crossing the centre.
+
+    Box A sweeps left → right, box B sweeps right → left, both at the same
+    speed. Both start (and end) mostly outside the frame; _place_object clips
+    the off-frame portion cleanly.
+    """
+    tex = _make_bg_texture(width, height)
+    rng = np.random.default_rng(seed=2)
+    box_w, box_h = max(width // 6, 1), max(height // 6, 1)
+    cy = (height - box_h) // 2
+    span = width + box_w       # full travel: from -box_w to width
+    frames = []
+    for i in range(num_frames):
+        grey = _add_frame_noise(tex, rng)
+        rgb = np.stack([grey, grey, grey], axis=-1)
+        t = i / max(num_frames - 1, 1)
+        ax = int(-box_w + t * span)             # A: left-to-right
+        bx = int(width - t * span)              # B: right-to-left
+        _place_object(rgb, ax, cy, box_w, box_h, luma=180)
+        _place_object(rgb, bx, cy, box_w, box_h, luma=160)
+        frames.append(rgb)
     return frames
 
 

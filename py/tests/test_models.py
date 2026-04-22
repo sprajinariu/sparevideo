@@ -860,6 +860,21 @@ def test_textured_static_no_motion_after_convergence():
             f"frame {i} should be all-black after EMA convergence on static bg")
 
 
+def test_entering_object_produces_bboxes_on_both_halves():
+    """entering_object: boxes from opposite edges both produce bbox overlays past priming."""
+    frames = load_frames("synthetic:entering_object",
+                         width=64, height=48, num_frames=8)
+    out = run_model("motion", frames)
+    # Accumulate green-bbox presence across all post-priming frames.
+    total = np.zeros(out[0].shape[:2], dtype=bool)
+    for i in range(3, 8):
+        total |= np.all(out[i] == BBOX_COLOR, axis=-1)
+    left  = total[:, :32].any()
+    right = total[:, 32:].any()
+    assert left and right, (
+        f"bboxes should appear on both halves: left={left}, right={right}")
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":
