@@ -110,9 +110,11 @@ def cmd_verify(args):
 
     alpha_shift = getattr(args, "alpha_shift", 3)
     alpha_shift_slow = getattr(args, "alpha_shift_slow", 6)
+    grace_frames = getattr(args, "grace_frames", 0)
     gauss_en = bool(getattr(args, "gauss_en", 1))
     expected_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift,
                                 alpha_shift_slow=alpha_shift_slow,
+                                grace_frames=grace_frames,
                                 gauss_en=gauss_en)
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
@@ -146,11 +148,13 @@ def cmd_render(args):
     ctrl_flow = getattr(args, "ctrl_flow", None)
     alpha_shift = getattr(args, "alpha_shift", 3)
     alpha_shift_slow = getattr(args, "alpha_shift_slow", 6)
+    grace_frames = getattr(args, "grace_frames", 0)
     gauss_en = bool(getattr(args, "gauss_en", 1))
     reference_frames = None
     if ctrl_flow:
         reference_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift,
                                      alpha_shift_slow=alpha_shift_slow,
+                                     grace_frames=grace_frames,
                                      gauss_en=gauss_en)
     out_path = render_grid(input_frames, output_frames, args.render_output,
                            reference_frames=reference_frames)
@@ -195,6 +199,8 @@ def main():
                        help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")
     p_ver.add_argument("--alpha-shift-slow", type=int, default=6, dest="alpha_shift_slow",
                        help="EMA alpha on motion pixels = 1/(1 << N). Default 6 (α=1/64).")
+    p_ver.add_argument("--grace-frames", type=int, default=0, dest="grace_frames",
+                       help="Fast-EMA grace window frames after priming (default 0, must match RTL).")
     p_ver.add_argument("--gauss-en", type=int, default=1, dest="gauss_en",
                        help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
 
@@ -212,6 +218,8 @@ def main():
                        help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")
     p_ren.add_argument("--alpha-shift-slow", type=int, default=6, dest="alpha_shift_slow",
                        help="EMA alpha on motion pixels = 1/(1 << N). Default 6 (α=1/64).")
+    p_ren.add_argument("--grace-frames", type=int, default=0, dest="grace_frames",
+                       help="Fast-EMA grace window frames after priming (default 0, must match RTL).")
     p_ren.add_argument("--gauss-en", type=int, default=1, dest="gauss_en",
                        help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
     p_ren.add_argument("--render-output", default="dv/data/renders/comparison.png",

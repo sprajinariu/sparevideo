@@ -4,7 +4,7 @@ green CCL bboxes overlaid. Debug view of CCL output."""
 import numpy as np
 
 from models.motion import (
-    _rgb_to_y, _gauss3x3, _selective_ema_update, _compute_mask,
+    _rgb_to_y, _gauss3x3, _ema_update, _selective_ema_update, _compute_mask,
     _draw_bboxes, PRIME_FRAMES, N_OUT, N_LABELS_INT,
     MIN_COMPONENT_PIXELS, MAX_CHAIN_DEPTH,
 )
@@ -24,12 +24,14 @@ def _mask_to_grey_canvas(mask):
     return out
 
 
-def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
-        **kwargs):
+def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
+        gauss_en=True, **kwargs):
     """ccl_bbox reference model.
 
     Frame 0: hard-init bg = Y_smooth; mask forced to zero; no bboxes drawn.
-    Frame N>0: selective EMA — motion pixels at slow rate, non-motion at fast.
+    Frames 1..grace_frames: fast-EMA grace window — bg updates use fast rate
+    regardless of mask. Suppresses frame-0 hard-init ghosts.
+    Frame > grace_frames: selective EMA — motion pixels at slow rate, non-motion at fast.
     """
     if not frames:
         return []
@@ -38,6 +40,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
     y_bg = np.zeros((h, w), dtype=np.uint8)
     bboxes_state = [None] * N_OUT
     primed = False
+    grace_cnt = 0
 
     outputs = []
     for i, frame in enumerate(frames):
@@ -51,8 +54,13 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
             primed = True
         else:
             mask = _compute_mask(y_cur_filt, y_bg, thresh)
-            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
-                                         alpha_shift, alpha_shift_slow)
+            in_grace = grace_cnt < grace_frames
+            if in_grace:
+                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                grace_cnt += 1
+            else:
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                             alpha_shift, alpha_shift_slow)
 
         canvas = _mask_to_grey_canvas(mask)
         out = _draw_bboxes(canvas, bboxes_state)

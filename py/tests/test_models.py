@@ -652,6 +652,91 @@ def test_motion_no_trail_after_object_departure():
         f"No trail expected; got {int(mask_f2.sum())} motion pixels in f2")
 
 
+# ---- Grace-window tests ----
+
+def test_motion_grace_window_zero_equals_no_grace():
+    """GRACE_FRAMES=0 must produce identical bg trajectory to plain selective EMA."""
+    from models.motion import _run_bg_trace
+
+    # Scene: object in frame 0, moves in frame 1+, static after
+    h, w = 16, 16
+    frames = []
+    for i in range(6):
+        f = np.full((h, w, 3), 200, dtype=np.uint8)  # white bg
+        if i == 0:
+            f[4:8, 4:8] = [10, 10, 10]  # dark box at (4..7, 4..7)
+        elif i < 3:
+            f[4:8, 10:14] = [10, 10, 10]  # dark box moved right
+        frames.append(f)
+
+    # With grace_frames=0, behavior must match the plain selective-EMA path.
+    trace_with_grace_zero = _run_bg_trace(
+        frames, alpha_shift=3, alpha_shift_slow=6, grace_frames=0
+    )
+    trace_no_grace_arg = _run_bg_trace(
+        frames, alpha_shift=3, alpha_shift_slow=6  # default grace_frames=0
+    )
+    for a, b in zip(trace_with_grace_zero, trace_no_grace_arg):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_motion_grace_window_clears_frame0_ghost():
+    """Object present in frame 0 that moves in frame 1 must not produce a
+    persistent ghost at its frame-0 location when grace window is active.
+
+    Box luma=180, bg luma=220 (delta=40): with alpha_shift=3 and grace_frames=8,
+    the fast EMA closes the gap to <=16 within 8 steps, clearing the ghost.
+    """
+    from models.motion import run
+
+    h, w = 24, 24
+    frames = []
+    for i in range(12):
+        f = np.full((h, w, 3), 220, dtype=np.uint8)
+        if i == 0:
+            f[4:8, 4:8] = [180, 180, 180]   # luma=180 box at frame-0 location
+        else:
+            f[4:8, 10:14] = [180, 180, 180]  # box moved right
+        frames.append(f)
+
+    outputs = run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+                  grace_frames=8, gauss_en=False)
+
+    from models.motion import _run_bg_trace, _rgb_to_y, _compute_mask
+    trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+                          grace_frames=8, gauss_en=False)
+    y_f10 = _rgb_to_y(frames[10])
+    mask_f10 = _compute_mask(y_f10, trace[9], 16)
+
+    assert not mask_f10[4:8, 4:8].any(), \
+        f"ghost persists at frame 10: mask[4:8,4:8]={mask_f10[4:8, 4:8]}"
+
+
+def test_motion_grace_window_preserves_trail_suppression():
+    """After grace window ends, selective EMA must still suppress trails."""
+    from models.motion import _run_bg_trace, _rgb_to_y, _compute_mask
+
+    h, w = 24, 24
+    frames = []
+    for i in range(10):
+        frames.append(np.full((h, w, 3), 220, dtype=np.uint8))
+    for i in range(4):
+        f = np.full((h, w, 3), 220, dtype=np.uint8)
+        f[4:8, 4 + i:8 + i] = [10, 10, 10]
+        frames.append(f)
+    for i in range(5):
+        frames.append(np.full((h, w, 3), 220, dtype=np.uint8))
+
+    trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+                          grace_frames=8, gauss_en=False)
+
+    y_f18 = _rgb_to_y(frames[18])
+    mask_f18 = _compute_mask(y_f18, trace[17], 16)
+
+    assert not mask_f18[4:8, 7:11].any(), \
+        f"trail persists at frame 18: mask[4:8,7:11]={mask_f18[4:8, 7:11]}"
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":

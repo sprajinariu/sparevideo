@@ -119,16 +119,21 @@ def _selective_ema_update(y_cur, bg_prev, mask, alpha_shift, alpha_shift_slow):
 
 
 def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
-                  gauss_en=True):
+                  grace_frames=0, gauss_en=True):
     """Run the motion model's bg trajectory for inspection. Returns a list of
     bg arrays — one per frame, representing the RAM state after that frame is
     processed. Does not produce visual output.
+
+    `grace_frames`: during the first K frames after priming, bg updates use
+    the fast EMA rate unconditionally (ignoring the mask). This suppresses
+    frame-0 hard-init ghosts. K=0 disables (recovers plain selective-EMA).
     """
     if not frames:
         return []
     h, w = frames[0].shape[:2]
     y_bg = np.zeros((h, w), dtype=np.uint8)
     primed = False
+    grace_cnt = 0
     trace = []
     for i, frame in enumerate(frames):
         y_cur = _rgb_to_y(frame)
@@ -138,19 +143,26 @@ def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
             primed = True
         else:
             mask = _compute_mask(y_cur_filt, y_bg, thresh)
-            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
-                                          alpha_shift, alpha_shift_slow)
+            in_grace = grace_cnt < grace_frames
+            if in_grace:
+                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                grace_cnt += 1
+            else:
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                              alpha_shift, alpha_shift_slow)
         trace.append(y_bg.copy())
     return trace
 
 
-def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
-        **kwargs):
+def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
+        gauss_en=True, **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).
 
     Frame 0: priming — bg[px] = Y_smooth(frame_0[px]), mask forced to 0.
-    Frame N>0: selective EMA — motion pixels drift at slow rate, non-motion at
-    fast rate.
+    Frames 1..grace_frames: fast-EMA grace window — bg updates use α = 1/(1<<alpha_shift)
+    regardless of mask. Suppresses frame-0 hard-init ghosts.
+    Frames > grace_frames: selective EMA — motion pixels drift at slow rate,
+    non-motion at fast rate.
     """
     if not frames:
         return []
@@ -158,6 +170,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
     h, w = frames[0].shape[:2]
     y_bg = np.zeros((h, w), dtype=np.uint8)
     primed = False
+    grace_cnt = 0
     bboxes_state = [None] * N_OUT
 
     outputs = []
@@ -188,8 +201,13 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
                 min_component_pixels=MIN_COMPONENT_PIXELS,
                 max_chain_depth=MAX_CHAIN_DEPTH,
             )[0]
-            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
-                                          alpha_shift, alpha_shift_slow)
+            in_grace = grace_cnt < grace_frames
+            if in_grace:
+                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                grace_cnt += 1
+            else:
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                              alpha_shift, alpha_shift_slow)
 
         # Bbox priming suppression (unchanged)
         primed_for_bbox = (i >= PRIME_FRAMES)

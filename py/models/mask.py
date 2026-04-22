@@ -16,12 +16,12 @@ Algorithm (online, frame-by-frame with state):
 import numpy as np
 
 from models.motion import (
-    _rgb_to_y, _compute_mask, _selective_ema_update, _gauss3x3,
+    _rgb_to_y, _compute_mask, _ema_update, _selective_ema_update, _gauss3x3,
 )
 
 
-def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
-        **kwargs):
+def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
+        gauss_en=True, **kwargs):
     """Mask display reference model.
 
     Same motion detection front-end as motion.py (luma, frame-diff mask,
@@ -33,6 +33,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
         thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
         alpha_shift: Fast EMA shift (non-motion pixels, default 3, alpha=1/8).
         alpha_shift_slow: Slow EMA shift (motion pixels, default 6, alpha=1/64).
+        grace_frames: Fast-EMA grace window after priming (default 0 = no grace).
         gauss_en: Enable 3x3 Gaussian pre-filter on Y channel (default True).
 
     Returns:
@@ -46,6 +47,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
     # Background buffer starts at zero (RAM is zero-initialized)
     y_bg = np.zeros((h, w), dtype=np.uint8)
     primed = False
+    grace_cnt = 0
 
     outputs = []
 
@@ -60,10 +62,15 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, gauss_en=True,
             y_bg = y_cur_filt.copy()
             primed = True
         else:
-            # Frame N>0: selective EMA
+            # Frame N>0: grace window or selective EMA
             mask = _compute_mask(y_cur_filt, y_bg, thresh)
-            y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
-                                         alpha_shift, alpha_shift_slow)
+            in_grace = grace_cnt < grace_frames
+            if in_grace:
+                y_bg = _ema_update(y_cur_filt, y_bg, alpha_shift)
+                grace_cnt += 1
+            else:
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                                             alpha_shift, alpha_shift_slow)
 
         # Step 3: Expand 1-bit mask to 24-bit RGB
         out = np.zeros((h, w, 3), dtype=np.uint8)
