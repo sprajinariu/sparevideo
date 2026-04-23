@@ -14,6 +14,8 @@ filesets:
       - sparevideo:third_party:verilog-axis
       - sparevideo:ip:axis
       - sparevideo:ip:motion
+      - sparevideo:ip:ccl
+      - sparevideo:ip:overlay
 
   files_lint:
     files:

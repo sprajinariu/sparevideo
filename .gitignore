@@ -11,7 +11,7 @@ dv/data/*.txt
 dv/data/*.dat
 dv/data/*.bin
 dv/data/*.json
-dv/data/renders/
+renders/
 dv/data/config.mk
 dv/data/real_video/*
 

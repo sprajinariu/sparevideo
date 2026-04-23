@@ -5,8 +5,8 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/ip/gauss3x3/rtl/axis_gauss3x3.sv \
            ../../hw/ip/motion/rtl/motion_core.sv \
            ../../hw/ip/motion/rtl/axis_motion_detect.sv \
-           ../../hw/ip/motion/rtl/axis_ccl.sv \
-           ../../hw/ip/motion/rtl/axis_overlay_bbox.sv \
+           ../../hw/ip/ccl/rtl/axis_ccl.sv \
+           ../../hw/ip/overlay/rtl/axis_overlay_bbox.sv \
            ../../hw/top/sparevideo_top.sv \
            ../../hw/ip/vga/rtl/vga_controller.sv \
            ../../third_party/verilog-axis/rtl/axis_async_fifo.v
@@ -165,14 +165,14 @@ test-ip-gauss3x3:
 test-ip-overlay-bbox:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_overlay_bbox --Mdir obj_tb_axis_overlay_bbox \
 	  ../../hw/top/sparevideo_pkg.sv \
-	  ../../hw/ip/motion/rtl/axis_overlay_bbox.sv ../../hw/ip/motion/tb/tb_axis_overlay_bbox.sv
+	  ../../hw/ip/overlay/rtl/axis_overlay_bbox.sv ../../hw/ip/overlay/tb/tb_axis_overlay_bbox.sv
 	obj_tb_axis_overlay_bbox/Vtb_axis_overlay_bbox
 
 # --- axis_ccl ---
 test-ip-ccl:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_ccl --Mdir obj_tb_axis_ccl \
 	  ../../hw/top/sparevideo_pkg.sv \
-	  ../../hw/ip/motion/rtl/axis_ccl.sv ../../hw/ip/motion/tb/tb_axis_ccl.sv
+	  ../../hw/ip/ccl/rtl/axis_ccl.sv ../../hw/ip/ccl/tb/tb_axis_ccl.sv
 	obj_tb_axis_ccl/Vtb_axis_ccl
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,12 @@
 CAPI=2:
 name: "sparevideo:ip:motion"
-description: "Motion detection pipeline — axis_motion_detect, axis_ccl, axis_overlay_bbox"
+description: "Motion detection — EMA background model + threshold mask"
 
 filesets:
   files_rtl:
     files:
       - rtl/motion_core.sv
       - rtl/axis_motion_detect.sv
-      - rtl/axis_ccl.sv
-      - rtl/axis_overlay_bbox.sv
     file_type: systemVerilogSource
     depend:
       - sparevideo:pkg:common

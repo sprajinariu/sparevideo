@@ -1,0 +1,16 @@
+CAPI=2:
+name: "sparevideo:ip:ccl"
+description: "Streaming 8-connected connected-component labeling + top-N bbox selector"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_ccl.sv
+    file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
+
+targets:
+  default:
+    filesets:
+      - files_rtl

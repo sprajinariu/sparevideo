@@ -116,7 +116,7 @@ run-pipeline: prepare compile sim verify render
 prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
-	@mkdir -p $(DATA_DIR)/renders
+	@mkdir -p renders
 	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nALPHA_SHIFT_SLOW = %s\nGRACE_FRAMES = %s\nGRACE_ALPHA_SHIFT = %s\nGAUSS_EN = %s\n' \
 		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(ALPHA_SHIFT_SLOW)' '$(GRACE_FRAMES)' '$(GRACE_ALPHA_SHIFT)' '$(GAUSS_EN)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
@@ -148,12 +148,12 @@ verify:
 		--alpha-shift $(ALPHA_SHIFT) --alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN)
 
 RENDER_SOURCE_SAFE = $(subst _,-,$(subst :,-,$(SOURCE)))
-RENDER_OUT = $(CURDIR)/$(DATA_DIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
+RENDER_OUT = $(CURDIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
 
 render:
 	@echo ""
 	@echo "==== [5/5] RENDER (Python) ===="
-	@mkdir -p $(DATA_DIR)/renders
+	@mkdir -p renders
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --alpha-shift $(ALPHA_SHIFT) \
@@ -180,4 +180,4 @@ clean:
 	rm -rf build
 	$(MAKE) -C dv/sim clean
 	rm -f $(DATA_DIR)/*.txt $(DATA_DIR)/*.dat $(DATA_DIR)/*.bin $(DATA_DIR)/config.mk
-	rm -rf $(DATA_DIR)/renders
+	rm -rf renders

@@ -40,8 +40,12 @@ hw/ip/gauss3x3/rtl/
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
-├── motion_core.sv             Pure-combinational: abs-diff threshold + EMA background update
-├── axis_ccl.sv                Streaming 8-connected CCL + EOF FSM + top-N bbox double-buffer
+└── motion_core.sv             Pure-combinational: abs-diff threshold + EMA background update
+
+hw/ip/ccl/rtl/
+└── axis_ccl.sv                Streaming 8-connected CCL + EOF FSM + top-N bbox double-buffer
+
+hw/ip/overlay/rtl/
 └── axis_overlay_bbox.sv       N_OUT-wide bounding-box rectangle overlay on RGB video
 
 hw/ip/vga/rtl/
@@ -65,8 +69,12 @@ hw/ip/gauss3x3/tb/
 └── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
 
 hw/ip/motion/tb/
-├── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
-├── tb_axis_ccl.sv             9 tests: single blob, hollow, disjoint, U-merge, min-size filter, overflow, back-to-back, mid-frame gaps, priming
+└── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
+
+hw/ip/ccl/tb/
+└── tb_axis_ccl.sv             9 tests: single blob, hollow, disjoint, U-merge, min-size filter, overflow, back-to-back, mid-frame gaps, priming
+
+hw/ip/overlay/tb/
 └── tb_axis_overlay_bbox.sv    8 tests: empty/full/single-pixel, backpressure
 
 dv/sv/
@@ -74,8 +82,10 @@ dv/sv/
 └── tb_utils.c                 DPI-C wall-clock helper (Verilator)
 
 dv/sim/
-├── Makefile                   Simulation and test-ip targets
-└── dv/data/                   Generated input/output files (gitignored)
+└── Makefile                   Simulation and test-ip targets
+
+dv/data/                       Generated simulator input/output scratch files (gitignored)
+renders/                       PNG comparison grids from `make render` (gitignored)
 ```
 
 ### Verification — Python

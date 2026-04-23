@@ -1,0 +1,16 @@
+CAPI=2:
+name: "sparevideo:ip:overlay"
+description: "N-wide rectangle overlay on RGB video"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_overlay_bbox.sv
+    file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
+
+targets:
+  default:
+    filesets:
+      - files_rtl
