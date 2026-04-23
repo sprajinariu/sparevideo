@@ -7,6 +7,11 @@ Supported sources:
       moving_box, dark_moving_box, two_boxes, noisy_moving_box,
       lighting_ramp, textured_static, entering_object, multi_speed,
       stopping_object, lit_moving_object
+
+All synthetic patterns with moving objects render frame 0 as background-only
+(no foreground). Moving objects appear from frame 1 onward. This avoids
+baking foreground into the EMA background model during hard-init (frame-0
+ghost problem) — see CLAUDE.md and axis_motion_detect-arch.md §4.4.3.
 """
 
 import sys
@@ -205,9 +210,9 @@ def _gen_textured_static(width, height, num_frames):
 def _gen_entering_object(width, height, num_frames):
     """Two soft-edged boxes entering from opposite edges, crossing the centre.
 
-    Box A sweeps left → right, box B sweeps right → left, both at the same
-    speed. Both start (and end) mostly outside the frame; _place_object clips
-    the off-frame portion cleanly.
+    Frame 0 is bg-only (no objects) so the background-model hard-init does
+    not bake foreground into bg. From frame 1 onward, box A sweeps left →
+    right and box B sweeps right → left at the same speed.
     """
     tex = _make_bg_texture(width, height)
     rng = np.random.default_rng(seed=2)
@@ -218,11 +223,12 @@ def _gen_entering_object(width, height, num_frames):
     for i in range(num_frames):
         grey = _add_frame_noise(tex, rng)
         rgb = np.stack([grey, grey, grey], axis=-1)
-        t = i / max(num_frames - 1, 1)
-        ax = int(-box_w + t * span)             # A: left-to-right
-        bx = int(width - t * span)              # B: right-to-left
-        _place_object(rgb, ax, cy, box_w, box_h, luma=180)
-        _place_object(rgb, bx, cy, box_w, box_h, luma=160)
+        if i > 0:
+            t = i / max(num_frames - 1, 1)
+            ax = int(-box_w + t * span)             # A: left-to-right
+            bx = int(width - t * span)              # B: right-to-left
+            _place_object(rgb, ax, cy, box_w, box_h, luma=180)
+            _place_object(rgb, bx, cy, box_w, box_h, luma=160)
         frames.append(rgb)
     return frames
 
@@ -244,23 +250,24 @@ def _gen_multi_speed(width, height, num_frames):
         grey = _add_frame_noise(tex, rng)
         rgb = np.stack([grey, grey, grey], axis=-1)
 
-        # Box A: fast L→R along the top band.
-        t_a = i / max(num_frames - 1, 1)
-        ax = int(t_a * (width - box_w))
-        ay = height // 8
-        _place_object(rgb, ax, ay, box_w, box_h, luma=180)
+        if i > 0:
+            # Box A: fast L→R along the top band.
+            t_a = i / max(num_frames - 1, 1)
+            ax = int(t_a * (width - box_w))
+            ay = height // 8
+            _place_object(rgb, ax, ay, box_w, box_h, luma=180)
 
-        # Box B: medium T→B along the vertical centreline.
-        t_b = i / max(2 * num_frames - 1, 1)
-        bx = (width - box_w) // 2
-        by = int(t_b * (height - box_h))
-        _place_object(rgb, bx, by, box_w, box_h, luma=160)
+            # Box B: medium T→B along the vertical centreline.
+            t_b = i / max(2 * num_frames - 1, 1)
+            bx = (width - box_w) // 2
+            by = int(t_b * (height - box_h))
+            _place_object(rgb, bx, by, box_w, box_h, luma=160)
 
-        # Box C: slow diagonal BL→TR.
-        t_c = i / max(4 * num_frames - 1, 1)
-        cx = int(t_c * (width - box_w))
-        cy = int((1.0 - t_c) * (height - box_h))
-        _place_object(rgb, cx, cy, box_w, box_h, luma=200)
+            # Box C: slow diagonal BL→TR.
+            t_c = i / max(4 * num_frames - 1, 1)
+            cx = int(t_c * (width - box_w))
+            cy = int((1.0 - t_c) * (height - box_h))
+            _place_object(rgb, cx, cy, box_w, box_h, luma=200)
 
         frames.append(rgb)
     return frames
@@ -282,18 +289,19 @@ def _gen_stopping_object(width, height, num_frames):
         grey = _add_frame_noise(tex, rng)
         rgb = np.stack([grey, grey, grey], axis=-1)
 
-        # Box A: diagonal motion for frames [0, half); frozen afterwards.
-        i_a = i if i < half else half - 1
-        t_a = i_a / max(num_frames - 1, 1)
-        ax = int(t_a * (width - box_w))
-        ay = int(t_a * (height - box_h))
-        _place_object(rgb, ax, ay, box_w, box_h, luma=180)
+        if i > 0:
+            # Box A: diagonal motion for frames [1, half); frozen afterwards.
+            i_a = i if i < half else half - 1
+            t_a = i_a / max(num_frames - 1, 1)
+            ax = int(t_a * (width - box_w))
+            ay = int(t_a * (height - box_h))
+            _place_object(rgb, ax, ay, box_w, box_h, luma=180)
 
-        # Box B: horizontal L→R for every frame, along the lower band.
-        t_b = i / max(num_frames - 1, 1)
-        bx = int(t_b * (width - box_w))
-        by = height - box_h - height // 8
-        _place_object(rgb, bx, by, box_w, box_h, luma=160)
+            # Box B: horizontal L→R for every frame, along the lower band.
+            t_b = i / max(num_frames - 1, 1)
+            bx = int(t_b * (width - box_w))
+            by = height - box_h - height // 8
+            _place_object(rgb, bx, by, box_w, box_h, luma=160)
 
         frames.append(rgb)
     return frames
@@ -319,52 +327,53 @@ def _gen_lit_moving_object(width, height, num_frames):
         grey = _add_frame_noise(shifted, rng)
         rgb = np.stack([grey, grey, grey], axis=-1)
 
-        # Box A: fast L→R across the full width in num_frames frames.
-        t_a = i / max(num_frames - 1, 1)
-        ax = int(t_a * (width - box_w))
-        ay = height // 4
-        _place_object(rgb, ax, ay, box_w, box_h, luma=180)
+        if i > 0:
+            # Box A: fast L→R across the full width in num_frames frames.
+            t_a = i / max(num_frames - 1, 1)
+            ax = int(t_a * (width - box_w))
+            ay = height // 4
+            _place_object(rgb, ax, ay, box_w, box_h, luma=180)
 
-        # Box B: slow diagonal TL→BR across the diagonal in 3*num_frames frames.
-        t_b = i / max(3 * num_frames - 1, 1)
-        bx = int(t_b * (width - box_w))
-        by = int(t_b * (height - box_h))
-        _place_object(rgb, bx, by, box_w, box_h, luma=200)
+            # Box B: slow diagonal TL→BR across the diagonal in 3*num_frames frames.
+            t_b = i / max(3 * num_frames - 1, 1)
+            bx = int(t_b * (width - box_w))
+            by = int(t_b * (height - box_h))
+            _place_object(rgb, bx, by, box_w, box_h, luma=200)
 
         frames.append(rgb)
     return frames
 
 
 def _gen_moving_box(width, height, num_frames):
-    """A red box that moves diagonally across frames."""
+    """A red box that moves diagonally across frames. Frame 0 is bg-only."""
     box_w, box_h = width // 4, height // 4
     frames = []
     for i in range(num_frames):
         frame = np.zeros((height, width, 3), dtype=np.uint8)
-        # Position cycles through the frame
-        t = i / max(num_frames - 1, 1)
-        cx = int(t * (width - box_w))
-        cy = int(t * (height - box_h))
-        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        if i > 0:
+            t = i / max(num_frames - 1, 1)
+            cx = int(t * (width - box_w))
+            cy = int(t * (height - box_h))
+            frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
         frames.append(frame)
     return frames
 
 
 def _gen_dark_moving_box(width, height, num_frames):
-    """A dark box moving diagonally on a bright background.
+    """A dark box moving diagonally on a bright background. Frame 0 is bg-only.
 
     Tests that the polarity-agnostic mask (diff > THRESH only) correctly
     detects motion for dark-on-bright scenes, not just bright-on-dark.
-    The bbox should track the object's motion region (arrival + departure).
     """
     box_w, box_h = width // 4, height // 4
     frames = []
     for i in range(num_frames):
         frame = np.full((height, width, 3), 200, dtype=np.uint8)
-        t = i / max(num_frames - 1, 1)
-        cx = int(t * (width - box_w))
-        cy = int(t * (height - box_h))
-        frame[cy : cy + box_h, cx : cx + box_w] = (20, 20, 20)
+        if i > 0:
+            t = i / max(num_frames - 1, 1)
+            cx = int(t * (width - box_w))
+            cy = int(t * (height - box_h))
+            frame[cy : cy + box_h, cx : cx + box_w] = (20, 20, 20)
         frames.append(frame)
     return frames
 
@@ -372,22 +381,23 @@ def _gen_dark_moving_box(width, height, num_frames):
 def _gen_two_boxes(width, height, num_frames):
     """Two boxes moving in opposite directions (red horizontal, cyan vertical).
 
-    Tests that the single-bbox reducer produces a bounding box that
-    encompasses both objects when both are in motion.
+    Frame 0 is bg-only. From frame 1 onward, a red box sweeps L→R in the
+    upper third and a cyan box sweeps R→L in the lower third.
     """
     bw, bh = width // 8, height // 8
     frames = []
     for i in range(num_frames):
         frame = np.zeros((height, width, 3), dtype=np.uint8)
-        t = i / max(num_frames - 1, 1)
-        # Red box: left to right, upper third
-        rx = int(t * (width - bw))
-        ry = height // 6
-        frame[ry : ry + bh, rx : rx + bw] = (255, 0, 0)
-        # Cyan box: right to left, lower third
-        cx = int((1 - t) * (width - bw))
-        cy = height * 2 // 3
-        frame[cy : cy + bh, cx : cx + bw] = (0, 255, 255)
+        if i > 0:
+            t = i / max(num_frames - 1, 1)
+            # Red box: left to right, upper third
+            rx = int(t * (width - bw))
+            ry = height // 6
+            frame[ry : ry + bh, rx : rx + bw] = (255, 0, 0)
+            # Cyan box: right to left, lower third
+            cx = int((1 - t) * (width - bw))
+            cy = height * 2 // 3
+            frame[cy : cy + bh, cx : cx + bw] = (0, 255, 255)
         frames.append(frame)
     return frames
 
@@ -395,9 +405,10 @@ def _gen_two_boxes(width, height, num_frames):
 def _gen_noisy_moving_box(width, height, num_frames):
     """A red box moving diagonally on a background with per-frame sensor noise.
 
-    Background pixels jitter +/-10 luma per frame (simulating camera sensor noise).
-    With THRESH=16, raw frame differencing (ALPHA_SHIFT=0) produces false positives
-    on the background; EMA (ALPHA_SHIFT>=1) suppresses them.
+    Frame 0 is bg-only (noisy bg, no box). Background pixels jitter +/-10
+    luma per frame (simulating camera sensor noise). With THRESH=16, raw
+    frame differencing (ALPHA_SHIFT=0) produces false positives on the
+    background; EMA (ALPHA_SHIFT>=1) suppresses them.
     """
     rng = np.random.default_rng(seed=42)
     box_w, box_h = width // 4, height // 4
@@ -409,10 +420,11 @@ def _gen_noisy_moving_box(width, height, num_frames):
                              size=(height, width), dtype=np.int16)
         bg = np.clip(base_bg + noise, 0, 255).astype(np.uint8)
         frame = np.stack([bg, bg, bg], axis=-1)
-        t = i / max(num_frames - 1, 1)
-        cx = int(t * (width - box_w))
-        cy = int(t * (height - box_h))
-        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        if i > 0:
+            t = i / max(num_frames - 1, 1)
+            cx = int(t * (width - box_w))
+            cy = int(t * (height - box_h))
+            frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
         frames.append(frame)
     return frames
 
@@ -420,18 +432,19 @@ def _gen_noisy_moving_box(width, height, num_frames):
 def _gen_lighting_ramp(width, height, num_frames):
     """Moving box on a background that slowly brightens (+1 luma/frame).
 
-    Tests that EMA tracks gradual lighting changes without producing
-    false positives across the entire frame.
+    Frame 0 is bg-only. Tests that EMA tracks gradual lighting changes
+    without producing false positives across the entire frame.
     """
     box_w, box_h = width // 4, height // 4
     frames = []
     for i in range(num_frames):
         bg_level = min(100 + i, 255)
         frame = np.full((height, width, 3), bg_level, dtype=np.uint8)
-        t = i / max(num_frames - 1, 1)
-        cx = int(t * (width - box_w))
-        cy = int(t * (height - box_h))
-        frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        if i > 0:
+            t = i / max(num_frames - 1, 1)
+            cx = int(t * (width - box_w))
+            cy = int(t * (height - box_h))
+            frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
         frames.append(frame)
     return frames
 

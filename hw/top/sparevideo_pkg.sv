@@ -66,7 +66,8 @@ package sparevideo_pkg;
     localparam int CCL_MAX_CHAIN_DEPTH     = 8;
     // Suppress the first N frames' bboxes so the EMA background has time to
     // converge; during priming the front buffer stays all-invalid. Matches
-    // py/models/motion.py PRIME_FRAMES.
-    localparam int CCL_PRIME_FRAMES        = 2;
+    // py/models/motion.py PRIME_FRAMES. Default 0 now that synthetic sources
+    // render frame 0 as bg-only (no frame-0 foreground-baked-into-bg ghost).
+    localparam int CCL_PRIME_FRAMES        = 0;
 
 endpackage

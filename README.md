@@ -243,7 +243,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `synthetic:stopping_object` | Box A stops after half the frames; box B moves throughout. Textured+noisy bg. Exercises selective-EMA slow-rate absorption. |
 | `synthetic:lit_moving_object` | Two soft-edged boxes on a bg whose left↔right illumination gradient shifts ~2 luma/frame. Textured+noisy bg. |
 
-Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking.
+Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking. All patterns with moving objects render frame 0 as background-only — objects appear from frame 1 onward, so the EMA hard-init at frame 0 primes bg with clean background (no frame-0 ghost).
 
 ### THRESH (motion detection threshold)
 

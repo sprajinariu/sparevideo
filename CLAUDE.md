@@ -115,7 +115,7 @@ TB blanking parameters: H: 4+8+4, V: 2+2+16 (the 16-line V_BLANK absorbs the axi
 - Text mode (`.txt`) uses space-separated 6-digit hex pixels (RRGGBB), one row per line. No headers.
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
-- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (moving_box, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp, textured_static, entering_object, multi_speed, stopping_object, lit_moving_object).
+- Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (moving_box, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp, textured_static, entering_object, multi_speed, stopping_object, lit_moving_object). All synthetic patterns with moving objects render frame 0 as background-only; objects appear from frame 1 onward to avoid baking foreground into the EMA hard-init bg.
 
 ## Skills
 

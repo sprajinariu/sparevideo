@@ -113,28 +113,23 @@ def test_motion_static_scene():
 
 
 def test_motion_moving_box_has_overlay():
-    """Moving box: frames after priming+delay should have green bbox pixels."""
+    """Moving box: with PRIME_FRAMES=0 and bg-only frame 0, overlay starts at frame 2.
+
+    Frame 0: bg-only input → passthrough (no prior bbox).
+    Frame 1: bbox comes from frame 0's (empty) mask → passthrough.
+    Frame 2: bbox comes from frame 1's mask (box just appeared) → overlay.
+    """
     frames = load_frames("synthetic:moving_box", width=64, height=48, num_frames=6)
     out = run_model("motion", frames)
 
-    # Frame 0: no prior bbox -> passthrough
     np.testing.assert_array_equal(out[0], frames[0])
-
-    # Frames 1, 2: bbox is empty due to priming (PrimeFrames=2)
-    # Frame 1: bbox from frame 0 -> frame_cnt was 0 at frame 0 EOF, not primed -> empty
     np.testing.assert_array_equal(out[1], frames[1])
-    # Frame 2: bbox from frame 1 -> frame_cnt was 1 at frame 1 EOF, not primed -> empty
-    np.testing.assert_array_equal(out[2], frames[2])
 
-    # Frame 3: bbox from frame 2 -> frame_cnt was 2 at frame 2 EOF, primed -> should have overlay
-    # Check that some green pixels exist
-    green_mask = np.all(out[3] == BBOX_COLOR, axis=-1)
-    assert green_mask.any(), "Frame 3 should have green bbox overlay"
-
-    # Verify green pixels are NOT in the input
-    input_green = np.all(frames[3] == BBOX_COLOR, axis=-1)
+    green_mask = np.all(out[2] == BBOX_COLOR, axis=-1)
+    assert green_mask.any(), "Frame 2 should have green bbox overlay"
+    input_green = np.all(frames[2] == BBOX_COLOR, axis=-1)
     new_green = green_mask & ~input_green
-    assert new_green.any(), "Frame 3 should have NEW green pixels from bbox"
+    assert new_green.any(), "Frame 2 should have NEW green pixels from bbox"
 
 
 def test_motion_dark_moving_box():
@@ -178,14 +173,17 @@ def test_ccl_bbox_moving_two_boxes():
 
 
 def test_motion_priming_frames():
-    """Priming: frames 0-2 are passthrough, frame 3 is first potential overlay."""
+    """With PRIME_FRAMES=0 and bg-only frame 0, frames 0 and 1 are passthrough.
+
+    Frame 0: always passthrough (bbox state is all-None on first frame).
+    Frame 1: bbox comes from frame 0's mask; frame 0 is bg-only → no motion → empty bbox → passthrough.
+    """
     frames = load_frames("synthetic:moving_box", width=32, height=24, num_frames=5)
     out = run_model("motion", frames)
 
-    # Frames 0, 1, 2: should be identical to input (no overlay)
-    for i in range(3):
+    for i in range(2):
         np.testing.assert_array_equal(out[i], frames[i],
-                                      err_msg=f"Frame {i} should be passthrough (priming)")
+                                      err_msg=f"Frame {i} should be passthrough")
 
 
 def test_motion_empty_frames():

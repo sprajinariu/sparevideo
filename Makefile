@@ -9,17 +9,20 @@ SIMULATOR ?= verilator
 SOURCE    ?= synthetic:moving_box
 WIDTH     ?= 320
 HEIGHT    ?= 240
-FRAMES    ?= 4
+FRAMES    ?= 16
 MODE      ?= text
-CTRL_FLOW ?= motion
+CTRL_FLOW ?= ccl_bbox
 # Default tolerance: 0 (pixel-accurate model-based verification for all flows).
 TOLERANCE ?= 0
 # EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
 ALPHA_SHIFT ?= 3
 # EMA background adaptation rate on motion pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
 ALPHA_SHIFT_SLOW ?= 6
-# Aggressive-EMA grace window after priming (frames). Default 8. Set to 0 to disable.
-GRACE_FRAMES ?= 8
+# Aggressive-EMA grace window after priming (frames). Default 0 — synthetic
+# sources now render frame 0 as bg-only, so the hard-init ghost that grace
+# suppressed no longer exists. Set higher to absorb frame-0 ghosts from real
+# video (where frame 0 typically contains foreground).
+GRACE_FRAMES ?= 0
 # EMA rate during the grace window: alpha = 1 / (1 << GRACE_ALPHA_SHIFT).
 # Default 1 → α=1/2, chosen so delta halves per frame and converges below THRESH
 # within ~4-5 frames regardless of d₀.
@@ -82,13 +85,13 @@ help:
 	@echo "    SOURCE=synthetic:moving_box      Input source (prepare only). See sources below."
 	@echo "    WIDTH=320                        Frame width"
 	@echo "    HEIGHT=240                       Frame height"
-	@echo "    FRAMES=4                         Number of frames"
+	@echo "    FRAMES=16                        Number of frames"
 	@echo "    MODE=text|binary                 File format"
-	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default motion)"
+	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default ccl_bbox)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
 	@echo "    ALPHA_SHIFT=3                    EMA adaptation (non-motion pixel): alpha=1/(1<<N) (default 3)"
 	@echo "    ALPHA_SHIFT_SLOW=6               EMA adaptation (motion pixel): alpha=1/(1<<N) (default 6)"
-	@echo "    GRACE_FRAMES=8                   Aggressive-EMA grace window after priming (default 8)"
+	@echo "    GRACE_FRAMES=0                   Aggressive-EMA grace window after priming (default 0)"
 	@echo "    GRACE_ALPHA_SHIFT=1              EMA shift during grace: alpha=1/(1<<N) (default 1, α=1/2)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
