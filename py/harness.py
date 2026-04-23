@@ -180,7 +180,7 @@ def main():
     # prepare
     p_prep = sub.add_parser("prepare", parents=[common],
                             help="Prepare input frames for simulation")
-    p_prep.add_argument("--source", default="synthetic:color_bars",
+    p_prep.add_argument("--source", default="synthetic:moving_box",
                         help="Video file, image dir, or synthetic:<pattern>")
     p_prep.add_argument("--output", default="dv/data/input.txt",
                         help="Output file path")

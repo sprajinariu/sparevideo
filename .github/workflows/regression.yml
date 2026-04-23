@@ -59,11 +59,11 @@ jobs:
       - name: Block IP testbenches
         run: make test-ip
 
-      - name: Pipeline — passthrough, color_bars
+      - name: Pipeline — passthrough, default SOURCE
         run: make run-pipeline CTRL_FLOW=passthrough
 
-      - name: Pipeline — passthrough, gradient
-        run: make run-pipeline SOURCE="synthetic:gradient" CTRL_FLOW=passthrough
+      - name: Pipeline — passthrough, textured_static
+        run: make run-pipeline SOURCE="synthetic:textured_static" CTRL_FLOW=passthrough
 
       - name: Pipeline — passthrough, binary mode
         run: make run-pipeline MODE=binary CTRL_FLOW=passthrough
@@ -77,8 +77,8 @@ jobs:
       - name: Pipeline — motion, two_boxes
         run: make run-pipeline SOURCE="synthetic:two_boxes" CTRL_FLOW=motion
 
-      - name: Pipeline — motion, color_bars (static scene)
-        run: make run-pipeline SOURCE="synthetic:color_bars" CTRL_FLOW=motion
+      - name: Pipeline — motion, textured_static (static scene)
+        run: make run-pipeline SOURCE="synthetic:textured_static" CTRL_FLOW=motion
 
       - name: Pipeline — mask, moving_box
         run: make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask

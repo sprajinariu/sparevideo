@@ -112,43 +112,24 @@ def test_motion_static_scene():
                                       err_msg=f"Frame {i} should be passthrough after EMA convergence")
 
 
-def test_motion_color_bars_static():
-    """Color bars (static): output equals input after EMA convergence."""
-    frames = load_frames("synthetic:color_bars", width=64, height=32, num_frames=60)
-    out = run_model("motion", frames)
-
-    # Frame 0: passthrough (no prior bbox)
-    np.testing.assert_array_equal(out[0], frames[0])
-
-    # After EMA convergence, static color bars produce no motion -> no overlay
-    for i in range(55, 60):
-        np.testing.assert_array_equal(out[i], frames[i],
-                                      err_msg=f"Frame {i} should be passthrough after EMA convergence")
-
-
 def test_motion_moving_box_has_overlay():
-    """Moving box: frames after priming+delay should have green bbox pixels."""
+    """Moving box: with PRIME_FRAMES=0 and bg-only frame 0, overlay starts at frame 2.
+
+    Frame 0: bg-only input → passthrough (no prior bbox).
+    Frame 1: bbox comes from frame 0's (empty) mask → passthrough.
+    Frame 2: bbox comes from frame 1's mask (box just appeared) → overlay.
+    """
     frames = load_frames("synthetic:moving_box", width=64, height=48, num_frames=6)
     out = run_model("motion", frames)
 
-    # Frame 0: no prior bbox -> passthrough
     np.testing.assert_array_equal(out[0], frames[0])
-
-    # Frames 1, 2: bbox is empty due to priming (PrimeFrames=2)
-    # Frame 1: bbox from frame 0 -> frame_cnt was 0 at frame 0 EOF, not primed -> empty
     np.testing.assert_array_equal(out[1], frames[1])
-    # Frame 2: bbox from frame 1 -> frame_cnt was 1 at frame 1 EOF, not primed -> empty
-    np.testing.assert_array_equal(out[2], frames[2])
 
-    # Frame 3: bbox from frame 2 -> frame_cnt was 2 at frame 2 EOF, primed -> should have overlay
-    # Check that some green pixels exist
-    green_mask = np.all(out[3] == BBOX_COLOR, axis=-1)
-    assert green_mask.any(), "Frame 3 should have green bbox overlay"
-
-    # Verify green pixels are NOT in the input
-    input_green = np.all(frames[3] == BBOX_COLOR, axis=-1)
+    green_mask = np.all(out[2] == BBOX_COLOR, axis=-1)
+    assert green_mask.any(), "Frame 2 should have green bbox overlay"
+    input_green = np.all(frames[2] == BBOX_COLOR, axis=-1)
     new_green = green_mask & ~input_green
-    assert new_green.any(), "Frame 3 should have NEW green pixels from bbox"
+    assert new_green.any(), "Frame 2 should have NEW green pixels from bbox"
 
 
 def test_motion_dark_moving_box():
@@ -192,14 +173,17 @@ def test_ccl_bbox_moving_two_boxes():
 
 
 def test_motion_priming_frames():
-    """Priming: frames 0-2 are passthrough, frame 3 is first potential overlay."""
+    """With PRIME_FRAMES=0 and bg-only frame 0, frames 0 and 1 are passthrough.
+
+    Frame 0: always passthrough (bbox state is all-None on first frame).
+    Frame 1: bbox comes from frame 0's mask; frame 0 is bg-only → no motion → empty bbox → passthrough.
+    """
     frames = load_frames("synthetic:moving_box", width=32, height=24, num_frames=5)
     out = run_model("motion", frames)
 
-    # Frames 0, 1, 2: should be identical to input (no overlay)
-    for i in range(3):
+    for i in range(2):
         np.testing.assert_array_equal(out[i], frames[i],
-                                      err_msg=f"Frame {i} should be passthrough (priming)")
+                                      err_msg=f"Frame {i} should be passthrough")
 
 
 def test_motion_empty_frames():
@@ -734,6 +718,193 @@ def test_motion_grace_window_preserves_trail_suppression():
 
     assert not mask_f18[4:8, 7:11].any(), \
         f"trail persists at frame 18: mask[4:8,7:11]={mask_f18[4:8, 7:11]}"
+
+
+# ---- New synthetic source helpers ----
+
+from frames.video_source import _make_bg_texture, _add_frame_noise, _place_object
+
+
+def test_make_bg_texture_shape_and_range():
+    """Texture is (H, W) uint8 with values inside the configured luma window."""
+    tex = _make_bg_texture(width=64, height=32, base_luma=100, amp=20)
+    assert tex.shape == (32, 64)
+    assert tex.dtype == np.uint8
+    # Guard against off-by-one in the normalisation — allow ±2 luma slack.
+    assert tex.min() >= 100 - 20 - 2
+    assert tex.max() <= 100 + 20 + 2
+
+
+def test_make_bg_texture_is_deterministic():
+    """Same seed → identical output; different seed → non-identical output."""
+    a = _make_bg_texture(width=32, height=16, seed=1)
+    b = _make_bg_texture(width=32, height=16, seed=1)
+    c = _make_bg_texture(width=32, height=16, seed=2)
+    np.testing.assert_array_equal(a, b)
+    assert not np.array_equal(a, c)
+
+
+def test_make_bg_texture_not_flat():
+    """Texture actually has spatial variation (not a constant field)."""
+    tex = _make_bg_texture(width=64, height=32, base_luma=100, amp=20)
+    assert int(tex.max()) - int(tex.min()) >= 10
+
+
+def test_add_frame_noise_shape_dtype():
+    """Noise output is (H, W) uint8 — same shape and dtype as input bg."""
+    bg = np.full((16, 32), 100, dtype=np.uint8)
+    rng = np.random.default_rng(0)
+    out = _add_frame_noise(bg, rng, noise_amp=8)
+    assert out.shape == bg.shape
+    assert out.dtype == np.uint8
+
+
+def test_add_frame_noise_bounded():
+    """All output pixels are within ±noise_amp of the input bg."""
+    bg = np.full((16, 32), 100, dtype=np.uint8)
+    rng = np.random.default_rng(1)
+    out = _add_frame_noise(bg, rng, noise_amp=8)
+    diff = out.astype(np.int16) - bg.astype(np.int16)
+    assert diff.min() >= -8
+    assert diff.max() <= 8
+
+
+def test_add_frame_noise_clipping():
+    """Near 0 / 255 edges, output is clipped and never wraps."""
+    dark = np.zeros((4, 4), dtype=np.uint8)
+    bright = np.full((4, 4), 255, dtype=np.uint8)
+    rng = np.random.default_rng(2)
+    assert _add_frame_noise(dark, rng, noise_amp=8).min() >= 0
+    assert _add_frame_noise(bright, rng, noise_amp=8).max() <= 255
+
+
+def test_add_frame_noise_varies_frame_to_frame():
+    """Successive calls on the same rng yield different noise fields."""
+    bg = np.full((16, 32), 100, dtype=np.uint8)
+    rng = np.random.default_rng(3)
+    a = _add_frame_noise(bg, rng, noise_amp=8)
+    b = _add_frame_noise(bg, rng, noise_amp=8)
+    assert not np.array_equal(a, b)
+
+
+def test_place_object_center_near_target_luma():
+    """Interior of a large box has luma close to the object's target luma."""
+    rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+    _place_object(rgb, x0=8, y0=8, box_w=16, box_h=16, luma=200)
+    # Deep inside the box, the blurred alpha ≈ 1 → output ≈ luma on all channels.
+    px = rgb[16, 16]
+    assert abs(int(px[0]) - 200) <= 2
+    assert abs(int(px[1]) - 200) <= 2
+    assert abs(int(px[2]) - 200) <= 2
+
+
+def test_place_object_far_outside_untouched():
+    """Pixels far from the object retain their original bg value."""
+    rgb = np.full((32, 32, 3), 50, dtype=np.uint8)
+    _place_object(rgb, x0=8, y0=8, box_w=4, box_h=4, luma=200)
+    # Pixels in the far corner should be well outside the 5x5 kernel's reach.
+    np.testing.assert_array_equal(rgb[28, 28], [50, 50, 50])
+    np.testing.assert_array_equal(rgb[0, 28], [50, 50, 50])
+    np.testing.assert_array_equal(rgb[28, 0], [50, 50, 50])
+
+
+def test_place_object_soft_edge_transition():
+    """Along an edge, intermediate pixels fall between bg and object luma."""
+    rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+    _place_object(rgb, x0=8, y0=8, box_w=16, box_h=16, luma=200)
+    # Move along a horizontal line just inside the top edge: transition from 0 → ~200.
+    # At least one pixel on that line should be strictly between (0, 200).
+    row = rgb[8, :, 0].astype(int)
+    assert np.any((row > 10) & (row < 190)), f"no soft-edge pixel found: {row}"
+
+
+def test_place_object_clips_partial_offscreen():
+    """Object partially outside the frame renders its visible portion and does not raise."""
+    rgb = np.zeros((32, 32, 3), dtype=np.uint8)
+    _place_object(rgb, x0=-4, y0=10, box_w=12, box_h=8, luma=180)
+    # Pixels inside the visible slice should be brighter than bg.
+    assert rgb[14, 2, 0] > 50, f"expected visible portion, got {rgb[14, 2, 0]}"
+    # Pixels far from the visible slice should be untouched.
+    np.testing.assert_array_equal(rgb[14, 28], [0, 0, 0])
+
+
+# ---- New synthetic source tests ----
+
+def test_textured_static_no_motion_after_convergence():
+    """textured_static: after EMA converges, mask is all-black (no false positives).
+
+    This is the only negative test in the new set — verifies that the
+    sinusoid+noise background does not itself produce motion.
+    """
+    frames = load_frames("synthetic:textured_static",
+                         width=64, height=48, num_frames=60)
+    out = run_model("mask", frames)
+    for i in range(55, 60):
+        assert not out[i].any(), (
+            f"frame {i} should be all-black after EMA convergence on static bg")
+
+
+def test_entering_object_produces_bboxes_on_both_halves():
+    """entering_object: boxes from opposite edges both produce bbox overlays past priming."""
+    frames = load_frames("synthetic:entering_object",
+                         width=64, height=48, num_frames=8)
+    out = run_model("motion", frames)
+    # Accumulate green-bbox presence across all post-priming frames.
+    total = np.zeros(out[0].shape[:2], dtype=bool)
+    for i in range(3, 8):
+        total |= np.all(out[i] == BBOX_COLOR, axis=-1)
+    left  = total[:, :32].any()
+    right = total[:, 32:].any()
+    assert left and right, (
+        f"bboxes should appear on both halves: left={left}, right={right}")
+
+
+def test_multi_speed_produces_three_bbox_bands():
+    """multi_speed: at least one post-priming frame contains three distinct bbox components.
+
+    Box A (fast L->R top), Box B (medium T->B middle), Box C (slow BL->TR).
+    Under 8-connectivity, a correctly-tracking CCL should emit three separate
+    bbox outlines on at least one frame; earlier frames may show merged blobs
+    due to frame-0 departure ghosts, but the steady-state later frames should
+    not. Uses scipy.ndimage.label (already a project dependency).
+    """
+    from scipy.ndimage import label as _scipy_label
+    H, W = 72, 96
+    frames = load_frames("synthetic:multi_speed",
+                         width=W, height=H, num_frames=8)
+    out = run_model("motion", frames)
+    struct = np.ones((3, 3), dtype=int)
+    component_counts = []
+    for i in range(3, 8):
+        green = np.all(out[i] == BBOX_COLOR, axis=-1)
+        _, n = _scipy_label(green, structure=struct)
+        component_counts.append(n)
+    assert max(component_counts) >= 3, (
+        f"expected at least one post-priming frame with 3+ bbox components, "
+        f"got counts per frame={component_counts}")
+
+
+def test_stopping_object_has_bbox_while_both_move():
+    """stopping_object: first post-priming frame has bbox overlay while both boxes move.
+
+    Full stopped-box absorption behaviour depends on alpha_shift_slow and
+    would take 1/α_slow ≈ 64 frames to verify — out of scope for this unit
+    test. We verify only the early-frame positive case here.
+    """
+    frames = load_frames("synthetic:stopping_object",
+                        width=64, height=64, num_frames=8)
+    out = run_model("motion", frames)
+    green = np.all(out[3] == BBOX_COLOR, axis=-1)
+    assert green.any(), "frame 3 should have bbox overlay while both boxes are moving"
+
+
+def test_lit_moving_object_bboxes_under_illumination_shift():
+    """lit_moving_object: both boxes still produce bboxes despite the time-varying lighting gradient."""
+    frames = load_frames("synthetic:lit_moving_object",
+                         width=64, height=48, num_frames=8)
+    out = run_model("motion", frames)
+    green = np.all(out[5] == BBOX_COLOR, axis=-1)
+    assert green.any(), "bbox should appear at frame 5 despite lighting shift"
 
 
 # ---- Run all tests ----

@@ -23,7 +23,7 @@ _Y_G = 150
 _Y_B = 29
 
 BBOX_COLOR = np.array([0x00, 0xFF, 0x00], dtype=np.uint8)
-PRIME_FRAMES = 2
+PRIME_FRAMES = 0
 
 
 def _gauss3x3(y_frame):

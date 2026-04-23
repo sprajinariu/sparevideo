@@ -6,20 +6,23 @@ DATA_DIR   := dv/data
 
 # Built-in defaults — lowest precedence.
 SIMULATOR ?= verilator
-SOURCE    ?= synthetic:color_bars
+SOURCE    ?= synthetic:moving_box
 WIDTH     ?= 320
 HEIGHT    ?= 240
-FRAMES    ?= 4
+FRAMES    ?= 16
 MODE      ?= text
-CTRL_FLOW ?= motion
+CTRL_FLOW ?= ccl_bbox
 # Default tolerance: 0 (pixel-accurate model-based verification for all flows).
 TOLERANCE ?= 0
 # EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
 ALPHA_SHIFT ?= 3
 # EMA background adaptation rate on motion pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
 ALPHA_SHIFT_SLOW ?= 6
-# Aggressive-EMA grace window after priming (frames). Default 8. Set to 0 to disable.
-GRACE_FRAMES ?= 8
+# Aggressive-EMA grace window after priming (frames). Default 0 — synthetic
+# sources now render frame 0 as bg-only, so the hard-init ghost that grace
+# suppressed no longer exists. Set higher to absorb frame-0 ghosts from real
+# video (where frame 0 typically contains foreground).
+GRACE_FRAMES ?= 0
 # EMA rate during the grace window: alpha = 1 / (1 << GRACE_ALPHA_SHIFT).
 # Default 1 → α=1/2, chosen so delta halves per frame and converges below THRESH
 # within ~4-5 frames regardless of d₀.
@@ -79,30 +82,29 @@ help:
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator              Simulator: verilator (default) or icarus"
-	@echo "    SOURCE=synthetic:color_bars      Input source (prepare only). See sources below."
+	@echo "    SOURCE=synthetic:moving_box      Input source (prepare only). See sources below."
 	@echo "    WIDTH=320                        Frame width"
 	@echo "    HEIGHT=240                       Frame height"
-	@echo "    FRAMES=4                         Number of frames"
+	@echo "    FRAMES=16                        Number of frames"
 	@echo "    MODE=text|binary                 File format"
-	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default motion)"
+	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default ccl_bbox)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
 	@echo "    ALPHA_SHIFT=3                    EMA adaptation (non-motion pixel): alpha=1/(1<<N) (default 3)"
 	@echo "    ALPHA_SHIFT_SLOW=6               EMA adaptation (motion pixel): alpha=1/(1<<N) (default 6)"
-	@echo "    GRACE_FRAMES=8                   Aggressive-EMA grace window after priming (default 8)"
+	@echo "    GRACE_FRAMES=0                   Aggressive-EMA grace window after priming (default 0)"
 	@echo "    GRACE_ALPHA_SHIFT=1              EMA shift during grace: alpha=1/(1<<N) (default 1, α=1/2)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
-	@echo "    synthetic:color_bars       8 vertical color bars (static)"
-	@echo "    synthetic:gradient         Red horizontal + green vertical gradient (static)"
-	@echo "    synthetic:checkerboard     16x16 pixel checkerboard (static)"
 	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
-	@echo "    synthetic:moving_box_h     Red box, horizontal left → right"
-	@echo "    synthetic:moving_box_v     Green box, vertical top → bottom"
-	@echo "    synthetic:moving_box_reverse Blue box, diagonal bottom-right → top-left"
 	@echo "    synthetic:dark_moving_box  Dark box on bright background"
 	@echo "    synthetic:two_boxes        Red + cyan boxes, opposing directions"
 	@echo "    synthetic:noisy_moving_box Red box on noisy background (EMA test)"
 	@echo "    synthetic:lighting_ramp    Moving box on slowly brightening background"
+	@echo "    synthetic:textured_static  Sinusoid-textured static bg + noise (negative test)"
+	@echo "    synthetic:entering_object  Two soft-edged boxes entering from opposite edges"
+	@echo "    synthetic:multi_speed      Three soft-edged boxes with distinct speeds and directions"
+	@echo "    synthetic:stopping_object  Box stops after half the frames + box always moving"
+	@echo "    synthetic:lit_moving_object Two soft-edged boxes under shifting L↔R lighting"
 	@echo "    path/to/video.mp4          MP4/AVI file (via OpenCV)"
 	@echo "    path/to/png_dir/           Directory of PNG frames"
 
