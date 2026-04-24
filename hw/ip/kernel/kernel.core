@@ -1,0 +1,14 @@
+CAPI=2:
+name: "sparevideo:ip:kernel"
+description: "Reusable 3x3 sliding-window primitive (line buffers + window regs + edge replication)"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_kernel3x3.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

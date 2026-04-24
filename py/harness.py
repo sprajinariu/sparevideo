@@ -230,7 +230,7 @@ def main():
                        help="EMA shift during grace = 1/(1 << N). Default 1 (α=1/2), must match RTL.")
     p_ren.add_argument("--gauss-en", type=int, default=1, dest="gauss_en",
                        help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
-    p_ren.add_argument("--render-output", default="dv/data/renders/comparison.png",
+    p_ren.add_argument("--render-output", default="renders/comparison.png",
                        help="Output PNG path")
 
     args = parser.parse_args()

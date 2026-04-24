@@ -51,7 +51,7 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip setup clean
+        test-py test-ip test-ip-kernel setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -74,6 +74,7 @@ help:
 	@echo "    test-py               Run Python unit tests"
 	@echo "    test-ip               All per-block IP unit testbenches (Verilator)"
 	@echo "    test-ip-rgb2ycrcb          rgb2ycrcb: 18 vectors, exact-match golden model"
+	@echo "    test-ip-kernel             axis_kernel3x3: 3x3 window + edge replication, shared primitive"
 	@echo "    test-ip-gauss3x3           axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF"
 	@echo "    test-ip-motion-detect      axis_motion_detect GAUSS_EN=0: 8-frame golden model, stall, fork desync"
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
@@ -118,7 +119,7 @@ run-pipeline: prepare compile sim verify render
 prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
-	@mkdir -p $(DATA_DIR)/renders
+	@mkdir -p $(DATA_DIR) renders
 	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nALPHA_SHIFT_SLOW = %s\nGRACE_FRAMES = %s\nGRACE_ALPHA_SHIFT = %s\nGAUSS_EN = %s\n' \
 		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(ALPHA_SHIFT_SLOW)' '$(GRACE_FRAMES)' '$(GRACE_ALPHA_SHIFT)' '$(GAUSS_EN)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
@@ -150,12 +151,12 @@ verify:
 		--alpha-shift $(ALPHA_SHIFT) --alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN)
 
 RENDER_SOURCE_SAFE = $(subst _,-,$(subst :,-,$(SOURCE)))
-RENDER_OUT = $(CURDIR)/$(DATA_DIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
+RENDER_OUT = $(CURDIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN).png
 
 render:
 	@echo ""
 	@echo "==== [5/5] RENDER (Python) ===="
-	@mkdir -p $(DATA_DIR)/renders
+	@mkdir -p renders
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --alpha-shift $(ALPHA_SHIFT) \
@@ -173,6 +174,9 @@ test-py:
 test-ip:
 	$(MAKE) -C dv/sim test-ip SIMULATOR=$(SIMULATOR)
 
+test-ip-kernel:
+	$(MAKE) -C dv/sim test-ip-kernel SIMULATOR=$(SIMULATOR)
+
 setup:
 	sudo apt install -y iverilog verilator
 	python3 -m venv .venv
@@ -182,4 +186,4 @@ clean:
 	rm -rf build
 	$(MAKE) -C dv/sim clean
 	rm -f $(DATA_DIR)/*.txt $(DATA_DIR)/*.dat $(DATA_DIR)/*.bin $(DATA_DIR)/config.mk
-	rm -rf $(DATA_DIR)/renders
+	rm -rf renders

@@ -168,7 +168,7 @@ Lives in `dv/sv/tb_sparevideo.sv`. Focuses on correct pipeline operation, not pi
 
 - `make run-pipeline` runs the full flow: prepare → compile → sim → verify → render.
 - `make verify` checks that output matches input within `TOLERANCE` pixels/frame (default `2*(W+H)` to allow the motion-detect bbox border).
-- `make render` produces an input vs output comparison image in `dv/data/renders/`.
+- `make render` produces an input vs output comparison image in `renders/`.
 - For a quick pass/fail without Python: inspect `$display` output from the testbench for `ALL TESTS PASSED` or error lines.
 - To debug a failure, consult the **Debugging a failing simulation** section in `CLAUDE.md`.
 
