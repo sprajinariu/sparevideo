@@ -71,6 +71,7 @@ help:
 	@echo "    test-py               Run Python unit tests"
 	@echo "    test-ip               All per-block IP unit testbenches (Verilator)"
 	@echo "    test-ip-rgb2ycrcb          rgb2ycrcb: 18 vectors, exact-match golden model"
+	@echo "    test-ip-kernel             axis_kernel3x3: 3x3 window + edge replication, shared primitive"
 	@echo "    test-ip-gauss3x3           axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF"
 	@echo "    test-ip-motion-detect      axis_motion_detect GAUSS_EN=0: 8-frame golden model, stall, fork desync"
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
