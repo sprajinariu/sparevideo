@@ -11,7 +11,7 @@ filesets:
     depend:
       - sparevideo:pkg:common
       - sparevideo:ip:rgb2ycrcb
-      - sparevideo:ip:gauss3x3
+      - sparevideo:ip:filters
 
 targets:
   default:

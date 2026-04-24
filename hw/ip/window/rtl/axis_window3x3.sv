@@ -2,30 +2,42 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// axis_kernel3x3 -- reusable 3x3 sliding-window primitive.
+// axis_window3x3 -- reusable 3x3 sliding-window primitive.
 //
 // Owns: row/col counters with phantom-cycle drain, two line buffers
 // (depth H_ACTIVE, width DATA_WIDTH), 3-row x 3-col window shift registers,
-// and edge replication at all four borders. Emits a combinational 9-tap
+// and edge handling at all four borders. Emits a combinational 9-tap
 // window at the d1 stage + window_valid_o (off-frame-suppressed) + busy_o.
 //
-// Consumers (axis_gauss3x3, axis_morph_erode, axis_morph_dilate, ...) add
-// their own combinational op on the window and a single output register.
+// Consumers (axis_gauss3x3, axis_sobel, axis_morph_erode / _dilate, ...)
+// add their own combinational op on the window and a single output register.
+//
+// EDGE_POLICY parameter selects how off-frame neighbours are filled when
+// the window overlaps a frame border. Currently only EDGE_REPLICATE is
+// implemented; other values trigger an elaboration-time $fatal so new
+// policies (ZERO, CONSTANT, MIRROR) can be slotted in without breaking
+// callers.
 //
 // Latency: H_ACTIVE + 2 cycles from first valid_i to first window_valid_o
 // (one less than gauss3x3 end-to-end because the op register now lives in
 // the wrapper). Throughput: 1 pixel/cycle after fill.
 //
-// Blanking requirements (inherited from the former gauss3x3 internals):
+// Blanking requirements:
 //   - Min H-blank: 1 cycle per row (absorbs the per-row phantom column).
 //   - Min V-blank: H_ACTIVE + 1 cycles total (absorbs phantom-row drain).
 //   - If blanking is unavailable, busy_o asserts so the parent can deassert
 //     upstream tready.
 
-module axis_kernel3x3 #(
-    parameter int DATA_WIDTH = 8,
-    parameter int H_ACTIVE   = 320,
-    parameter int V_ACTIVE   = 240
+// Edge-policy codes. SV has no cross-file enums without a package, so
+// callers pass the integer value directly:
+//   axis_window3x3 #(.EDGE_POLICY(0 /*EDGE_REPLICATE*/)) ...
+// Reserve 1..3 for ZERO / CONSTANT / MIRROR additions.
+
+module axis_window3x3 #(
+    parameter int DATA_WIDTH  = 8,
+    parameter int H_ACTIVE    = 320,
+    parameter int V_ACTIVE    = 240,
+    parameter int EDGE_POLICY = 0   // 0 = REPLICATE (only value implemented today)
 ) (
     input  logic                  clk_i,
     input  logic                  rst_n_i,
@@ -36,13 +48,24 @@ module axis_kernel3x3 #(
 
     input  logic [DATA_WIDTH-1:0] din_i,
 
-    // 3x3 window, row-major: [0]=TL [1]=TC [2]=TR
+    // 3x3 window, row-major:  [0]=TL [1]=TC [2]=TR
     //                         [3]=ML [4]=CC [5]=MR
     //                         [6]=BL [7]=BC [8]=BR
     output logic [DATA_WIDTH-1:0] window_o [9],
     output logic                  window_valid_o,
     output logic                  busy_o
 );
+
+    // ---- Edge policy guard ----
+    // Only EDGE_REPLICATE is implemented today. Anything else is a
+    // caller bug we want to fail loud on at elaboration.
+    localparam int EDGE_REPLICATE = 0;
+
+    initial begin
+        if (EDGE_POLICY != EDGE_REPLICATE) begin
+            $fatal(1, "axis_window3x3: unsupported EDGE_POLICY=%0d (only EDGE_REPLICATE=0 implemented)", EDGE_POLICY);
+        end
+    end
 
     // ---- Row / column counters ----
     localparam int COL_W = $clog2(H_ACTIVE + 1);

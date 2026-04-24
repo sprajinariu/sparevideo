@@ -12,6 +12,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 |----------|--------|
 | [`sparevideo-top-arch.md`](docs/specs/sparevideo-top-arch.md) | Top-level pipeline, clock domains, FIFO sizing, SVAs |
 | [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
+| [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; `EDGE_POLICY` parameter) |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
@@ -35,8 +36,11 @@ hw/ip/rgb2ycrcb/rtl/
 hw/ip/axis/rtl/
 └── axis_fork.sv               Zero-latency AXI4-Stream 1-to-2 broadcast fork with per-output acceptance tracking
 
-hw/ip/gauss3x3/rtl/
-└── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (line buffers + adder tree)
+hw/ip/window/rtl/
+└── axis_window3x3.sv          Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; EDGE_POLICY parameter)
+
+hw/ip/filters/rtl/
+└── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (wraps axis_window3x3 + adder tree)
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
@@ -65,7 +69,10 @@ third_party/verilog-axis/rtl/  Vendored alexforencich/verilog-axis (MIT)
 hw/ip/rgb2ycrcb/tb/
 └── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
 
-hw/ip/gauss3x3/tb/
+hw/ip/window/tb/
+└── tb_axis_window3x3.sv       6 tests: window ordering, top/left/right/bottom edge replication, no-blanking busy_o
+
+hw/ip/filters/tb/
 └── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
 
 hw/ip/motion/tb/
@@ -211,6 +218,7 @@ make render
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
+make test-ip-window          # axis_window3x3: 6 tests, window ordering + edge replication + busy_o fallback
 make test-ip-gauss3x3        # axis_gauss3x3: 11 tests, centered Gaussian + latency + busy_o fallback
 make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
 make test-ip-ccl             # axis_ccl: 7 tests, single/hollow/disjoint/U-merge/overflow/back-to-back
