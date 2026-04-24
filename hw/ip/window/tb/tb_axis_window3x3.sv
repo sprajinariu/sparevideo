@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// Unit testbench for axis_kernel3x3 -- exercises the shared state/timing
+// Unit testbench for axis_window3x3 -- exercises the shared state/timing
 // logic independently of any combinational op.
 //
 // Tests:
@@ -17,7 +17,7 @@
 
 `timescale 1ns / 1ps
 
-module tb_axis_kernel3x3;
+module tb_axis_window3x3;
 
     localparam int H          = 8;
     localparam int V          = 4;
@@ -52,7 +52,7 @@ module tb_axis_kernel3x3;
         din_i   <= drv_din;
     end
 
-    axis_kernel3x3 #(
+    axis_window3x3 #(
         .DATA_WIDTH (DW),
         .H_ACTIVE   (H),
         .V_ACTIVE   (V)
@@ -258,7 +258,7 @@ module tb_axis_kernel3x3;
         // proves the phantom-column fallback works.
         //   (a more rigorous check would count busy cycles == V * 1.)
 
-        $display("ALL KERNEL3X3 TESTS PASSED");
+        $display("ALL WINDOW3X3 TESTS PASSED");
         $finish;
     end
 

@@ -56,7 +56,7 @@ axis_motion_detect (u_motion_detect)
 └── motion_core    (u_core)    — Combinational: abs-diff threshold + EMA update
 ```
 
-`axis_gauss3x3` (in `hw/ip/gauss3x3/rtl/`) is a synchronous pipeline element (not a
+`axis_gauss3x3` (in `hw/ip/filters/rtl/`) is a synchronous pipeline element (not a
 full AXIS stage). It applies a 3x3 Gaussian blur `[1 2 1; 2 4 2; 1 2 1] / 16` to the
 Y channel with a 2-cycle latency. Instantiated inside a `generate` block gated by
 `GAUSS_EN`; when `GAUSS_EN=0` the module is not instantiated and `y_smooth = y_cur`

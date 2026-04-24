@@ -6,6 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Do not include `Co-Authored-By` trailers in commit messages.
 
+**One branch per plan.** Every plan from `docs/plans/` gets its own fresh branch, created from `origin/main` (after a fetch). Do NOT reuse the branch of a previous plan to start a new one, even if that branch has not yet been merged — start a new branch. Naming: `feat/<topic>`, `refactor/<topic>`, `fix/<topic>`, matching the plan's scope. Never commit plan-related work directly to `main`. If a new plan genuinely depends on an unmerged predecessor branch, create the new branch from that predecessor (not from the main branch) and note the dependency in the PR description.
+
+**Squash at plan completion.** Once a plan is fully implemented and its tests pass, squash all of the plan's commits into a single commit before opening the PR. Before squashing, verify every commit on the branch belongs to the plan being closed — if unrelated commits (adjacent fixes, tangential refactors) have slipped in during execution, move them to their own branch + PR first, then squash only the plan-scoped commits. The squashed commit message should stand on its own as a description of the plan's outcome.
+
+**Exceptions — allowed on any branch, not required to split out.** These kinds of changes may ride along with plan commits and do not need to be moved to their own branch before squashing:
+
+- `README.md` updates
+- `CLAUDE.md` updates
+- Small general fixes (typos, minor formatting, one-line bug fixes, adjacent `.gitignore` tweaks)
+
+Anything larger than a "small general fix" — or any tangential refactor, unrelated feature work, or structural change — still belongs on its own branch per the rule above.
+
 ## Documentation Conventions
 
 All design specs, architecture docs, and implementation plans live under `docs/plans/` — **never** under `docs/superpowers/specs/` or any other skill-default location. Brainstorming specs go to `docs/plans/YYYY-MM-DD-<topic>-design.md`. Implementation plans follow the same `docs/plans/` prefix.
@@ -61,7 +73,8 @@ make setup                   # One-time setup (install deps)
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
 - `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
-- `hw/ip/gauss3x3/rtl/` — 3x3 Gaussian pre-filter on Y channel (axis_gauss3x3: line buffers + adder tree)
+- `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge handling; `EDGE_POLICY` parameter, today only `EDGE_REPLICATE=0`). Wrapped by every filter module.
+- `hw/ip/filters/rtl/` — Spatial filters over axis_window3x3 (axis_gauss3x3 today; axis_sobel, axis_morph_erode / _dilate / _open planned — all land here as peer `.sv` files under one `filters.core`)
 - `hw/ip/motion/rtl/` — Motion detection (axis_motion_detect, motion_core)
 - `hw/ip/ccl/rtl/` — Streaming connected-components labeling (axis_ccl)
 - `hw/ip/overlay/rtl/` — Generic rectangle overlay on RGB video (axis_overlay_bbox)

@@ -51,7 +51,7 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-kernel setup clean
+        test-py test-ip test-ip-window setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -74,7 +74,7 @@ help:
 	@echo "    test-py               Run Python unit tests"
 	@echo "    test-ip               All per-block IP unit testbenches (Verilator)"
 	@echo "    test-ip-rgb2ycrcb          rgb2ycrcb: 18 vectors, exact-match golden model"
-	@echo "    test-ip-kernel             axis_kernel3x3: 3x3 window + edge replication, shared primitive"
+	@echo "    test-ip-window             axis_window3x3: 3x3 sliding window + edge replication, shared primitive"
 	@echo "    test-ip-gauss3x3           axis_gauss3x3: 6 tests, uniform/impulse/gradient/checker/stall/SOF"
 	@echo "    test-ip-motion-detect      axis_motion_detect GAUSS_EN=0: 8-frame golden model, stall, fork desync"
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
@@ -174,8 +174,8 @@ test-py:
 test-ip:
 	$(MAKE) -C dv/sim test-ip SIMULATOR=$(SIMULATOR)
 
-test-ip-kernel:
-	$(MAKE) -C dv/sim test-ip-kernel SIMULATOR=$(SIMULATOR)
+test-ip-window:
+	$(MAKE) -C dv/sim test-ip-window SIMULATOR=$(SIMULATOR)
 
 setup:
 	sudo apt install -y iverilog verilator

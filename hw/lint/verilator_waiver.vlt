@@ -17,7 +17,8 @@ lint_off -rule UNUSEDSIGNAL    -file "*rgb2ycrcb.sv"
 // mismatch vs vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*rgb2ycrcb.sv"
 lint_off -rule TIMESCALEMOD    -file "*axis_fork.sv"
-// axis_gauss3x3 has no `timescale directive.
+// axis_window3x3 and axis_gauss3x3 have no `timescale directive.
+lint_off -rule TIMESCALEMOD    -file "*axis_window3x3.sv"
 lint_off -rule TIMESCALEMOD    -file "*axis_gauss3x3.sv"
 // EMA step is 9-bit signed but only [7:0] feeds the 8-bit write-back.
 // Bit [8] (sign extension) is intentionally unused.

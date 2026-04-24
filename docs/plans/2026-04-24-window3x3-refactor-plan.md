@@ -1,10 +1,10 @@
-# axis_kernel3x3 Refactor Implementation Plan
+# axis_window3x3 Refactor Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extract the line-buffer + 3×3 sliding-window + edge-replication logic currently inside `axis_gauss3x3` into a new reusable primitive `axis_kernel3x3`, and re-express `axis_gauss3x3` as a thin wrapper over it. The motion pipeline must produce byte-identical output before and after the refactor.
+**Goal:** Extract the line-buffer + 3×3 sliding-window + edge-replication logic currently inside `axis_gauss3x3` into a new reusable primitive `axis_window3x3`, and re-express `axis_gauss3x3` as a thin wrapper over it. The motion pipeline must produce byte-identical output before and after the refactor.
 
-**Architecture:** `axis_kernel3x3` owns all state and timing (row/col counters, phantom-cycle drain, two line buffers, 3-row × 3-col window registers, edge replication). It exposes a combinational 9-tap window at the d1 stage plus a window-valid strobe that is already off-frame-suppressed. Wrappers (`axis_gauss3x3` now, `axis_morph_erode` / `axis_morph_dilate` next plan) do their own combinational op on the window and add a single output register. The kernel is parameterized on `DATA_WIDTH` (8 for Gaussian, 1 for morphology), `H_ACTIVE`, and `V_ACTIVE`.
+**Architecture:** `axis_window3x3` owns all state and timing (row/col counters, phantom-cycle drain, two line buffers, 3-row × 3-col window registers, edge replication). It exposes a combinational 9-tap window at the d1 stage plus a window-valid strobe that is already off-frame-suppressed. Wrappers (`axis_gauss3x3` now, `axis_morph_erode` / `axis_morph_dilate` next plan) do their own combinational op on the window and add a single output register. The kernel is parameterized on `DATA_WIDTH` (8 for Gaussian, 1 for morphology), `H_ACTIVE`, and `V_ACTIVE`.
 
 **Tech Stack:** SystemVerilog (Icarus-12-compatible subset — no SVA, no interfaces, no classes), Verilator for simulation and lint, GNU Make, FuseSoC CAPI=2 core files.
 
@@ -16,17 +16,17 @@
 
 **New files:**
 
-- `hw/ip/kernel/kernel.core` — FuseSoC core file exposing `sparevideo:ip:kernel`.
-- `hw/ip/kernel/rtl/axis_kernel3x3.sv` — the new primitive.
-- `hw/ip/kernel/tb/tb_axis_kernel3x3.sv` — unit testbench (digest of the scenarios from `tb_axis_gauss3x3` that exercise shared logic).
-- `hw/ip/kernel/docs/axis_kernel3x3-arch.md` — architecture doc (produced via the `hardware-arch-doc` skill at documentation time).
+- `hw/ip/window/kernel.core` — FuseSoC core file exposing `sparevideo:ip:window`.
+- `hw/ip/window/rtl/axis_window3x3.sv` — the new primitive.
+- `hw/ip/window/tb/tb_axis_window3x3.sv` — unit testbench (digest of the scenarios from `tb_axis_gauss3x3` that exercise shared logic).
+- `hw/ip/window/docs/axis_window3x3-arch.md` — architecture doc (produced via the `hardware-arch-doc` skill at documentation time).
 
 **Modified files:**
 
-- `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv` — strip state/timing/line-buffer/window logic; instantiate `axis_kernel3x3`; keep convolution math + output register.
-- `hw/ip/gauss3x3/gauss3x3.core` — add `sparevideo:ip:kernel` dependency.
-- `dv/sim/Makefile` — add `IP_KERNEL3X3_RTL` var, `test-ip-kernel` target, include in `test-ip` aggregation and in clean.
-- `Makefile` (top) — advertise `test-ip-kernel` in the help block.
+- `hw/ip/filters/rtl/axis_gauss3x3.sv` — strip state/timing/line-buffer/window logic; instantiate `axis_window3x3`; keep convolution math + output register.
+- `hw/ip/filters/gauss3x3.core` — add `sparevideo:ip:window` dependency.
+- `dv/sim/Makefile` — add `IP_WINDOW3X3_RTL` var, `test-ip-window` target, include in `test-ip` aggregation and in clean.
+- `Makefile` (top) — advertise `test-ip-window` in the help block.
 - `README.md` — add the kernel IP to the IP table.
 - `CLAUDE.md` — add a line to the "Project Structure" list.
 
@@ -77,24 +77,24 @@ Expected: the first 12 bytes decode as three LE uint32s `(0x140, 0xF0, 0x8)` = `
 ## Task 2: Create kernel IP scaffolding
 
 **Files:**
-- Create: `hw/ip/kernel/kernel.core`
-- Create: `hw/ip/kernel/rtl/axis_kernel3x3.sv` (empty skeleton for now)
-- Modify: `dv/sim/Makefile` (add IP_KERNEL3X3_RTL, test-ip-kernel, aggregate, clean)
-- Modify: `Makefile` (advertise test-ip-kernel in help)
+- Create: `hw/ip/window/kernel.core`
+- Create: `hw/ip/window/rtl/axis_window3x3.sv` (empty skeleton for now)
+- Modify: `dv/sim/Makefile` (add IP_WINDOW3X3_RTL, test-ip-window, aggregate, clean)
+- Modify: `Makefile` (advertise test-ip-window in help)
 
 - [ ] **Step 1: Create the core file**
 
-Create `hw/ip/kernel/kernel.core`:
+Create `hw/ip/window/kernel.core`:
 
 ```yaml
 CAPI=2:
-name: "sparevideo:ip:kernel"
+name: "sparevideo:ip:window"
 description: "Reusable 3x3 sliding-window primitive (line buffers + window regs + edge replication)"
 
 filesets:
   files_rtl:
     files:
-      - rtl/axis_kernel3x3.sv
+      - rtl/axis_window3x3.sv
     file_type: systemVerilogSource
 
 targets:
@@ -105,14 +105,14 @@ targets:
 
 - [ ] **Step 2: Create the empty module skeleton**
 
-Create `hw/ip/kernel/rtl/axis_kernel3x3.sv`:
+Create `hw/ip/window/rtl/axis_window3x3.sv`:
 
 ```systemverilog
 // Copyright 2026 Sebastian Prajinariu
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// axis_kernel3x3 -- reusable 3x3 sliding-window primitive.
+// axis_window3x3 -- reusable 3x3 sliding-window primitive.
 //
 // Owns: row/col counters with phantom-cycle drain, two line buffers
 // (depth H_ACTIVE, width DATA_WIDTH), 3-row x 3-col window shift registers,
@@ -132,7 +132,7 @@ Create `hw/ip/kernel/rtl/axis_kernel3x3.sv`:
 //   - If blanking is unavailable, busy_o asserts so the parent can deassert
 //     upstream tready.
 
-module axis_kernel3x3 #(
+module axis_window3x3 #(
     parameter int DATA_WIDTH = 8,
     parameter int H_ACTIVE   = 320,
     parameter int V_ACTIVE   = 240
@@ -180,65 +180,65 @@ Open `dv/sim/Makefile` and:
 a) Add a new source variable near `IP_GAUSS3X3_RTL` (around line 121):
 
 ```make
-IP_KERNEL3X3_RTL = ../../hw/ip/kernel/rtl/axis_kernel3x3.sv
+IP_WINDOW3X3_RTL = ../../hw/ip/window/rtl/axis_window3x3.sv
 ```
 
-b) Add `test-ip-kernel` to the `test-ip` aggregate target (around line 129):
+b) Add `test-ip-window` to the `test-ip` aggregate target (around line 129):
 
 ```make
-test-ip: test-ip-rgb2ycrcb test-ip-kernel test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl
+test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl
 	@echo "All block testbenches passed."
 ```
 
 c) Add a new per-block target after `test-ip-gauss3x3`:
 
 ```make
-# --- axis_kernel3x3 ---
-test-ip-kernel:
-	verilator $(VLT_TB_FLAGS) --top-module tb_axis_kernel3x3 --Mdir obj_tb_axis_kernel3x3 \
-	  $(IP_KERNEL3X3_RTL) ../../hw/ip/kernel/tb/tb_axis_kernel3x3.sv
-	obj_tb_axis_kernel3x3/Vtb_axis_kernel3x3
+# --- axis_window3x3 ---
+test-ip-window:
+	verilator $(VLT_TB_FLAGS) --top-module tb_axis_window3x3 --Mdir obj_tb_axis_window3x3 \
+	  $(IP_WINDOW3X3_RTL) ../../hw/ip/window/tb/tb_axis_window3x3.sv
+	obj_tb_axis_window3x3/Vtb_axis_window3x3
 ```
 
-d) Add `obj_tb_axis_kernel3x3` to the `clean` target's `rm -rf` line (around line 182):
+d) Add `obj_tb_axis_window3x3` to the `clean` target's `rm -rf` line (around line 182):
 
 ```make
-	rm -rf $(VOBJ_DIR) obj_tb_rgb2ycrcb obj_tb_axis_kernel3x3 obj_tb_axis_gauss3x3 \
+	rm -rf $(VOBJ_DIR) obj_tb_rgb2ycrcb obj_tb_axis_window3x3 obj_tb_axis_gauss3x3 \
 ```
 
-e) Also update the top-level `.PHONY` list in the same file (around line 40) to include `test-ip-kernel`:
+e) Also update the top-level `.PHONY` list in the same file (around line 40) to include `test-ip-window`:
 
 ```make
-       test-ip test-ip-rgb2ycrcb test-ip-kernel test-ip-gauss3x3 \
+       test-ip test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 \
        test-ip-motion-detect test-ip-motion-detect-gauss \
        test-ip-overlay-bbox test-ip-ccl
 ```
 
-- [ ] **Step 4: Advertise test-ip-kernel in the top Makefile help**
+- [ ] **Step 4: Advertise test-ip-window in the top Makefile help**
 
 Open the top-level `Makefile`. Find the help block (around line 73–78) and add a line between `test-ip-rgb2ycrcb` and `test-ip-gauss3x3`:
 
 ```make
-	@echo "    test-ip-kernel             axis_kernel3x3: 3x3 window + edge replication, shared primitive"
+	@echo "    test-ip-window             axis_window3x3: 3x3 window + edge replication, shared primitive"
 ```
 
 - [ ] **Step 5: Verify Makefile parses (dry-run)**
 
 Run:
 ```bash
-make -n test-ip-kernel | head -3
+make -n test-ip-window | head -3
 ```
 
-Expected: prints the `verilator ... --top-module tb_axis_kernel3x3 ...` command — no `make: *** No rule to make target` errors, no `Makefile:NNN: *** missing separator` errors. We intentionally do **not** invoke the rule yet — the TB file does not exist.
+Expected: prints the `verilator ... --top-module tb_axis_window3x3 ...` command — no `make: *** No rule to make target` errors, no `Makefile:NNN: *** missing separator` errors. We intentionally do **not** invoke the rule yet — the TB file does not exist.
 
 - [ ] **Step 6: Commit the scaffolding**
 
 Run:
 ```bash
-git add hw/ip/kernel/kernel.core hw/ip/kernel/rtl/axis_kernel3x3.sv dv/sim/Makefile Makefile
-git commit -m "feat(kernel): add axis_kernel3x3 IP scaffolding
+git add hw/ip/window/kernel.core hw/ip/window/rtl/axis_window3x3.sv dv/sim/Makefile Makefile
+git commit -m "feat(kernel): add axis_window3x3 IP scaffolding
 
-Introduce empty hw/ip/kernel/ module + core file and wire test-ip-kernel
+Introduce empty hw/ip/window/ module + core file and wire test-ip-window
 into the per-block Makefile. Module body and TB land in follow-up commits."
 ```
 
@@ -246,23 +246,23 @@ Expected: commit created, `git status` clean.
 
 ---
 
-## Task 3: Write tb_axis_kernel3x3
+## Task 3: Write tb_axis_window3x3
 
 **Purpose:** directed tests against the (still empty) kernel module. Running the TB must fail now and pass after Task 4.
 
 **Files:**
-- Create: `hw/ip/kernel/tb/tb_axis_kernel3x3.sv`
+- Create: `hw/ip/window/tb/tb_axis_window3x3.sv`
 
 - [ ] **Step 1: Write the testbench**
 
-Create `hw/ip/kernel/tb/tb_axis_kernel3x3.sv`:
+Create `hw/ip/window/tb/tb_axis_window3x3.sv`:
 
 ```systemverilog
 // Copyright 2026 Sebastian Prajinariu
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// Unit testbench for axis_kernel3x3 -- exercises the shared state/timing
+// Unit testbench for axis_window3x3 -- exercises the shared state/timing
 // logic independently of any combinational op.
 //
 // Tests:
@@ -277,7 +277,7 @@ Create `hw/ip/kernel/tb/tb_axis_kernel3x3.sv`:
 
 `timescale 1ns / 1ps
 
-module tb_axis_kernel3x3;
+module tb_axis_window3x3;
 
     localparam int H          = 8;
     localparam int V          = 4;
@@ -312,7 +312,7 @@ module tb_axis_kernel3x3;
         din_i   <= drv_din;
     end
 
-    axis_kernel3x3 #(
+    axis_window3x3 #(
         .DATA_WIDTH (DW),
         .H_ACTIVE   (H),
         .V_ACTIVE   (V)
@@ -518,7 +518,7 @@ module tb_axis_kernel3x3;
         // proves the phantom-column fallback works.
         //   (a more rigorous check would count busy cycles == V * 1.)
 
-        $display("ALL KERNEL3X3 TESTS PASSED");
+        $display("ALL WINDOW3X3 TESTS PASSED");
         $finish;
     end
 
@@ -529,7 +529,7 @@ endmodule
 
 Run:
 ```bash
-make test-ip-kernel 2>&1 | tail -20
+make test-ip-window 2>&1 | tail -20
 ```
 
 Expected: Verilator elaborates (the Task 2 skeleton has tie-off assigns so outputs drive 0), simulation starts, and the first `expect_eq("T1 valid", cap_valid[r][c], 1)` fires `$fatal(1)` because `window_valid_o` never asserts with the stub body. The log ends with a `FAIL T1 valid: got 0, want 1` line and Verilator exits non-zero. This is the "red" TDD state and is required before Task 4 implements the real body.
@@ -538,23 +538,23 @@ Expected: Verilator elaborates (the Task 2 skeleton has tie-off assigns so outpu
 
 Run:
 ```bash
-git add hw/ip/kernel/tb/tb_axis_kernel3x3.sv
-git commit -m "test(kernel): add tb_axis_kernel3x3 directed tests
+git add hw/ip/window/tb/tb_axis_window3x3.sv
+git commit -m "test(kernel): add tb_axis_window3x3 directed tests
 
 Six tests cover window ordering, top/left/right/bottom edge replication,
-and no-blanking busy_o fallback. Fails until axis_kernel3x3 body lands."
+and no-blanking busy_o fallback. Fails until axis_window3x3 body lands."
 ```
 
 ---
 
-## Task 4: Implement axis_kernel3x3
+## Task 4: Implement axis_window3x3
 
 **Files:**
-- Modify: `hw/ip/kernel/rtl/axis_kernel3x3.sv` — replace the empty body with the ported logic.
+- Modify: `hw/ip/window/rtl/axis_window3x3.sv` — replace the empty body with the ported logic.
 
 - [ ] **Step 1: Implement the module body**
 
-In `hw/ip/kernel/rtl/axis_kernel3x3.sv`, **delete the eleven tie-off `assign` lines** added as placeholders in Task 2 Step 2, and replace them with the code below. This is the exact logic currently inside `axis_gauss3x3` from line 69 (`Row / column counters`) through line 248 (end of edge-replication mux), parameterized on `DATA_WIDTH`, with one addition: the off-frame window_valid suppression that gauss3x3 currently does at stage d2 is moved to stage d1 and exposed as `window_valid_o`.
+In `hw/ip/window/rtl/axis_window3x3.sv`, **delete the eleven tie-off `assign` lines** added as placeholders in Task 2 Step 2, and replace them with the code below. This is the exact logic currently inside `axis_gauss3x3` from line 69 (`Row / column counters`) through line 248 (end of edge-replication mux), parameterized on `DATA_WIDTH`, with one addition: the off-frame window_valid suppression that gauss3x3 currently does at stage d2 is moved to stage d1 and exposed as `window_valid_o`.
 
 ```systemverilog
     // ---- Row / column counters ----
@@ -715,17 +715,17 @@ In `hw/ip/kernel/rtl/axis_kernel3x3.sv`, **delete the eleven tie-off `assign` li
 
 Run:
 ```bash
-make test-ip-kernel 2>&1 | tail -20
+make test-ip-window 2>&1 | tail -20
 ```
 
-Expected: `ALL KERNEL3X3 TESTS PASSED` appears, Verilator exits 0.
+Expected: `ALL WINDOW3X3 TESTS PASSED` appears, Verilator exits 0.
 
 - [ ] **Step 3: Commit the kernel implementation**
 
 Run:
 ```bash
-git add hw/ip/kernel/rtl/axis_kernel3x3.sv
-git commit -m "feat(kernel): implement axis_kernel3x3 body
+git add hw/ip/window/rtl/axis_window3x3.sv
+git commit -m "feat(kernel): implement axis_window3x3 body
 
 Ported line-buffer + 3x3 window + edge-replication logic from
 axis_gauss3x3; parameterized on DATA_WIDTH; off-frame window_valid
@@ -734,15 +734,15 @@ suppression now happens at d1 so wrappers don't duplicate it."
 
 ---
 
-## Task 5: Refactor axis_gauss3x3 to wrap axis_kernel3x3
+## Task 5: Refactor axis_gauss3x3 to wrap axis_window3x3
 
 **Files:**
-- Modify: `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv` — replace lines 68–282 with a kernel instance + conv math + output register.
-- Modify: `hw/ip/gauss3x3/gauss3x3.core` — add dependency on `sparevideo:ip:kernel`.
+- Modify: `hw/ip/filters/rtl/axis_gauss3x3.sv` — replace lines 68–282 with a kernel instance + conv math + output register.
+- Modify: `hw/ip/filters/gauss3x3.core` — add dependency on `sparevideo:ip:window`.
 
 - [ ] **Step 1: Rewrite axis_gauss3x3**
 
-Replace the entire body of `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv` (keep the license header) with:
+Replace the entire body of `hw/ip/filters/rtl/axis_gauss3x3.sv` (keep the license header) with:
 
 ```systemverilog
 // Copyright 2026 Sebastian Prajinariu
@@ -750,7 +750,7 @@ Replace the entire body of `hw/ip/gauss3x3/rtl/axis_gauss3x3.sv` (keep the licen
 // SPDX-License-Identifier: Apache-2.0
 
 // 3x3 Gaussian pre-filter on 8-bit luma, implemented as a thin wrapper
-// over axis_kernel3x3.
+// over axis_window3x3.
 //
 // Kernel: [1 2 1; 2 4 2; 1 2 1] / 16
 // Multiplications are wire shifts only.
@@ -780,11 +780,11 @@ module axis_gauss3x3 #(
     logic [7:0] window [9];
     logic       window_valid;
 
-    axis_kernel3x3 #(
+    axis_window3x3 #(
         .DATA_WIDTH (8),
         .H_ACTIVE   (H_ACTIVE),
         .V_ACTIVE   (V_ACTIVE)
-    ) u_kernel (
+    ) u_window (
         .clk_i          (clk_i),
         .rst_n_i        (rst_n_i),
         .valid_i        (valid_i),
@@ -821,11 +821,11 @@ endmodule
 
 - [ ] **Step 2: Update gauss3x3 core file**
 
-Edit `hw/ip/gauss3x3/gauss3x3.core` so the `files_rtl` fileset depends on the new kernel IP:
+Edit `hw/ip/filters/gauss3x3.core` so the `files_rtl` fileset depends on the new kernel IP:
 
 ```yaml
 CAPI=2:
-name: "sparevideo:ip:gauss3x3"
+name: "sparevideo:ip:filters"
 description: "3x3 Gaussian pre-filter on Y channel"
 
 filesets:
@@ -834,7 +834,7 @@ filesets:
       - rtl/axis_gauss3x3.sv
     file_type: systemVerilogSource
     depend:
-      - sparevideo:ip:kernel
+      - sparevideo:ip:window
 
 targets:
   default:
@@ -842,7 +842,7 @@ targets:
       - files_rtl
 ```
 
-- [ ] **Step 3: Add IP_KERNEL3X3_RTL to the Gaussian TB's source list**
+- [ ] **Step 3: Add IP_WINDOW3X3_RTL to the Gaussian TB's source list**
 
 `test-ip-gauss3x3` in `dv/sim/Makefile` currently lists only `$(IP_GAUSS3X3_RTL)` as the RTL source. The refactored gauss now instantiates the kernel, so the kernel RTL must be compiled alongside. Update the rule:
 
@@ -850,7 +850,7 @@ targets:
 # --- gauss3x3 ---
 test-ip-gauss3x3:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_gauss3x3 --Mdir obj_tb_axis_gauss3x3 \
-	  $(IP_KERNEL3X3_RTL) $(IP_GAUSS3X3_RTL) ../../hw/ip/gauss3x3/tb/tb_axis_gauss3x3.sv
+	  $(IP_WINDOW3X3_RTL) $(IP_GAUSS3X3_RTL) ../../hw/ip/filters/tb/tb_axis_gauss3x3.sv
 	obj_tb_axis_gauss3x3/Vtb_axis_gauss3x3
 ```
 
@@ -861,7 +861,7 @@ And update `test-ip-motion-detect-gauss`, which also compiles the gauss RTL:
 test-ip-motion-detect-gauss:
 	verilator $(VLT_TB_FLAGS) -GGAUSS_EN=1 \
 	  --top-module tb_axis_motion_detect --Mdir obj_tb_axis_motion_detect_gauss \
-	  $(IP_KERNEL3X3_RTL) $(IP_GAUSS3X3_RTL) $(IP_MOTION_DETECT_SRCS)
+	  $(IP_WINDOW3X3_RTL) $(IP_GAUSS3X3_RTL) $(IP_MOTION_DETECT_SRCS)
 	obj_tb_axis_motion_detect_gauss/Vtb_axis_motion_detect
 ```
 
@@ -887,11 +887,11 @@ Expected: same pass message as before.
 
 Run:
 ```bash
-git add hw/ip/gauss3x3/rtl/axis_gauss3x3.sv hw/ip/gauss3x3/gauss3x3.core dv/sim/Makefile
-git commit -m "refactor(gauss3x3): re-express as wrapper over axis_kernel3x3
+git add hw/ip/filters/rtl/axis_gauss3x3.sv hw/ip/filters/gauss3x3.core dv/sim/Makefile
+git commit -m "refactor(gauss3x3): re-express as wrapper over axis_window3x3
 
 axis_gauss3x3's state/timing/line-buffer logic is now provided by the
-shared axis_kernel3x3 primitive. Wrapper keeps only the convolution
+shared axis_window3x3 primitive. Wrapper keeps only the convolution
 adder tree and the single output register. External interface is
 unchanged; tb_axis_gauss3x3 passes byte-identically."
 ```
@@ -926,7 +926,7 @@ REGRESSION GATE: PASS
 **If `cmp` reports a difference**: the refactor has broken pixel-exact behavior. Do **not** proceed. Debug by:
 1. `xxd dv/data/output.bin | head -20` vs `xxd renders/golden/motion-before-kernel-refactor.bin | head -20` — find the first differing byte.
 2. Compute its (frame, row, col, channel) from the offset: `offset = 12 + ((frame*H*W + row*W + col)*3 + channel)`.
-3. Diff the kernel's window output against expectations at that coordinate (tb_axis_kernel3x3 + the gauss-wrapper adder tree).
+3. Diff the kernel's window output against expectations at that coordinate (tb_axis_window3x3 + the gauss-wrapper adder tree).
 4. Fix the refactor, re-run from Step 1.
 
 - [ ] **Step 3: Run Verilator lint**
@@ -936,7 +936,7 @@ Run:
 make lint 2>&1 | tail -20
 ```
 
-Expected: no new warnings attributable to `axis_kernel3x3` or the refactored `axis_gauss3x3`.
+Expected: no new warnings attributable to `axis_window3x3` or the refactored `axis_gauss3x3`.
 
 - [ ] **Step 4: Run the full per-block aggregate**
 
@@ -973,13 +973,13 @@ If Steps 3 and 4 were clean, skip this step.
 ## Task 7: Documentation
 
 **Files:**
-- Create: `docs/specs/axis_kernel3x3-arch.md` (matches the existing `docs/specs/*-arch.md` convention)
+- Create: `docs/specs/axis_window3x3-arch.md` (matches the existing `docs/specs/*-arch.md` convention)
 - Modify: `README.md`
 - Modify: `CLAUDE.md`
 
 - [ ] **Step 1: Produce the architecture doc**
 
-Use the `hardware-arch-doc` skill to generate `docs/specs/axis_kernel3x3-arch.md`. It must cover: module hierarchy (no sub-modules; this is a primitive), signal interfaces (the table of ports with their widths — `clk_i`, `rst_n_i`, `valid_i`, `sof_i`, `stall_i`, `din_i[DATA_WIDTH-1:0]`, `window_o[9][DATA_WIDTH-1:0]`, `window_valid_o`, `busy_o`), row/col counter state machine (including the phantom-cycle semantics — reuse the description from the `axis_kernel3x3.sv` header comment), datapath (line buffers → d1 stage → shift regs → edge mux → window), and timing (`H_ACTIVE + 2` cycle fill, throughput 1 pixel/cycle, blanking requirements: min H-blank = 1 cycle/row, min V-blank = `H_ACTIVE + 1` cycles).
+Use the `hardware-arch-doc` skill to generate `docs/specs/axis_window3x3-arch.md`. It must cover: module hierarchy (no sub-modules; this is a primitive), signal interfaces (the table of ports with their widths — `clk_i`, `rst_n_i`, `valid_i`, `sof_i`, `stall_i`, `din_i[DATA_WIDTH-1:0]`, `window_o[9][DATA_WIDTH-1:0]`, `window_valid_o`, `busy_o`), row/col counter state machine (including the phantom-cycle semantics — reuse the description from the `axis_window3x3.sv` header comment), datapath (line buffers → d1 stage → shift regs → edge mux → window), and timing (`H_ACTIVE + 2` cycle fill, throughput 1 pixel/cycle, blanking requirements: min H-blank = 1 cycle/row, min V-blank = `H_ACTIVE + 1` cycles).
 
 The doc must also explicitly note the design-doc risks it touches:
 - **Risk C1 (addressed):** the module is the factored-out primitive; any consumer that changes its behavior must re-gate against a saved motion-pipeline golden.
@@ -992,54 +992,54 @@ Open `README.md`. Two changes:
 a) In the arch-docs table (currently containing rows for `axis_motion_detect-arch.md`, `axis_gauss3x3-arch.md`, `axis_ccl-arch.md`, `axis_overlay_bbox-arch.md`), add a new row **before** `axis_gauss3x3-arch.md`:
 
 ```
-| [`axis_kernel3x3-arch.md`](docs/specs/axis_kernel3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge replication) |
+| [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge replication) |
 ```
 
-b) In the `hw/ip/` tree listing (around lines 38–49), insert a block for the new kernel IP **before** the `hw/ip/gauss3x3/rtl/` block, and update the gauss description to note it is now a wrapper:
+b) In the `hw/ip/` tree listing (around lines 38–49), insert a block for the new kernel IP **before** the `hw/ip/filters/rtl/` block, and update the gauss description to note it is now a wrapper:
 
 ```
-hw/ip/kernel/rtl/
-└── axis_kernel3x3.sv         Reusable 3x3 sliding-window primitive (line buffers + window regs + edge replication)
+hw/ip/window/rtl/
+└── axis_window3x3.sv         Reusable 3x3 sliding-window primitive (line buffers + window regs + edge replication)
 
-hw/ip/gauss3x3/rtl/
-└── axis_gauss3x3.sv          3x3 Gaussian pre-filter on Y channel (wraps axis_kernel3x3 + adder tree)
+hw/ip/filters/rtl/
+└── axis_gauss3x3.sv          3x3 Gaussian pre-filter on Y channel (wraps axis_window3x3 + adder tree)
 ```
 
 c) In the `hw/ip/*/tb/` tree listing, add:
 
 ```
-hw/ip/kernel/tb/
-└── tb_axis_kernel3x3.sv      6 tests: window ordering, top/left/right/bottom edge replication, no-blanking busy_o
+hw/ip/window/tb/
+└── tb_axis_window3x3.sv      6 tests: window ordering, top/left/right/bottom edge replication, no-blanking busy_o
 ```
 
 d) In the commands section near line 214 (`make test-ip-gauss3x3  # ...`), add a line above it:
 
 ```
-make test-ip-kernel          # axis_kernel3x3: 6 tests, window ordering + edge replication + busy_o fallback
+make test-ip-window          # axis_window3x3: 6 tests, window ordering + edge replication + busy_o fallback
 ```
 
 - [ ] **Step 3: Update CLAUDE.md**
 
-Open `CLAUDE.md`'s "Project Structure" bullet list. Find the existing bullet for `hw/ip/gauss3x3/rtl/` and:
+Open `CLAUDE.md`'s "Project Structure" bullet list. Find the existing bullet for `hw/ip/filters/rtl/` and:
 
 a) Change it to reflect the refactor:
 
 ```
-- `hw/ip/gauss3x3/rtl/` — 3x3 Gaussian pre-filter on Y channel (axis_gauss3x3: thin wrapper over axis_kernel3x3 + adder tree)
+- `hw/ip/filters/rtl/` — 3x3 Gaussian pre-filter on Y channel (axis_gauss3x3: thin wrapper over axis_window3x3 + adder tree)
 ```
 
 b) Insert a new bullet immediately **above** it (the list is not strictly alphabetized; keeping the shared-primitive adjacent to its first consumer reads better):
 
 ```
-- `hw/ip/kernel/rtl/` — Reusable 3x3 sliding-window primitive (axis_kernel3x3: line buffers + window regs + edge replication; wrapped by axis_gauss3x3 and, in later plans, by axis_morph_erode / axis_morph_dilate)
+- `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge replication; wrapped by axis_gauss3x3 and, in later plans, by axis_morph_erode / axis_morph_dilate)
 ```
 
 - [ ] **Step 4: Commit the docs**
 
 Run:
 ```bash
-git add docs/specs/axis_kernel3x3-arch.md README.md CLAUDE.md
-git commit -m "docs(kernel): add axis_kernel3x3 arch doc + README/CLAUDE updates"
+git add docs/specs/axis_window3x3-arch.md README.md CLAUDE.md
+git commit -m "docs(kernel): add axis_window3x3 arch doc + README/CLAUDE updates"
 ```
 
 - [ ] **Step 5: Final `git status` check**
@@ -1061,6 +1061,6 @@ Run these after the plan is fully executed, before moving on to the morph plan:
 - [ ] `make lint` passes with no new kernel- or gauss-attributable warnings.
 - [ ] `make run-pipeline CTRL_FLOW=motion SOURCE="synthetic:moving_box" MODE=binary` produces output byte-identical to the golden captured in Task 1 (the regression gate was the direct check; this is a confirmation that nothing downstream mutates the file).
 - [ ] `git log --oneline -8` shows the refactor as a clean sequence of focused commits (scaffold → TB → kernel body → gauss wrapper → optional lint cleanup → docs).
-- [ ] No file under `hw/ip/kernel/rtl/` or the refactored `axis_gauss3x3.sv` contains any `TODO`, `FIXME`, or dead code left from the extraction.
+- [ ] No file under `hw/ip/window/rtl/` or the refactored `axis_gauss3x3.sv` contains any `TODO`, `FIXME`, or dead code left from the extraction.
 
 If all boxes are ticked, the plan is complete and the follow-up `2026-04-24-axis-morph-open-plan.md` is unblocked.
