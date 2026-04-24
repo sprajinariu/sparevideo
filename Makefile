@@ -48,7 +48,7 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip setup clean
+        test-py test-ip test-ip-kernel setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -171,6 +171,9 @@ test-py:
 
 test-ip:
 	$(MAKE) -C dv/sim test-ip SIMULATOR=$(SIMULATOR)
+
+test-ip-kernel:
+	$(MAKE) -C dv/sim test-ip-kernel SIMULATOR=$(SIMULATOR)
 
 setup:
 	sudo apt install -y iverilog verilator
