@@ -117,7 +117,7 @@ run-pipeline: prepare compile sim verify render
 prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
-	@mkdir -p renders
+	@mkdir -p $(DATA_DIR) renders
 	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nALPHA_SHIFT_SLOW = %s\nGRACE_FRAMES = %s\nGRACE_ALPHA_SHIFT = %s\nGAUSS_EN = %s\n' \
 		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(ALPHA_SHIFT_SLOW)' '$(GRACE_FRAMES)' '$(GRACE_ALPHA_SHIFT)' '$(GAUSS_EN)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
