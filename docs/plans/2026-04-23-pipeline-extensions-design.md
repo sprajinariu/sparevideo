@@ -7,11 +7,11 @@
 
 Add five self-contained AXIS pipeline stages to `sparevideo`, plus one reusable primitive extracted from existing code, chosen to improve user-visible output quality and broaden the ISP-front-end story without forcing a large architectural change. Each stage is an independent module; each can be enabled or disabled via a build knob; the four that are runtime-bypassable are instantiated unconditionally and bypassed via an `enable_i` sideband, to pre-wire a future CSR interface.
 
-**New / refactored modules** (the five stages are `axis_hflip`, `axis_morph_open`, `axis_gamma_cor`, `axis_hud`, `axis_scale2x`; `axis_window3x3` is the shared primitive):
+**New / refactored modules** (the five stages are `axis_hflip`, `axis_morph3x3_open`, `axis_gamma_cor`, `axis_hud`, `axis_scale2x`; `axis_window3x3` is the shared primitive):
 
 1. `axis_hflip` — horizontal mirror at the input ("selfie-cam" semantic).
 2. `axis_window3x3` — **new reusable primitive** extracting the shared line-buffer + sliding-window logic currently inside `axis_gauss3x3`. `axis_gauss3x3` is refactored to wrap it. Morph modules also wrap it.
-3. `axis_morph_open` — mask cleanup: `axis_morph_erode` → `axis_morph_dilate`, both wrapping `axis_window3x3<1>`. Inserted inside mask-producing ctrl_flows.
+3. `axis_morph3x3_open` — mask cleanup: `axis_morph3x3_erode` → `axis_morph3x3_dilate`, both wrapping `axis_window3x3<1>`. Inserted inside mask-producing ctrl_flows.
 4. `axis_gamma_cor` — per-channel display gamma correction with 33-entry LUT and linear interpolation. LUT contents driven in as sidebands, generated at build time by `py/gen_gamma_lut.py`.
 5. `axis_hud` — text overlay (frame#, ctrl_flow tag, bbox count, end-to-end latency in µs), drawn post-scaler.
 6. `axis_scale2x` — 320×240 → 640×480 upscaler (default bilinear; NN as a compile-time filter option).
@@ -43,10 +43,10 @@ axis_hflip               (enable_i ← HFLIP)
   │
   ▼
 ctrl_flow mux ──► passthrough
-              ──► motion:   axis_motion_detect ─┬─► axis_morph_open (enable_i←MORPH) ─► axis_ccl ─► axis_overlay_bbox
+              ──► motion:   axis_motion_detect ─┬─► axis_morph3x3_open (enable_i←MORPH) ─► axis_ccl ─► axis_overlay_bbox
               │   (RGB fork) ────────────────── ┘
-              ──► mask:     axis_motion_detect ─► axis_morph_open ─► mask→RGB expand
-              ──► ccl_bbox: axis_motion_detect ─► axis_morph_open ─► axis_ccl ─► (mask-grey + bboxes)
+              ──► mask:     axis_motion_detect ─► axis_morph3x3_open ─► mask→RGB expand
+              ──► ccl_bbox: axis_motion_detect ─► axis_morph3x3_open ─► axis_ccl ─► (mask-grey + bboxes)
   │
   ▼
 axis_gamma_cor           (enable_i ← GAMMA_COR; LUT sidebands from TB / board wrapper)
@@ -71,7 +71,7 @@ VGA out
 
 - All new stages live in proc_clk. The pix_clk side remains: AXIS-in, CDC, VGA controller — nothing else.
 - `axis_hflip` before the ctrl_flow mux so motion masks and bbox coords agree with what the user sees.
-- `axis_morph_open` inside each mask-producing branch; elided for `passthrough`.
+- `axis_morph3x3_open` inside each mask-producing branch; elided for `passthrough`.
 - Gamma → (scaler) → HUD is the post-mux tail. HUD is **after** the scaler so HUD text is rendered at native output resolution and never softened by bilinear.
 - Four blocks use runtime `enable_i`; only `SCALER` / `SCALE_FILTER` are compile-time (they change clocking and timing, which can't be runtime-reconfigured without a display resync).
 
@@ -116,14 +116,14 @@ The DUT still has exactly one `pix_clk_i` port; the caller (TB or board wrapper)
 
 **Risk C1 (high).** Refactoring `axis_gauss3x3` to wrap this primitive must produce byte-identical motion-pipeline output. Gated by the **Refactor regression gate** (§5) before any morph wrapper is built.
 
-### 3.3 `axis_morph_open`
+### 3.3 `axis_morph3x3_open`
 
 - **Domain:** proc_clk. **Data:** 1-bit mask. **Latency:** 2 kernel windows (one per erode/dilate).
 - **Params:** none (kernel is 3×3 square, single pass).
-- **Structure:** `axis_morph_erode` (9-way `AND` over `axis_window3x3<1>` window) → internal AXIS link → `axis_morph_dilate` (9-way `OR`). Each wrapper module is ~20 lines.
+- **Structure:** `axis_morph3x3_erode` (9-way `AND` over `axis_window3x3<1>` window) → internal AXIS link → `axis_morph3x3_dilate` (9-way `OR`). Each wrapper module is ~20 lines.
 - **Ports:** `enable_i` forwards to both sub-modules; both pass through when disabled.
 
-**Risk D1 (medium).** 3×3 square opening deletes features < 3 px wide (thin objects, far-field targets). Current synthetic test patterns are all ≥ 10 px, so regression won't catch this. Document in `axis_morph_open-arch.md`; add a `thin_moving_line` synthetic source so the behaviour is visible.
+**Risk D1 (medium).** 3×3 square opening deletes features < 3 px wide (thin objects, far-field targets). Current synthetic test patterns are all ≥ 10 px, so regression won't catch this. Document in `axis_morph3x3_open-arch.md`; add a `thin_moving_line` synthetic source so the behaviour is visible.
 
 ### 3.4 `axis_gamma_cor`
 
@@ -218,7 +218,7 @@ Each new / refactored module gets a TB under `hw/ip/<block>/tb/`, wired into `ma
 |----|---------|
 | `tb_axis_hflip` | Gradient ramp (exact-mirror check), asymmetric downstream stall, `enable_i=0` passthrough, 1-pixel-wide corner case |
 | `tb_axis_window3x3` | 3-row gradient (window ordering + edge replication at all four borders), both 1-bit and 8-bit `DATA_WIDTH`, stall mid-window |
-| `tb_axis_morph_open` | Salt-noise removal, thin-stripe removal (documents Risk D1), `enable_i=0` passthrough |
+| `tb_axis_morph3x3_open` | Salt-noise removal, thin-stripe removal (documents Risk D1), `enable_i=0` passthrough |
 | `tb_axis_gamma_cor` | Identity LUT passthrough, sRGB LUT with black/mid/white ramp, `enable_i=0` |
 | `tb_axis_scale2x` | NN build: 2×2 replication check; bilinear build: hand-checked 4×4 golden patch (captures top-edge + corner); downstream stall |
 | `tb_axis_hud` | Render one known field set → byte-diff against golden frame; `enable_i=0` passthrough |
@@ -283,10 +283,10 @@ Required alongside every new / refactored module (from the CLAUDE.md TODO list):
 A detailed plan is the next artifact. Proposed staging:
 
 1. `axis_window3x3` refactor of `axis_gauss3x3` (gated by §5.3 regression check).
-2. `axis_morph_open` (unblocked by #1).
+2. `axis_morph3x3_open` (unblocked by #1).
 3. `axis_hflip`.
 4. `axis_gamma_cor` + `py/gen_gamma_lut.py`.
 5. `axis_scale2x` (NN first, bilinear second) + VGA timing parameterization.
 6. `axis_hud`.
 
-Only step 1 is a hard prerequisite. After it lands, step 2 (`axis_morph_open`) depends on `axis_window3x3`, but steps 3–6 are independent of step 2 and of each other — they can proceed in any order. The reference-model dispatcher (§5.2) grows incrementally alongside each block.
+Only step 1 is a hard prerequisite. After it lands, step 2 (`axis_morph3x3_open`) depends on `axis_window3x3`, but steps 3–6 are independent of step 2 and of each other — they can proceed in any order. The reference-model dispatcher (§5.2) grows incrementally alongside each block.

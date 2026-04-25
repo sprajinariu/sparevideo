@@ -1,11 +1,14 @@
 CAPI=2:
 name: "sparevideo:ip:filters"
-description: "Spatial filters over the shared axis_window3x3 primitive (Gaussian; future: Sobel, morphological erode/dilate/open)"
+description: "Spatial filters over the shared axis_window3x3 primitive (Gaussian, morphological erode/dilate/open)"
 
 filesets:
   files_rtl:
     files:
       - rtl/axis_gauss3x3.sv
+      - rtl/axis_morph3x3_dilate.sv
+      - rtl/axis_morph3x3_erode.sv
+      - rtl/axis_morph3x3_open.sv
     file_type: systemVerilogSource
     depend:
       - sparevideo:ip:window

@@ -50,6 +50,10 @@ make run-pipeline CTRL_FLOW=motion                    # motion detect + N-way CC
 make run-pipeline CTRL_FLOW=mask                      # raw motion mask, B/W output
 make run-pipeline CTRL_FLOW=ccl_bbox                  # mask-as-grey + CCL bboxes (debug CCL directly)
 
+# Mask cleanup via 3x3 morphological opening (default MORPH=1; 0 = bypass)
+make run-pipeline CTRL_FLOW=mask MORPH=0                    # raw mask, morph opening bypassed
+make run-pipeline CTRL_FLOW=mask MORPH=1                    # opening applied (erase salt + thin features < 3 px)
+
 # 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/ALPHA_SHIFT to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
 make prepare SOURCE="synthetic:moving_box" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
@@ -74,7 +78,7 @@ make setup                   # One-time setup (install deps)
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
 - `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
 - `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge handling; `EDGE_POLICY` parameter, today only `EDGE_REPLICATE=0`). Wrapped by every filter module.
-- `hw/ip/filters/rtl/` — Spatial filters over axis_window3x3 (axis_gauss3x3 today; axis_sobel, axis_morph_erode / _dilate / _open planned — all land here as peer `.sv` files under one `filters.core`)
+- `hw/ip/filters/rtl/` — Spatial filters over axis_window3x3 (axis_gauss3x3, axis_morph3x3_erode, axis_morph3x3_dilate, axis_morph3x3_open; future: axis_sobel — all land here as peer `.sv` files under one `filters.core`)
 - `hw/ip/motion/rtl/` — Motion detection (axis_motion_detect, motion_core)
 - `hw/ip/ccl/rtl/` — Streaming connected-components labeling (axis_ccl)
 - `hw/ip/overlay/rtl/` — Generic rectangle overlay on RGB video (axis_overlay_bbox)
@@ -235,6 +239,12 @@ These apply to any future motion pipeline block (Gaussian, morphology, CCL, adap
 **Vblank FSM modules must deassert tready for the full FSM duration.** `axis_ccl` deasserts `tready` during PHASE_A..PHASE_SWAP (the EOF resolution FSM) so pixels cannot arrive while internal state is exclusively owned by the FSM. Per-pixel writes are additionally gated on `PHASE_IDLE`, but those gates alone are not sufficient — without the tready deassert, the FIFO upstream can push pixels that advance `line_buf` and `col`/`row` without updating `equiv[]` or `acc_*[]`, silently corrupting the labeling state. Vblank timing must exceed the worst-case FSM cycle budget; see `axis_ccl-arch.md §6.7`.
 
 **Beat-strobe pattern for multi-consumer mask broadcast.** `axis_ccl` is fed `ccl_beat_strobe = msk_tvalid && msk_tready` as its `tvalid`, not raw `msk_tvalid`. In mask-display and ccl_bbox modes, the mask is consumed by two paths simultaneously; in those modes `msk_tready` is the AND of both consumers' readies. If one consumer stalls, the upstream stalls too and `msk_tvalid && msk_tready` goes low — so `axis_ccl` does not advance its internal `col`/`row` counters on the stalled cycle. Using raw `msk_tvalid` instead would cause the counters to race ahead, producing wrong neighbour reads and corrupted labels.
+
+**Multi-consumer FIFO-write gating.** Companion rule to the beat-strobe above: when a mask stream feeds both a passthrough-to-output FIFO *and* `axis_ccl`, the FIFO's `tvalid` input must also be gated by `bbox_msk_tready`. Without the gate, the FIFO sees `proc_tvalid=1 && proc_tready=1` and writes the same beat every cycle while `axis_ccl`'s EOF FSM holds `bbox_msk_tready` low — duplicating beats and eventually deadlocking when the FIFO fills. Pre-morph this was dormant because `msk_tvalid=0` during v-blank; it fires once morph's phantom drain keeps emitting during the FSM. In `sparevideo_top` today: `msk_rgb_tvalid = msk_clean_tvalid && bbox_msk_tready` (mask display), and the ccl_bbox branch of `ovl_in_tvalid` has the same gate.
+
+**AXI-Stream sof/tuser gating in sliding-window primitives.** `axis_window3x3`'s `cur_col/cur_row` combinational must gate its `sof_i` check with `valid_i`. Per AXI-Stream, sideband signals (tuser/sof) are only meaningful when tvalid=1. Producers (including `axis_motion_detect`) may leave `msk_tuser=1` asserted during the end-of-frame idle window (tvalid=0). Without the gate, the primitive resets `cur_col/cur_row` to 0 during that idle, breaking `at_phantom` and stalling the phantom row/column drain — losing H+1 output beats per frame per primitive instance. The always_ff for col/row already has this gate (`sof_i && valid_i`); the always_comb must match.
+
+**Mask cleanup via `axis_morph3x3_open`.** A 3×3 square opening (erode → dilate) sits between `axis_motion_detect` and the downstream mask consumers (CCL, overlay, mask display). Removes single-pixel salt noise and features < 3 px wide. Runtime gate: `MORPH=1` (default) enables, `MORPH=0` is a zero-latency combinational bypass. Consequence: thin features (far-field targets, 1-px lines) are erased — use the `thin_moving_line` synthetic source to exercise this. Python reference model composes `scipy.ndimage.grey_erosion`/`grey_dilation` with `mode='nearest'` when `morph_en=True`, keeping RTL and model in agreement at `TOLERANCE=0` for both knob values. In motion.py/ccl_bbox.py, the EMA background update uses the **raw** (pre-morph) mask — matches the RTL where motion_detect drives EMA internally before morph is applied.
 
 ### Python environment
 

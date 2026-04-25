@@ -4,7 +4,7 @@
 
 **Goal:** Extract the line-buffer + 3×3 sliding-window + edge-replication logic currently inside `axis_gauss3x3` into a new reusable primitive `axis_window3x3`, and re-express `axis_gauss3x3` as a thin wrapper over it. The motion pipeline must produce byte-identical output before and after the refactor.
 
-**Architecture:** `axis_window3x3` owns all state and timing (row/col counters, phantom-cycle drain, two line buffers, 3-row × 3-col window registers, edge replication). It exposes a combinational 9-tap window at the d1 stage plus a window-valid strobe that is already off-frame-suppressed. Wrappers (`axis_gauss3x3` now, `axis_morph_erode` / `axis_morph_dilate` next plan) do their own combinational op on the window and add a single output register. The kernel is parameterized on `DATA_WIDTH` (8 for Gaussian, 1 for morphology), `H_ACTIVE`, and `V_ACTIVE`.
+**Architecture:** `axis_window3x3` owns all state and timing (row/col counters, phantom-cycle drain, two line buffers, 3-row × 3-col window registers, edge replication). It exposes a combinational 9-tap window at the d1 stage plus a window-valid strobe that is already off-frame-suppressed. Wrappers (`axis_gauss3x3` now, `axis_morph3x3_erode` / `axis_morph3x3_dilate` next plan) do their own combinational op on the window and add a single output register. The kernel is parameterized on `DATA_WIDTH` (8 for Gaussian, 1 for morphology), `H_ACTIVE`, and `V_ACTIVE`.
 
 **Tech Stack:** SystemVerilog (Icarus-12-compatible subset — no SVA, no interfaces, no classes), Verilator for simulation and lint, GNU Make, FuseSoC CAPI=2 core files.
 
@@ -119,7 +119,7 @@ Create `hw/ip/window/rtl/axis_window3x3.sv`:
 // and edge replication at all four borders. Emits a combinational 9-tap
 // window at the d1 stage + window_valid_o (off-frame-suppressed) + busy_o.
 //
-// Consumers (axis_gauss3x3, axis_morph_erode, axis_morph_dilate, ...) add
+// Consumers (axis_gauss3x3, axis_morph3x3_erode, axis_morph3x3_dilate, ...) add
 // their own combinational op on the window and a single output register.
 //
 // Latency: H_ACTIVE + 2 cycles from first valid_i to first window_valid_o
@@ -1031,7 +1031,7 @@ a) Change it to reflect the refactor:
 b) Insert a new bullet immediately **above** it (the list is not strictly alphabetized; keeping the shared-primitive adjacent to its first consumer reads better):
 
 ```
-- `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge replication; wrapped by axis_gauss3x3 and, in later plans, by axis_morph_erode / axis_morph_dilate)
+- `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge replication; wrapped by axis_gauss3x3 and, in later plans, by axis_morph3x3_erode / axis_morph3x3_dilate)
 ```
 
 - [ ] **Step 4: Commit the docs**

@@ -371,7 +371,7 @@ Each 320-bit line buffer is just 40 bytes — small enough to be a shift registe
 
 **Why separate from shared RAM:** Same reasoning as block 2 — these are transient 2-row buffers, not frame-persistent storage. They need simultaneous 3-row access. At 40 bytes per buffer there is zero reason to route them through the shared RAM; FFs or SRL primitives are the natural fit.
 
-**The two stages can be one module or two.** If combined into `axis_morph_open`, internally it's just two copies of the same line-buffer + window logic chained together. The first produces the eroded stream, the second dilates it. Total pipeline latency: ~2 lines per stage = ~4 line-periods (~1,280 pixels at 320px/line).
+**The two stages can be one module or two.** If combined into `axis_morph3x3_open`, internally it's just two copies of the same line-buffer + window logic chained together. The first produces the eroded stream, the second dilates it. Total pipeline latency: ~2 lines per stage = ~4 line-periods (~1,280 pixels at 320px/line).
 
 **Resource cost:** 1,280 FFs (or ~80 LUTs as SRLs) + 18 window FFs + 2 logic gates. Negligible.
 
@@ -386,12 +386,12 @@ In sparevideo_top, current wiring:
 
 With morphological opening:
 
-  axis_motion_detect ──► msk (1-bit AXIS) ──► [axis_morph_open] ──► msk_clean (1-bit AXIS) ──► axis_bbox_reduce
+  axis_motion_detect ──► msk (1-bit AXIS) ──► [axis_morph3x3_open] ──► msk_clean (1-bit AXIS) ──► axis_bbox_reduce
 ```
 
 The new module sits on the mask stream between `u_motion_detect`'s mask output and `u_bbox_reduce`'s mask input. In `sparevideo_top`, this means:
-1. The current `msk_*` signals connect to `axis_morph_open`'s slave (input) port
-2. New `msk_clean_*` signals connect from `axis_morph_open`'s master (output) port to `axis_bbox_reduce`'s slave port
+1. The current `msk_*` signals connect to `axis_morph3x3_open`'s slave (input) port
+2. New `msk_clean_*` signals connect from `axis_morph3x3_open`'s master (output) port to `axis_bbox_reduce`'s slave port
 3. All other wiring (video passthrough, bbox sideband, overlay) stays unchanged
 
 **Why it cannot go before the threshold:** Morphological operations are defined on binary images. Erosion is AND-of-neighborhood, dilation is OR-of-neighborhood — these operations are meaningless on continuous 8-bit values. If you need spatial smoothing on the continuous signal, that's what the Gaussian (block 2) does.
@@ -402,7 +402,7 @@ The new module sits on the mask stream between `u_motion_detect`'s mask output a
 
 **Latency impact on the video passthrough:** The morphological opening adds ~4 line-periods of latency on the mask path (2 lines for erosion + 2 lines for dilation). The video passthrough and mask must still arrive at `axis_overlay_bbox` / `axis_bbox_reduce` with matching timing. Since `axis_bbox_reduce` is a pure sink (always ready, no backpressure) and its output is a sideband latched at end-of-frame, the extra mask latency is absorbed naturally — the bbox just latches ~4 lines later within the same frame, which doesn't matter because the bbox is only used starting from the *next* frame. No compensating delay is needed on the video path.
 
-**Implementation:** New module `axis_morph_open` (or two separate `axis_erode3x3` / `axis_dilate3x3` modules) in `hw/ip/motion/rtl/`. Wired in `sparevideo_top` on the mask AXIS stream between `u_motion_detect` and `u_bbox_reduce`.
+**Implementation:** New module `axis_morph3x3_open` (or two separate `axis_erode3x3` / `axis_dilate3x3` modules) in `hw/ip/motion/rtl/`. Wired in `sparevideo_top` on the mask AXIS stream between `u_motion_detect` and `u_bbox_reduce`.
 
 **References:**
 - [DavisLiao/Kryon](https://github.com/DavisLiao/Kryon) — Verilog erosion, dilation, and CCL (Apache 2.0)
@@ -450,7 +450,7 @@ In sparevideo_top, current wiring:
 
 With CCL (and morphology from block 3):
 
-  msk ──► [axis_morph_open] ──► msk_clean ──► [axis_ccl] ──► N x {min_x, max_x, min_y, max_y, empty} ──► axis_overlay_bbox
+  msk ──► [axis_morph3x3_open] ──► msk_clean ──► [axis_ccl] ──► N x {min_x, max_x, min_y, max_y, empty} ──► axis_overlay_bbox
 ```
 
 The CCL module's slave (input) AXIS port connects where `axis_bbox_reduce`'s input was — to the morphology output (or directly to the mask output if morphology is not present). Its output is a sideband register file instead of a single set of coordinates.
@@ -596,7 +596,7 @@ RGB in ──► axis_motion_detect ──────────────�
                │         ▼                                                         │
                │      1-bit mask                                                   │
                │         │                                                         │
-               │   [axis_morph_open] ◄── NEW block 3                               │
+               │   [axis_morph3x3_open] ◄── NEW block 3                               │
                │         │               erode + dilate, cleans mask               │
                │         ▼                                                         │
                │   [axis_ccl]        ◄── NEW block 4                               │

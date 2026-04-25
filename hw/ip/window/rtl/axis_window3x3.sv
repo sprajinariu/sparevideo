@@ -9,7 +9,7 @@
 // and edge handling at all four borders. Emits a combinational 9-tap
 // window at the d1 stage + window_valid_o (off-frame-suppressed) + busy_o.
 //
-// Consumers (axis_gauss3x3, axis_sobel, axis_morph_erode / _dilate, ...)
+// Consumers (axis_gauss3x3, axis_sobel, axis_morph3x3_erode / _dilate, ...)
 // add their own combinational op on the window and a single output register.
 //
 // EDGE_POLICY parameter selects how off-frame neighbours are filled when
@@ -77,8 +77,15 @@ module axis_window3x3 #(
     logic [COL_W-1:0] cur_col;
     logic [ROW_W-1:0] cur_row;
 
+    // sof_i must be gated by valid_i: per AXI-Stream spec, sideband signals
+    // (including tuser/sof) are only meaningful when tvalid=1. Without this
+    // gate, a producer that leaves tuser=1 asserted during inter-frame idle
+    // (tvalid=0) would force cur_col/cur_row to 0, breaking the phantom
+    // row/col drain at end-of-frame (primitive gets stuck at last real
+    // pixel position because at_phantom never fires). Matches the existing
+    // sof_i && valid_i gate in the col/row always_ff block below.
     always_comb begin
-        if (sof_i) begin
+        if (sof_i && valid_i) begin
             cur_col = '0;
             cur_row = '0;
         end else if (col == (COL_W)'(H_ACTIVE)) begin
