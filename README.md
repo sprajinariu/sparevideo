@@ -14,6 +14,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 | [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
 | [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; `EDGE_POLICY` parameter) |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
+| [`axis_morph3x3_open-arch.md`](docs/specs/axis_morph3x3_open-arch.md) | 3x3 morphological opening on mask (erode → dilate) |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
@@ -40,7 +41,10 @@ hw/ip/window/rtl/
 └── axis_window3x3.sv          Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; EDGE_POLICY parameter)
 
 hw/ip/filters/rtl/
-└── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (wraps axis_window3x3 + adder tree)
+├── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (wraps axis_window3x3 + adder tree)
+├── axis_morph3x3_erode.sv        3x3 morphological erosion on 1-bit mask (wraps axis_window3x3 + 9-way AND)
+├── axis_morph3x3_dilate.sv       3x3 morphological dilation on 1-bit mask (wraps axis_window3x3 + 9-way OR)
+└── axis_morph3x3_open.sv         3x3 opening composite: axis_morph3x3_erode → axis_morph3x3_dilate
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
@@ -73,7 +77,10 @@ hw/ip/window/tb/
 └── tb_axis_window3x3.sv       6 tests: window ordering, top/left/right/bottom edge replication, no-blanking busy_o
 
 hw/ip/filters/tb/
-└── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
+├── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
+├── tb_axis_morph3x3_erode.sv     10 tests: salt removal, thin-stripe erasure, enable_i bypass, stall, SOF reset, framing (tlast EOL / tuser SOF)
+├── tb_axis_morph3x3_dilate.sv    9 tests: mirror of erode with OR reduction (stripe thickening, corner replication)
+└── tb_axis_morph3x3_open.sv      10 tests: composite erode→dilate (salt removal, thin-stripe Risk D1, 5×5 idempotence, latency 2*(H+3))
 
 hw/ip/motion/tb/
 └── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
@@ -162,6 +169,10 @@ make run-pipeline CTRL_FLOW=ccl_bbox      # mask-as-grey canvas + CCL bboxes (de
 
 # EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
 make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
+
+# Mask cleanup — 3x3 morphological opening (default MORPH=1; disables erases thin features < 3 px)
+make run-pipeline SOURCE="synthetic:thin_moving_line" CTRL_FLOW=mask MORPH=0 FRAMES=6
+make run-pipeline SOURCE="synthetic:thin_moving_line" CTRL_FLOW=mask MORPH=1 FRAMES=6
 
 # Grace window tuning — suppress frame-0 hard-init ghosts
 make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=8 FRAMES=12

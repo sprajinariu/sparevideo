@@ -6,7 +6,7 @@ Supported sources:
   - "synthetic:<pattern>" where pattern is one of:
       moving_box, dark_moving_box, two_boxes, noisy_moving_box,
       lighting_ramp, textured_static, entering_object, multi_speed,
-      stopping_object, lit_moving_object
+      stopping_object, lit_moving_object, thin_moving_line
 
 All synthetic patterns with moving objects render frame 0 as background-only
 (no foreground). Moving objects appear from frame 1 onward. This avoids
@@ -117,6 +117,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "multi_speed": _gen_multi_speed,
         "stopping_object": _gen_stopping_object,
         "lit_moving_object": _gen_lit_moving_object,
+        "thin_moving_line": _gen_thin_moving_line,
     }
     if pattern not in generators:
         raise ValueError(
@@ -344,6 +345,25 @@ def _gen_lit_moving_object(width, height, num_frames):
     return frames
 
 
+def _gen_thin_moving_line(width, height, num_frames):
+    """1-px-tall horizontal line descending one row per frame on a dark bg.
+
+    Exercises Risk D1 from the pipeline-extensions design: 3x3 opening
+    deletes features < 3 px. With MORPH=1 the line should never appear in
+    the mask output. With MORPH=0 it should show up as a 1-px-tall stripe.
+    Frame 0 is background-only to avoid priming the EMA bg with foreground.
+    """
+    frames = []
+    bg = np.full((height, width, 3), 32, dtype=np.uint8)
+    for i in range(num_frames):
+        frame = bg.copy()
+        if i >= 1:
+            row = min(1 + (i - 1), height - 2)
+            frame[row, :, :] = 200
+        frames.append(frame)
+    return frames
+
+
 def _gen_moving_box(width, height, num_frames):
     """A red box that moves diagonally across frames. Frame 0 is bg-only."""
     box_w, box_h = width // 4, height // 4
@@ -403,17 +423,24 @@ def _gen_two_boxes(width, height, num_frames):
 
 
 def _gen_noisy_moving_box(width, height, num_frames):
-    """A red box moving diagonally on a background with per-frame sensor noise.
+    """A red box moving diagonally on a background with per-frame sensor noise
+    plus salt-and-pepper impulse noise.
 
     Frame 0 is bg-only (noisy bg, no box). Background pixels jitter +/-10
     luma per frame (simulating camera sensor noise). With THRESH=16, raw
     frame differencing (ALPHA_SHIFT=0) produces false positives on the
     background; EMA (ALPHA_SHIFT>=1) suppresses them.
+
+    Salt-and-pepper: 0.3% of pixels per frame are saturated to 0 or 255 at
+    random locations. These produce single-pixel motion blobs that morph
+    opening (MORPH=1) erases — useful as an A/B demo against MORPH=0.
     """
     rng = np.random.default_rng(seed=42)
     box_w, box_h = width // 4, height // 4
     base_bg = 30
     noise_amplitude = 10
+    sp_density = 0.003
+    n_sp = int(width * height * sp_density)
     frames = []
     for i in range(num_frames):
         noise = rng.integers(-noise_amplitude, noise_amplitude + 1,
@@ -425,6 +452,10 @@ def _gen_noisy_moving_box(width, height, num_frames):
             cx = int(t * (width - box_w))
             cy = int(t * (height - box_h))
             frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        sp_y = rng.integers(0, height, size=n_sp)
+        sp_x = rng.integers(0, width, size=n_sp)
+        sp_val = rng.integers(0, 2, size=n_sp) * 255
+        frame[sp_y, sp_x] = np.stack([sp_val, sp_val, sp_val], axis=-1).astype(np.uint8)
         frames.append(frame)
     return frames
 

@@ -47,7 +47,10 @@ module sparevideo_top #(
     parameter int GRACE_ALPHA_SHIFT = 1,
     // Gaussian pre-filter: 1 = enabled (3x3 Gaussian on Y before motion compare),
     // 0 = bypass (raw Y). Default enabled.
-    parameter int GAUSS_EN          = 1
+    parameter int GAUSS_EN          = 1,
+    // 3x3 morphological opening on the motion mask. 1 = enabled (default),
+    // 0 = bypass. Wired to axis_morph3x3_open.enable_i in Task 8 integration.
+    parameter int MORPH             = 1
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
@@ -210,12 +213,22 @@ module sparevideo_top #(
     logic        fork_b_tlast;
     logic        fork_b_tuser;
 
-    // Motion mask stream (1-bit per pixel)
+    // Motion mask stream (1-bit per pixel) — raw output of axis_motion_detect,
+    // input to axis_morph3x3_open. Downstream consumers read msk_clean_* instead.
     logic        msk_tdata;
     logic        msk_tvalid;
     logic        msk_tready;
     logic        msk_tlast;
     logic        msk_tuser;
+
+    // Cleaned mask stream — output of axis_morph3x3_open. In multi-consumer
+    // ctrl flows (mask display, ccl_bbox), downstream consumers read from
+    // these signals, not from msk_* (raw).
+    logic msk_clean_tdata;
+    logic msk_clean_tvalid;
+    logic msk_clean_tready;
+    logic msk_clean_tlast;
+    logic msk_clean_tuser;
 
     // Mask display: expand 1-bit mask to 24-bit RGB for VGA output
     logic [23:0] msk_rgb_tdata;
@@ -223,10 +236,15 @@ module sparevideo_top #(
     logic        msk_rgb_tlast;
     logic        msk_rgb_tuser;
 
-    assign msk_rgb_tdata  = msk_tdata ? 24'hFF_FF_FF : 24'h00_00_00;
-    assign msk_rgb_tvalid = msk_tvalid;
-    assign msk_rgb_tlast  = msk_tlast;
-    assign msk_rgb_tuser  = msk_tuser;
+    assign msk_rgb_tdata  = msk_clean_tdata ? 24'hFF_FF_FF : 24'h00_00_00;
+    // Gate by bbox_msk_tready so the FIFO only writes when the multi-consumer
+    // advance (proc && ccl) actually happens. Without this, msk_clean_tvalid
+    // stays asserted while ccl's EOF FSM holds bbox_msk_tready low, and the
+    // FIFO duplicates the held beat every cycle — corrupting the output and
+    // eventually deadlocking when the FIFO fills.
+    assign msk_rgb_tvalid = msk_clean_tvalid && bbox_msk_tready;
+    assign msk_rgb_tlast  = msk_clean_tlast;
+    assign msk_rgb_tuser  = msk_clean_tuser;
 
     // Bbox sideband: N_OUT-wide arrays latched by axis_ccl and held for next frame.
     localparam int N_OUT_TOP = sparevideo_pkg::CCL_N_OUT;
@@ -315,15 +333,44 @@ module sparevideo_top #(
         .mem_wr_en_o         (ram_a_wr_en)
     );
 
-    // Mask tready backpressure: in mask display and CCL_BBOX modes, the mask
-    // stream is also consumed by the passthrough-to-output path (mask display)
-    // or used as the grey canvas source (ccl_bbox). In motion mode, axis_ccl
-    // is the sole consumer and drives bbox_msk_tready.
+    // -----------------------------------------------------------------
+    // Morphological opening (erode->dilate) on the 1-bit mask stream.
+    // enable_i=0 is a zero-latency combinational bypass.
+    // -----------------------------------------------------------------
+    axis_morph3x3_open #(
+        .H_ACTIVE (H_ACTIVE),
+        .V_ACTIVE (V_ACTIVE)
+    ) u_morph_open (
+        // --- Clocks and resets ---
+        .clk_i           (clk_dsp_i),
+        .rst_n_i         (rst_dsp_n_i),
+        // --- Sideband ---
+        .enable_i        (1'(MORPH)),
+        // --- AXI4-Stream input (1-bit mask) ---
+        .s_axis_tdata_i  (msk_tdata),
+        .s_axis_tvalid_i (msk_tvalid),
+        .s_axis_tready_o (msk_tready),
+        .s_axis_tlast_i  (msk_tlast),
+        .s_axis_tuser_i  (msk_tuser),
+        // --- AXI4-Stream output (1-bit mask) ---
+        .m_axis_tdata_o  (msk_clean_tdata),
+        .m_axis_tvalid_o (msk_clean_tvalid),
+        .m_axis_tready_i (msk_clean_tready),
+        .m_axis_tlast_o  (msk_clean_tlast),
+        .m_axis_tuser_o  (msk_clean_tuser)
+    );
+
+    // Mask tready backpressure, re-expressed on the morph-cleaned stream.
+    // In mask display and CCL_BBOX modes, the cleaned mask is also consumed
+    // by the passthrough-to-output path (mask display) or used as the grey
+    // canvas source (ccl_bbox). In motion mode, axis_ccl is the sole
+    // consumer and drives bbox_msk_tready.
     logic bbox_msk_tready;
-    assign msk_tready = ((ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
-                      || (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX))
-                      ? (proc_tready && bbox_msk_tready)
-                      : bbox_msk_tready;
+    assign msk_clean_tready =
+        ((ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
+      || (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX))
+        ? (proc_tready && bbox_msk_tready)
+        : bbox_msk_tready;
 
     // axis_ccl asserts bbox_msk_tready during streaming and deasserts it only
     // while its EOF resolution FSM is active (vblank). In multi-consumer
@@ -332,7 +379,7 @@ module sparevideo_top #(
     // tvalid so it advances exactly once per accepted beat, regardless of
     // which consumer gated the stall.
     logic ccl_beat_strobe;
-    assign ccl_beat_strobe = msk_tvalid && msk_tready;
+    assign ccl_beat_strobe = msk_clean_tvalid && msk_clean_tready;
 
     axis_ccl #(
         .H_ACTIVE (H_ACTIVE),
@@ -341,12 +388,12 @@ module sparevideo_top #(
     ) u_ccl (
         .clk_i           (clk_dsp_i),
         .rst_n_i         (rst_dsp_n_i),
-        // AXI4-Stream input — mask (1 bit per pixel)
-        .s_axis_tdata_i  (msk_tdata),
+        // AXI4-Stream input — cleaned mask (1 bit per pixel)
+        .s_axis_tdata_i  (msk_clean_tdata),
         .s_axis_tvalid_i (ccl_beat_strobe),
         .s_axis_tready_o (bbox_msk_tready),
-        .s_axis_tlast_i  (msk_tlast),
-        .s_axis_tuser_i  (msk_tuser),
+        .s_axis_tlast_i  (msk_clean_tlast),
+        .s_axis_tuser_i  (msk_clean_tuser),
         // Sideband output — packed arrays, one slot per output bbox.
         .bbox_valid_o    (ccl_bbox_valid),
         .bbox_min_x_o    (ccl_bbox_min_x),
@@ -367,14 +414,17 @@ module sparevideo_top #(
     logic        ovl_in_tuser;
 
     logic [23:0] mask_grey_rgb;
-    assign mask_grey_rgb = msk_tdata ? 24'h80_80_80 : 24'h20_20_20;
+    assign mask_grey_rgb = msk_clean_tdata ? 24'h80_80_80 : 24'h20_20_20;
 
     always_comb begin
         if (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX) begin
             ovl_in_tdata  = mask_grey_rgb;
-            ovl_in_tvalid = msk_tvalid;
-            ovl_in_tlast  = msk_tlast;
-            ovl_in_tuser  = msk_tuser;
+            // Same multi-consumer gating as mask display (see msk_rgb_tvalid
+            // above): bbox_msk_tready=0 during ccl's EOF FSM must suppress
+            // ovl_in_tvalid so the overlay+FIFO don't duplicate stalled beats.
+            ovl_in_tvalid = msk_clean_tvalid && bbox_msk_tready;
+            ovl_in_tlast  = msk_clean_tlast;
+            ovl_in_tuser  = msk_clean_tuser;
         end else begin
             ovl_in_tdata  = fork_b_tdata;
             ovl_in_tvalid = fork_b_tvalid;

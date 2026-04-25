@@ -43,13 +43,12 @@ This module does **not** apply any arithmetic operation to the window. Each cons
 
 ```
 axis_gauss3x3    (u_gauss, in axis_motion_detect)
-└── axis_window3x3  (u_window)   ← this module
+└── axis_window3x3  (u_window, DATA_WIDTH=8)   ← this module
 
-[future]
-axis_morph_erode
+axis_morph3x3_erode  (u_erode, in axis_morph3x3_open)
 └── axis_window3x3  (u_window, DATA_WIDTH=1)
 
-axis_morph_dilate
+axis_morph3x3_dilate (u_dilate, in axis_morph3x3_open)
 └── axis_window3x3  (u_window, DATA_WIDTH=1)
 ```
 
@@ -317,7 +316,7 @@ This is one cycle shorter than the pre-refactor `axis_gauss3x3` window stage bec
 
 **`axis_gauss3x3`** (implemented, in `hw/ip/filters/rtl/`) — wraps `axis_window3x3` with `DATA_WIDTH=8`, applies the Gaussian kernel `[1 2 1; 2 4 2; 1 2 1] / 16` as a combinational adder tree (all shifts, no multipliers), and closes with a single output register. The external interface is unchanged from the pre-refactor monolithic implementation.
 
-**`axis_morph_erode`** and **`axis_morph_dilate`** (planned) — will wrap `axis_window3x3` with `DATA_WIDTH=1`. Each will apply a single combinational AND (erosion) or OR (dilation) across the 9 window taps and register the result. The pattern is identical to `axis_gauss3x3`: instantiate the kernel, apply op, register output.
+**`axis_morph3x3_erode`** and **`axis_morph3x3_dilate`** (implemented, in `hw/ip/filters/rtl/`) — wrap `axis_window3x3` with `DATA_WIDTH=1`. Erode applies a combinational AND across the 9 window taps; dilate applies an OR. Each closes with one output register. Both are composed inside `axis_morph3x3_open` to form a 3×3 morphological opening; see [`axis_morph3x3_open-arch.md`](axis_morph3x3_open-arch.md).
 
 Any future 3×3 consumer should follow the same wrapper pattern: instantiate `axis_window3x3`, apply a combinational operation on `window_o[9]`, and close with one output register gated by `!stall_i`.
 
