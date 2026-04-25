@@ -24,7 +24,8 @@ module tb_sparevideo #(
     parameter int ALPHA_SHIFT_SLOW  = 6,
     parameter int GRACE_FRAMES      = 8,
     parameter int GRACE_ALPHA_SHIFT = 1,
-    parameter int GAUSS_EN          = 1
+    parameter int GAUSS_EN          = 1,
+    parameter int MORPH             = 1
 );
 
 `ifdef VERILATOR
@@ -113,7 +114,8 @@ module tb_sparevideo #(
         .ALPHA_SHIFT_SLOW  (ALPHA_SHIFT_SLOW),
         .GRACE_FRAMES      (GRACE_FRAMES),
         .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT),
-        .GAUSS_EN          (GAUSS_EN)
+        .GAUSS_EN          (GAUSS_EN),
+        .MORPH             (MORPH)
     ) u_dut (
         .clk_pix_i       (clk_pix),
         .clk_dsp_i       (clk_dsp),

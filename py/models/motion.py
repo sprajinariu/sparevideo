@@ -15,6 +15,7 @@ RTL is wrong.
 import numpy as np
 
 from models.ccl import run_ccl
+from models.ops.morph_open import morph_open
 
 # Project-specific coefficients from rgb2ycrcb.sv:
 #   y_sum_c = 77*R + 150*G + 29*B;  output = y_sum_c[15:8]
@@ -157,7 +158,7 @@ def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
 
 
 def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
-        grace_alpha_shift=1, gauss_en=True, **kwargs):
+        grace_alpha_shift=1, gauss_en=True, morph_en=True, **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).
 
     Frame 0: priming — bg[px] = Y_smooth(frame_0[px]), mask forced to 0.
@@ -167,6 +168,11 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
     downstream. bg converges below THRESH within ~4-5 frames regardless of d₀.
     Frames > grace_frames: selective EMA — motion pixels drift at slow rate,
     non-motion at fast rate; mask reflects real motion.
+
+    morph_en (default True): apply 3x3 morphological opening to the mask
+    before CCL. The EMA still consumes the raw (pre-morph) mask so it matches
+    the RTL's datapath (axis_motion_detect drives EMA; axis_morph3x3_open runs
+    downstream on its way to CCL).
     """
     if not frames:
         return []
@@ -197,11 +203,14 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             primed = True
         else:
             raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            # Morph opening cleans the mask for downstream (CCL) only; EMA
+            # always uses raw_mask to match the RTL datapath.
+            clean_mask = morph_open(raw_mask) if morph_en else raw_mask
             in_grace = grace_cnt < grace_frames
             # Mask is gated to 0 during the grace window so the ghost region
             # does not reach CCL. bg update still runs (fast rate) so it
             # converges silently.
-            mask = np.zeros_like(raw_mask) if in_grace else raw_mask
+            mask = np.zeros_like(clean_mask) if in_grace else clean_mask
             out = _draw_bboxes(frame, bboxes_state)
             new_bboxes = run_ccl(
                 [mask],
@@ -214,7 +223,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
                 y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
                 grace_cnt += 1
             else:
-                y_bg = _selective_ema_update(y_cur_filt, y_bg, mask,
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, raw_mask,
                                               alpha_shift, alpha_shift_slow)
 
         # Bbox priming suppression (unchanged)
