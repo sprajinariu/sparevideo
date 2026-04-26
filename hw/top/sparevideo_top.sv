@@ -50,7 +50,10 @@ module sparevideo_top #(
     parameter int GAUSS_EN          = 1,
     // 3x3 morphological opening on the motion mask. 1 = enabled (default),
     // 0 = bypass. Wired to axis_morph3x3_open.enable_i in Task 8 integration.
-    parameter int MORPH             = 1
+    parameter int MORPH             = 1,
+    // Horizontal mirror (selfie-cam) on the proc_clk pipeline. 1 = mirror
+    // (default), 0 = bypass (zero-latency combinational passthrough).
+    parameter int HFLIP             = 1
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
@@ -90,7 +93,11 @@ module sparevideo_top #(
     // -----------------------------------------------------------------
     // Input async FIFO: clk_pix -> clk_dsp
     // -----------------------------------------------------------------
-    localparam int IN_FIFO_DEPTH = 32;
+    // Sized to absorb the axis_hflip RX/TX alternation. While hflip is
+    // in TX (320 dsp cycles = ~80 pix_clk cycles), the upstream cannot be
+    // accepted; the input CDC FIFO must hold the worst-case ~80 entries.
+    // 128 gives ~50% headroom.
+    localparam int IN_FIFO_DEPTH = 128;
 
     logic [23:0] dsp_in_tdata;
     logic        dsp_in_tvalid;
@@ -191,6 +198,37 @@ module sparevideo_top #(
     );
 
     // -----------------------------------------------------------------
+    // axis_hflip: horizontal mirror at the head of the proc_clk pipeline.
+    //   - Sits before the ctrl_flow mux so motion masks and bbox coords
+    //     agree with the user-visible frame.
+    //   - enable_i tied to HFLIP at compile time (CSR-ready).
+    // -----------------------------------------------------------------
+    logic [23:0] flip_tdata;
+    logic        flip_tvalid;
+    logic        flip_tready;
+    logic        flip_tlast;
+    logic        flip_tuser;
+
+    axis_hflip #(
+        .H_ACTIVE (H_ACTIVE),
+        .V_ACTIVE (V_ACTIVE)
+    ) u_hflip (
+        .clk_i           (clk_dsp_i),
+        .rst_n_i         (rst_dsp_n_i),
+        .enable_i        (1'(HFLIP)),
+        .s_axis_tdata_i  (dsp_in_tdata),
+        .s_axis_tvalid_i (dsp_in_tvalid),
+        .s_axis_tready_o (dsp_in_tready),
+        .s_axis_tlast_i  (dsp_in_tlast),
+        .s_axis_tuser_i  (dsp_in_tuser),
+        .m_axis_tdata_o  (flip_tdata),
+        .m_axis_tvalid_o (flip_tvalid),
+        .m_axis_tready_i (flip_tready),
+        .m_axis_tlast_o  (flip_tlast),
+        .m_axis_tuser_o  (flip_tuser)
+    );
+
+    // -----------------------------------------------------------------
     // Motion detect pipeline on clk_dsp
     //   axis_fork:          broadcast dsp_in to motion detect (A) and overlay (B)
     //   axis_motion_detect: RGB in → mask stream (mask-only, no vid passthrough)
@@ -272,19 +310,19 @@ module sparevideo_top #(
     assign motion_pipe_active = (ctrl_flow_i == sparevideo_pkg::CTRL_MOTION_DETECT)
                              || (ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
                              || (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX);
-    assign fork_s_tvalid = motion_pipe_active ? dsp_in_tvalid : 1'b0;
+    assign fork_s_tvalid = motion_pipe_active ? flip_tvalid : 1'b0;
 
     axis_fork #(
         .DATA_WIDTH (24)
     ) u_fork (
         .clk_i             (clk_dsp_i),
         .rst_n_i           (rst_dsp_n_i),
-        // Input: gated dsp_in
-        .s_axis_tdata_i    (dsp_in_tdata),
+        // Input: gated flipped dsp_in
+        .s_axis_tdata_i    (flip_tdata),
         .s_axis_tvalid_i   (fork_s_tvalid),
         .s_axis_tready_o   (fork_s_tready),
-        .s_axis_tlast_i    (dsp_in_tlast),
-        .s_axis_tuser_i    (dsp_in_tuser),
+        .s_axis_tlast_i    (flip_tlast),
+        .s_axis_tuser_i    (flip_tuser),
         // Output A: to axis_motion_detect (mask-only)
         .m_a_axis_tdata_o  (fork_a_tdata),
         .m_a_axis_tvalid_o (fork_a_tvalid),
@@ -468,7 +506,8 @@ module sparevideo_top #(
 
     // -----------------------------------------------------------------
     // Control-flow output mux
-    //   Passthrough: dsp_in (raw input) → output FIFO; fork inactive (tvalid=0).
+    //   Passthrough: flipped dsp_in -> output FIFO; fork inactive (tvalid=0).
+    //                (Mirror when HFLIP=1; raw input when HFLIP=0.)
     //   Motion:      ovl (overlay output) → output FIFO; fork drives both paths.
     //   Mask:        msk_rgb (B/W mask) → output FIFO; overlay path drained.
     //   CCL bbox:    ovl (overlay on grey canvas) → output FIFO; fork-B drained.
@@ -476,11 +515,11 @@ module sparevideo_top #(
     always_comb begin
         case (ctrl_flow_i)
             sparevideo_pkg::CTRL_PASSTHROUGH: begin
-                proc_tdata    = dsp_in_tdata;
-                proc_tvalid   = dsp_in_tvalid;
-                proc_tlast    = dsp_in_tlast;
-                proc_tuser    = dsp_in_tuser;
-                dsp_in_tready = proc_tready;
+                proc_tdata    = flip_tdata;
+                proc_tvalid   = flip_tvalid;
+                proc_tlast    = flip_tlast;
+                proc_tuser    = flip_tuser;
+                flip_tready   = proc_tready;
                 ovl_tready    = 1'b1;       // fork inactive, no overlay data
             end
             sparevideo_pkg::CTRL_MASK_DISPLAY: begin
@@ -488,7 +527,7 @@ module sparevideo_top #(
                 proc_tvalid   = msk_rgb_tvalid;
                 proc_tlast    = msk_rgb_tlast;
                 proc_tuser    = msk_rgb_tuser;
-                dsp_in_tready = fork_s_tready;
+                flip_tready   = fork_s_tready;
                 ovl_tready    = 1'b1;       // overlay path unused, drain
             end
             sparevideo_pkg::CTRL_CCL_BBOX: begin
@@ -497,7 +536,7 @@ module sparevideo_top #(
                 proc_tvalid   = ovl_tvalid;
                 proc_tlast    = ovl_tlast;
                 proc_tuser    = ovl_tuser;
-                dsp_in_tready = fork_s_tready;
+                flip_tready   = fork_s_tready;
                 ovl_tready    = proc_tready;
             end
             default: begin // CTRL_MOTION_DETECT
@@ -505,7 +544,7 @@ module sparevideo_top #(
                 proc_tvalid   = ovl_tvalid;
                 proc_tlast    = ovl_tlast;
                 proc_tuser    = ovl_tuser;
-                dsp_in_tready = fork_s_tready;
+                flip_tready   = fork_s_tready;
                 ovl_tready    = proc_tready;
             end
         endcase
@@ -514,7 +553,17 @@ module sparevideo_top #(
     // -----------------------------------------------------------------
     // Output async FIFO: clk_dsp -> clk_pix
     // -----------------------------------------------------------------
-    localparam int OUT_FIFO_DEPTH = 32;
+    // Sized to absorb axis_hflip TX bursts. During TX, hflip emits at
+    // 1 pix/dsp_clk = 100 MHz while VGA drains at 1 pix/pix_clk = 25 MHz, so
+    // the FIFO accumulates ~3*H_ACTIVE/4 entries per line before flow control
+    // throttles upstream. At H_ACTIVE=320 that's ~240 entries; 256 covers it
+    // with the verilog-axis output pipeline (~16 in-flight) absorbed in the
+    // backpressure response.
+    //
+    // NOTE: This sizing is calibrated for H_ACTIVE <= 320. Future SCALER=1
+    // configurations (H_ACTIVE=640) require revisiting -- doubling H_ACTIVE
+    // doubles the per-TX delta (~480), exceeding 256.
+    localparam int OUT_FIFO_DEPTH = 256;
 
     logic [23:0] pix_out_tdata;
     logic        pix_out_tvalid;

@@ -62,6 +62,10 @@ make sim                     # uses saved options
 # EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
 make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
 
+# Horizontal mirror (selfie-cam). Default HFLIP=1; 0 = bypass.
+make run-pipeline HFLIP=0                                # bypass (no flip)
+make run-pipeline HFLIP=1                                # mirror (default)
+
 # Other targets
 make lint                    # Verilator lint
 make test-ip                 # Per-block unit testbenches (Verilator)
@@ -77,6 +81,7 @@ make setup                   # One-time setup (install deps)
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
 - `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
+- `hw/ip/hflip/rtl/` — Horizontal mirror (axis_hflip: single line buffer + RECV/XMIT FSM + enable_i bypass; runtime knob via top-level HFLIP parameter)
 - `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge handling; `EDGE_POLICY` parameter, today only `EDGE_REPLICATE=0`). Wrapped by every filter module.
 - `hw/ip/filters/rtl/` — Spatial filters over axis_window3x3 (axis_gauss3x3, axis_morph3x3_erode, axis_morph3x3_dilate, axis_morph3x3_open; future: axis_sobel — all land here as peer `.sv` files under one `filters.core`)
 - `hw/ip/motion/rtl/` — Motion detection (axis_motion_detect, motion_core)

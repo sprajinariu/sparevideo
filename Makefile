@@ -31,6 +31,8 @@ GRACE_ALPHA_SHIFT ?= 1
 GAUSS_EN ?= 1
 # Morphological opening on the motion mask. 0 = bypass, 1 = erode+dilate (default).
 MORPH ?= 1
+# Horizontal flip (selfie-cam) on the proc_clk pipeline. 0 = bypass, 1 = mirror (default).
+HFLIP ?= 1
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -48,12 +50,12 @@ endif
 SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
            MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) \
-           ALPHA_SHIFT=$(ALPHA_SHIFT) ALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) GRACE_FRAMES=$(GRACE_FRAMES) GRACE_ALPHA_SHIFT=$(GRACE_ALPHA_SHIFT) GAUSS_EN=$(GAUSS_EN) MORPH=$(MORPH) \
+           ALPHA_SHIFT=$(ALPHA_SHIFT) ALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) GRACE_FRAMES=$(GRACE_FRAMES) GRACE_ALPHA_SHIFT=$(GRACE_ALPHA_SHIFT) GAUSS_EN=$(GAUSS_EN) MORPH=$(MORPH) HFLIP=$(HFLIP) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-window setup clean
+        test-py test-ip test-ip-window test-ip-hflip setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -82,6 +84,7 @@ help:
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
 	@echo "    test-ip-overlay-bbox       axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
 	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
+	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator              Simulator: verilator (default) or icarus"
@@ -97,6 +100,7 @@ help:
 	@echo "    GRACE_FRAMES=0                   Aggressive-EMA grace window after priming (default 0)"
 	@echo "    GRACE_ALPHA_SHIFT=1              EMA shift during grace: alpha=1/(1<<N) (default 1, α=1/2)"
 	@echo "    MORPH=1                          Mask 3x3 opening on/off (default 1)"
+	@echo "    HFLIP=1                          Horizontal mirror on/off (default 1)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
 	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
@@ -123,8 +127,8 @@ prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
 	@mkdir -p $(DATA_DIR) renders
-	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nALPHA_SHIFT_SLOW = %s\nGRACE_FRAMES = %s\nGRACE_ALPHA_SHIFT = %s\nGAUSS_EN = %s\nMORPH = %s\n' \
-		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(ALPHA_SHIFT_SLOW)' '$(GRACE_FRAMES)' '$(GRACE_ALPHA_SHIFT)' '$(GAUSS_EN)' '$(MORPH)' > $(DATA_DIR)/config.mk
+	@printf 'SOURCE = %s\nWIDTH = %s\nHEIGHT = %s\nFRAMES = %s\nMODE = %s\nCTRL_FLOW = %s\nALPHA_SHIFT = %s\nALPHA_SHIFT_SLOW = %s\nGRACE_FRAMES = %s\nGRACE_ALPHA_SHIFT = %s\nGAUSS_EN = %s\nMORPH = %s\nHFLIP = %s\n' \
+		'$(SOURCE)' '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(ALPHA_SHIFT)' '$(ALPHA_SHIFT_SLOW)' '$(GRACE_FRAMES)' '$(GRACE_ALPHA_SHIFT)' '$(GAUSS_EN)' '$(MORPH)' '$(HFLIP)' > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
@@ -151,10 +155,10 @@ verify:
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE) \
-		--alpha-shift $(ALPHA_SHIFT) --alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN) --morph $(MORPH)
+		--alpha-shift $(ALPHA_SHIFT) --alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN) --morph $(MORPH) --hflip $(HFLIP)
 
 RENDER_SOURCE_SAFE = $(subst _,-,$(subst :,-,$(SOURCE)))
-RENDER_OUT = $(CURDIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN)__morph=$(MORPH).png
+RENDER_OUT = $(CURDIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__alpha-shift=$(ALPHA_SHIFT)__alpha-shift-slow=$(ALPHA_SHIFT_SLOW)__grace-frames=$(GRACE_FRAMES)__grace-alpha-shift=$(GRACE_ALPHA_SHIFT)__gauss-en=$(GAUSS_EN)__morph=$(MORPH)__hflip=$(HFLIP).png
 
 render:
 	@echo ""
@@ -163,7 +167,7 @@ render:
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --alpha-shift $(ALPHA_SHIFT) \
-		--alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN) --morph $(MORPH) --render-output $(RENDER_OUT)
+		--alpha-shift-slow $(ALPHA_SHIFT_SLOW) --grace-frames $(GRACE_FRAMES) --grace-alpha-shift $(GRACE_ALPHA_SHIFT) --gauss-en $(GAUSS_EN) --morph $(MORPH) --hflip $(HFLIP) --render-output $(RENDER_OUT)
 
 # ---- Other targets ----
 
@@ -179,6 +183,9 @@ test-ip:
 
 test-ip-window:
 	$(MAKE) -C dv/sim test-ip-window SIMULATOR=$(SIMULATOR)
+
+test-ip-hflip:
+	$(MAKE) -C dv/sim test-ip-hflip SIMULATOR=$(SIMULATOR)
 
 setup:
 	sudo apt install -y iverilog verilator

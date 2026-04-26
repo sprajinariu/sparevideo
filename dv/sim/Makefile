@@ -2,6 +2,7 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/top/ram.sv \
            ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
            ../../hw/ip/axis/rtl/axis_fork.sv \
+           ../../hw/ip/hflip/rtl/axis_hflip.sv \
            ../../hw/ip/window/rtl/axis_window3x3.sv \
            ../../hw/ip/filters/rtl/axis_gauss3x3.sv \
            ../../hw/ip/filters/rtl/axis_morph3x3_erode.sv \
@@ -33,6 +34,7 @@ GRACE_FRAMES      ?= 8
 GRACE_ALPHA_SHIFT ?= 1
 GAUSS_EN          ?= 1
 MORPH             ?= 1
+HFLIP             ?= 1
 INFILE      ?= ../data/input.txt
 OUTFILE     ?= ../data/output.txt
 
@@ -45,7 +47,8 @@ SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
        test-ip test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 \
        test-ip-motion-detect test-ip-motion-detect-gauss \
        test-ip-overlay-bbox test-ip-ccl \
-       test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open
+       test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open \
+       test-ip-hflip
 
 # ---------------------------------------------------------------------------
 # Icarus Verilog — NOT MAINTAINED. Kept for reference only; will likely fail.
@@ -82,7 +85,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
-            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) -GGRACE_FRAMES=$(GRACE_FRAMES) -GGRACE_ALPHA_SHIFT=$(GRACE_ALPHA_SHIFT) -GGAUSS_EN=$(GAUSS_EN) -GMORPH=$(MORPH) \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) -GGRACE_FRAMES=$(GRACE_FRAMES) -GGRACE_ALPHA_SHIFT=$(GRACE_ALPHA_SHIFT) -GGAUSS_EN=$(GAUSS_EN) -GMORPH=$(MORPH) -GHFLIP=$(HFLIP) \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -96,7 +99,7 @@ VLT_FLAGS = --binary -sv --timing \
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GRACE_ALPHA_SHIFT) $(GAUSS_EN) $(MORPH)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GRACE_ALPHA_SHIFT) $(GAUSS_EN) $(MORPH)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GRACE_ALPHA_SHIFT) $(GAUSS_EN) $(MORPH) $(HFLIP)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GRACE_ALPHA_SHIFT) $(GAUSS_EN) $(MORPH) $(HFLIP)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo
@@ -129,6 +132,7 @@ IP_GAUSS3X3_RTL     = ../../hw/ip/filters/rtl/axis_gauss3x3.sv
 IP_MORPH3X3_ERODE_RTL  = ../../hw/ip/filters/rtl/axis_morph3x3_erode.sv
 IP_MORPH3X3_DILATE_RTL = ../../hw/ip/filters/rtl/axis_morph3x3_dilate.sv
 IP_MORPH3X3_OPEN_RTL   = ../../hw/ip/filters/rtl/axis_morph3x3_open.sv
+IP_HFLIP_RTL        = ../../hw/ip/hflip/rtl/axis_hflip.sv
 
 # Common Verilator flags for block TBs (suppress harmless TB warnings)
 VLT_TB_FLAGS = --binary -sv --timing \
@@ -136,7 +140,7 @@ VLT_TB_FLAGS = --binary -sv --timing \
                -Wno-WIDTHTRUNC -Wno-SELRANGE -Wno-WIDTHCONCAT \
                -Wno-UNUSEDSIGNAL -Wno-UNDRIVEN
 
-test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open
+test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open test-ip-hflip
 	@echo "All block testbenches passed."
 
 # --- rgb2ycrcb ---
@@ -196,6 +200,12 @@ test-ip-morph3x3-open:
 	  ../../hw/ip/filters/tb/tb_axis_morph3x3_open.sv
 	obj_tb_axis_morph3x3_open/Vtb_axis_morph3x3_open
 
+# --- axis_hflip ---
+test-ip-hflip:
+	verilator $(VLT_TB_FLAGS) --top-module tb_axis_hflip --Mdir obj_tb_axis_hflip \
+	  $(IP_HFLIP_RTL) ../../hw/ip/hflip/tb/tb_axis_hflip.sv
+	obj_tb_axis_hflip/Vtb_axis_hflip
+
 # --- axis_overlay_bbox ---
 test-ip-overlay-bbox:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_overlay_bbox --Mdir obj_tb_axis_overlay_bbox \
@@ -217,4 +227,5 @@ clean:
 	rm -rf $(VOBJ_DIR) obj_tb_rgb2ycrcb obj_tb_axis_window3x3 obj_tb_axis_gauss3x3 \
 	       obj_tb_axis_motion_detect obj_tb_axis_motion_detect_gauss \
 	       obj_tb_axis_overlay_bbox obj_tb_axis_ccl \
-	       obj_tb_axis_morph3x3_erode obj_tb_axis_morph3x3_dilate obj_tb_axis_morph3x3_open
+	       obj_tb_axis_morph3x3_erode obj_tb_axis_morph3x3_dilate obj_tb_axis_morph3x3_open \
+	       obj_tb_axis_hflip

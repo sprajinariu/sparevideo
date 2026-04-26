@@ -1,0 +1,14 @@
+CAPI=2:
+name: "sparevideo:ip:hflip"
+description: "Horizontal mirror (selfie-cam) AXIS stage with single line buffer + enable_i bypass"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_hflip.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - files_rtl

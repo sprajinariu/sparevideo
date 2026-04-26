@@ -12,6 +12,8 @@
 //   +MODE=text|binary  File format (default "text")
 //   +THRESH=<n>        Motion threshold (informational; MOTION_THRESH is a
 //                      compile-time parameter — recompile to change it)
+//   +HFLIP=<n>         Horizontal mirror enable (informational; HFLIP is
+//                      a compile-time -G parameter — recompile to change)
 //   +sw_dry_run=1      Bypass RTL — direct file loopback (no clock)
 //   +DUMP_VCD          Dump waveforms to VCD
 
@@ -25,7 +27,8 @@ module tb_sparevideo #(
     parameter int GRACE_FRAMES      = 8,
     parameter int GRACE_ALPHA_SHIFT = 1,
     parameter int GAUSS_EN          = 1,
-    parameter int MORPH             = 1
+    parameter int MORPH             = 1,
+    parameter int HFLIP             = 1
 );
 
 `ifdef VERILATOR
@@ -115,7 +118,8 @@ module tb_sparevideo #(
         .GRACE_FRAMES      (GRACE_FRAMES),
         .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT),
         .GAUSS_EN          (GAUSS_EN),
-        .MORPH             (MORPH)
+        .MORPH             (MORPH),
+        .HFLIP             (HFLIP)
     ) u_dut (
         .clk_pix_i       (clk_pix),
         .clk_dsp_i       (clk_dsp),
