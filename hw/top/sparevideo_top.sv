@@ -16,44 +16,19 @@
 // Configuration parameters default to sparevideo_pkg values. Override at
 // instantiation for different resolutions or algorithm settings.
 
-module sparevideo_top #(
-    parameter int H_ACTIVE      = sparevideo_pkg::H_ACTIVE,
-    parameter int H_FRONT_PORCH = sparevideo_pkg::H_FRONT_PORCH,
-    parameter int H_SYNC_PULSE  = sparevideo_pkg::H_SYNC_PULSE,
-    parameter int H_BACK_PORCH  = sparevideo_pkg::H_BACK_PORCH,
-    parameter int V_ACTIVE      = sparevideo_pkg::V_ACTIVE,
-    parameter int V_FRONT_PORCH = sparevideo_pkg::V_FRONT_PORCH,
-    parameter int V_SYNC_PULSE  = sparevideo_pkg::V_SYNC_PULSE,
-    parameter int V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
-    // Motion detect threshold — override at instantiation or compile time.
-    // Pixels with abs(Y_cur - Y_prev) > MOTION_THRESH are flagged as motion
-    // (polarity-agnostic — both arrival and departure pixels are flagged).
-    parameter int MOTION_THRESH = 16,
-    // EMA background adaptation rate: alpha = 1 / (1 << ALPHA_SHIFT).
-    // Default 3 → alpha = 1/8. Higher = slower adaptation.
-    parameter int ALPHA_SHIFT   = 3,
-    // EMA background adaptation rate on MOTION pixels: alpha = 1 / (1 << ALPHA_SHIFT_SLOW).
-    // Default 6 → alpha = 1/64. Larger than ALPHA_SHIFT so moving objects barely drift bg.
-    parameter int ALPHA_SHIFT_SLOW = 6,
-    // Aggressive-EMA grace window after priming: for GRACE_FRAMES frames, bg
-    // updates at the GRACE_ALPHA_SHIFT rate regardless of raw_motion, and the
-    // mask is blanked. Suppresses frame-0 hard-init ghosts.
-    parameter int GRACE_FRAMES      = 8,
-    // EMA rate during the grace window: alpha = 1 / (1 << GRACE_ALPHA_SHIFT).
-    // Default 1 → α=1/2 so delta halves per frame. Chosen separately from
-    // ALPHA_SHIFT because grace needs aggressive convergence (to get below
-    // THRESH before selective EMA takes over) while steady-state wants
-    // smoothing against sensor noise.
-    parameter int GRACE_ALPHA_SHIFT = 1,
-    // Gaussian pre-filter: 1 = enabled (3x3 Gaussian on Y before motion compare),
-    // 0 = bypass (raw Y). Default enabled.
-    parameter int GAUSS_EN          = 1,
-    // 3x3 morphological opening on the motion mask. 1 = enabled (default),
-    // 0 = bypass. Wired to axis_morph3x3_open.enable_i in Task 8 integration.
-    parameter int MORPH             = 1,
-    // Horizontal mirror (selfie-cam) on the proc_clk pipeline. 1 = mirror
-    // (default), 0 = bypass (zero-latency combinational passthrough).
-    parameter int HFLIP             = 1
+module sparevideo_top
+#(
+    parameter int   H_ACTIVE      = sparevideo_pkg::H_ACTIVE,
+    parameter int   H_FRONT_PORCH = sparevideo_pkg::H_FRONT_PORCH,
+    parameter int   H_SYNC_PULSE  = sparevideo_pkg::H_SYNC_PULSE,
+    parameter int   H_BACK_PORCH  = sparevideo_pkg::H_BACK_PORCH,
+    parameter int   V_ACTIVE      = sparevideo_pkg::V_ACTIVE,
+    parameter int   V_FRONT_PORCH = sparevideo_pkg::V_FRONT_PORCH,
+    parameter int   V_SYNC_PULSE  = sparevideo_pkg::V_SYNC_PULSE,
+    parameter int   V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
+    // Single algorithm config bundle. See sparevideo_pkg::cfg_t for fields,
+    // and sparevideo_pkg::CFG_* for canonical profiles.
+    parameter sparevideo_pkg::cfg_t CFG = sparevideo_pkg::CFG_DEFAULT
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
@@ -158,7 +133,7 @@ module sparevideo_top #(
     );
 
     // -----------------------------------------------------------------
-    // Control parameter — MOTION_THRESH is a module parameter (see above).
+    // Motion threshold is CFG.motion_thresh (see sparevideo_pkg::cfg_t).
     // Region descriptor table (future CSR content):
     //   each region = {BASE (byte offset in `ram`), SIZE (bytes)}.
     //   Owners must only touch [BASE, BASE+SIZE). Sum(SIZE) <= RAM_DEPTH.
@@ -168,7 +143,6 @@ module sparevideo_top #(
     localparam int RAM_DEPTH       = RGN_Y_PREV_SIZE;
     localparam int RAM_ADDR_W      = $clog2(RAM_DEPTH);
 
-    localparam logic [23:0] BBOX_COLOR = 24'h00_FF_00;  // bright green
 
     initial begin
         if (RGN_Y_PREV_BASE + RGN_Y_PREV_SIZE > RAM_DEPTH)
@@ -201,7 +175,7 @@ module sparevideo_top #(
     // axis_hflip: horizontal mirror at the head of the proc_clk pipeline.
     //   - Sits before the ctrl_flow mux so motion masks and bbox coords
     //     agree with the user-visible frame.
-    //   - enable_i tied to HFLIP at compile time (CSR-ready).
+    //   - enable_i tied to CFG.hflip_en at compile time (CSR-ready).
     // -----------------------------------------------------------------
     logic [23:0] flip_tdata;
     logic        flip_tvalid;
@@ -215,7 +189,7 @@ module sparevideo_top #(
     ) u_hflip (
         .clk_i           (clk_dsp_i),
         .rst_n_i         (rst_dsp_n_i),
-        .enable_i        (1'(HFLIP)),
+        .enable_i        (CFG.hflip_en),
         .s_axis_tdata_i  (dsp_in_tdata),
         .s_axis_tvalid_i (dsp_in_tvalid),
         .s_axis_tready_o (dsp_in_tready),
@@ -340,12 +314,12 @@ module sparevideo_top #(
     axis_motion_detect #(
         .H_ACTIVE          (H_ACTIVE),
         .V_ACTIVE          (V_ACTIVE),
-        .THRESH            (MOTION_THRESH),
-        .ALPHA_SHIFT       (ALPHA_SHIFT),
-        .ALPHA_SHIFT_SLOW  (ALPHA_SHIFT_SLOW),
-        .GRACE_FRAMES      (GRACE_FRAMES),
-        .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT),
-        .GAUSS_EN          (GAUSS_EN),
+        .THRESH            (int'(CFG.motion_thresh)),
+        .ALPHA_SHIFT       (CFG.alpha_shift),
+        .ALPHA_SHIFT_SLOW  (CFG.alpha_shift_slow),
+        .GRACE_FRAMES      (CFG.grace_frames),
+        .GRACE_ALPHA_SHIFT (CFG.grace_alpha_shift),
+        .GAUSS_EN          (int'(CFG.gauss_en)),
         .RGN_BASE          (RGN_Y_PREV_BASE),
         .RGN_SIZE          (RGN_Y_PREV_SIZE)
     ) u_motion_detect (
@@ -383,7 +357,7 @@ module sparevideo_top #(
         .clk_i           (clk_dsp_i),
         .rst_n_i         (rst_dsp_n_i),
         // --- Sideband ---
-        .enable_i        (1'(MORPH)),
+        .enable_i        (CFG.morph_en),
         // --- AXI4-Stream input (1-bit mask) ---
         .s_axis_tdata_i  (msk_tdata),
         .s_axis_tvalid_i (msk_tvalid),
@@ -480,7 +454,7 @@ module sparevideo_top #(
         .H_ACTIVE   (H_ACTIVE),
         .V_ACTIVE   (V_ACTIVE),
         .N_OUT      (N_OUT_TOP),
-        .BBOX_COLOR (BBOX_COLOR)
+        .BBOX_COLOR (CFG.bbox_color)
     ) u_overlay_bbox (
         .clk_i           (clk_dsp_i),
         .rst_n_i         (rst_dsp_n_i),
@@ -507,7 +481,7 @@ module sparevideo_top #(
     // -----------------------------------------------------------------
     // Control-flow output mux
     //   Passthrough: flipped dsp_in -> output FIFO; fork inactive (tvalid=0).
-    //                (Mirror when HFLIP=1; raw input when HFLIP=0.)
+    //                (Mirror when CFG.hflip_en=1; raw input when CFG.hflip_en=0.)
     //   Motion:      ovl (overlay output) → output FIFO; fork drives both paths.
     //   Mask:        msk_rgb (B/W mask) → output FIFO; overlay path drained.
     //   CCL bbox:    ovl (overlay on grey canvas) → output FIFO; fork-B drained.

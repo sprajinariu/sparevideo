@@ -114,6 +114,7 @@ renders/                       PNG comparison grids from `make render` (gitignor
 ```
 py/
 ├── harness.py                 Pipeline CLI: prepare / verify / render
+├── profiles.py                Algorithm profile definitions (Python mirror of cfg_t and named profiles in sparevideo_pkg.sv)
 ├── frames/
 │   ├── frame_io.py            Read/write text and binary frame files
 │   └── video_source.py        Load video from MP4/PNG/synthetic sources
@@ -128,7 +129,8 @@ py/
 │   └── render.py              Render input/output comparison image grid
 └── tests/
     ├── test_frame_io.py       Frame I/O round-trip tests
-    └── test_models.py         Reference model unit tests
+    ├── test_models.py         Reference model unit tests
+    └── test_profiles.py       Parity test: Python profile dicts vs. cfg_t fields in sparevideo_pkg.sv
 ```
 
 ## Prerequisites
@@ -174,21 +176,12 @@ make run-pipeline CTRL_FLOW=motion        # motion detect + N-bbox overlay — p
 make run-pipeline CTRL_FLOW=mask          # raw motion mask — B/W output for debugging
 make run-pipeline CTRL_FLOW=ccl_bbox      # mask-as-grey canvas + CCL bboxes (debug CCL directly)
 
-# EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
-make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
-
-# Mask cleanup — 3x3 morphological opening (default MORPH=1; disables erases thin features < 3 px)
-make run-pipeline SOURCE="synthetic:thin_moving_line" CTRL_FLOW=mask MORPH=0 FRAMES=6
-make run-pipeline SOURCE="synthetic:thin_moving_line" CTRL_FLOW=mask MORPH=1 FRAMES=6
-
-# Horizontal mirror (selfie-cam). Default HFLIP=1; 0 = bypass.
-make run-pipeline HFLIP=0                                # bypass (no flip)
-make run-pipeline HFLIP=1                                # mirror (default)
-
-# Grace window tuning — suppress frame-0 hard-init ghosts
-make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=8 FRAMES=12
-make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=16 FRAMES=12
-make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=0 FRAMES=12  # disable grace (regression baseline)
+# Algorithm profile selection (default: default; mirror is OFF in default)
+make run-pipeline CFG=default
+make run-pipeline CFG=default_hflip          # selfie-cam mirror enabled
+make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencing
+make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
+make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -227,10 +220,7 @@ make render
 | `FRAMES` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run` |
 | `MODE` | ✓ | `prepare`, `sim`, `sim-waves`, `sw-dry-run`, `verify`, `render` |
 | `CTRL_FLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
-| `ALPHA_SHIFT` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
-| `ALPHA_SHIFT_SLOW` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
-| `GRACE_FRAMES` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
-| `GAUSS_EN` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
+| `CFG` | ✓ | `compile`, `sim`, `sim-waves`, `sw-dry-run`, `verify` |
 | `SIMULATOR` | — | `compile`, `sim`, `sim-waves`, `sw-dry-run` |
 | `TOLERANCE` | — | `verify` |
 | `SOURCE` | ✓ | `prepare` only |
@@ -257,19 +247,14 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | Option | Default | Description |
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
-| `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), or `mask` (raw motion mask as B/W image) |
+| `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), `mask` (raw motion mask as B/W image), or `ccl_bbox` (mask-as-grey + CCL bboxes) |
+| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed). |
 | `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
-| `ALPHA_SHIFT` | `3` | EMA background adaptation rate: `alpha = 1/(1 << N)`. Higher = slower adaptation (more noise suppression, longer departure ghosts). 0 = raw frame differencing (no EMA). Compile-time RTL parameter propagated to Verilator via `-G`. |
-| `ALPHA_SHIFT_SLOW` | `6` | EMA background adaptation rate for motion pixels: `alpha = 1/(1 << N)`. Default 6 (α=1/64). Larger than `ALPHA_SHIFT` so motion pixels barely drift bg → no trails. Also governs absorption time of stopped objects. Compile-time RTL parameter propagated via `-G`. |
-| `GRACE_FRAMES` | `8` | Frames after priming where bg updates use the fast EMA rate unconditionally. Suppresses frame-0 hard-init ghosts. Set to 0 to disable. |
-| `GAUSS_EN` | `1` | Gaussian pre-filter on Y channel: `1` = enabled (3x3 blur before motion threshold), `0` = disabled (raw Y). Reduces salt-and-pepper noise in the motion mask. Compile-time RTL parameter propagated to Verilator via `-G`. |
-| `MORPH` | `1` | Morphological opening on/off (default 1, 0 = bypass). |
-| `HFLIP` | `1` | Horizontal mirror on/off (default 1, 0 = bypass). |
 
 ### Synthetic Sources
 
@@ -278,7 +263,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `synthetic:moving_box` | Red box, diagonal top-left → bottom-right |
 | `synthetic:dark_moving_box` | Dark box on bright background (tests polarity-agnostic mask) |
 | `synthetic:two_boxes` | Red + cyan boxes moving in opposing directions |
-| `synthetic:noisy_moving_box` | Red box on noisy background (±10 luma jitter). Tests EMA noise suppression — `ALPHA_SHIFT=0` produces false positives, `ALPHA_SHIFT>=2` suppresses them. |
+| `synthetic:noisy_moving_box` | Red box on noisy background (±10 luma jitter). Tests EMA noise suppression — `CFG=no_ema` (alpha=1, raw differencing) produces false positives; `CFG=default` or any profile with `alpha_shift>=2` suppresses them. |
 | `synthetic:lighting_ramp` | Moving box on slowly brightening background (+1 luma/frame). Tests EMA tracking of gradual lighting changes. |
 | `synthetic:textured_static` | Sinusoid-textured static background with per-frame sensor noise. Negative test — mask must be all-black after EMA convergence. |
 | `synthetic:entering_object` | Two soft-edged boxes entering from opposite edges, crossing the centre. Textured+noisy bg. |
@@ -288,15 +273,15 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 
 Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-frame tracking. All patterns with moving objects render frame 0 as background-only — objects appear from frame 1 onward, so the EMA hard-init at frame 0 primes bg with clean background (no frame-0 ghost).
 
-### THRESH (motion detection threshold)
+### Motion detection threshold (`motion_thresh`)
 
-The luma-difference threshold `MOTION_THRESH` is a top-level RTL parameter (default `16`, ≈6.25% intensity). Override at compile time via the testbench plusarg:
+The luma-difference threshold lives in the `motion_thresh` field of `cfg_t` (default `16` in `CFG_DEFAULT`, ≈6.25% intensity). To use a different threshold, define a new profile in `hw/top/sparevideo_pkg.sv` (and mirror it in `py/profiles.py`), then select it at compile time:
 
 ```bash
-make run-pipeline SIMARGS="+THRESH=32"
+make run-pipeline CFG=<your_profile>
 ```
 
-A pixel is classified as motion when `|Y_cur - bg| > THRESH`, where `bg` is the per-pixel EMA background model (see `ALPHA_SHIFT`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. Frame 0 is a priming pass (mask forced to 0 while the bg RAM is seeded per-pixel), and the first real detection frame is frame 1. The CCL suppresses bboxes for the first 2 frames as an additional safety margin so any transient on the very first compare cycle cannot produce a spurious bbox.
+A pixel is classified as motion when `|Y_cur - bg| > CFG.motion_thresh`, where `bg` is the per-pixel EMA background model (adaptation rate controlled by `alpha_shift` / `alpha_shift_slow` fields in `cfg_t`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. Frame 0 is a priming pass (mask forced to 0 while the bg RAM is seeded per-pixel), and the first real detection frame is frame 1. The CCL suppresses bboxes for the first 2 frames as an additional safety margin so any transient on the very first compare cycle cannot produce a spurious bbox.
 
 For the `mask` control flow, the verify step also reports motion pixel counts per frame (`motion=N/total`), which is useful for diagnosing false positives.
 

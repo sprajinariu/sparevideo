@@ -50,21 +50,17 @@ make run-pipeline CTRL_FLOW=motion                    # motion detect + N-way CC
 make run-pipeline CTRL_FLOW=mask                      # raw motion mask, B/W output
 make run-pipeline CTRL_FLOW=ccl_bbox                  # mask-as-grey + CCL bboxes (debug CCL directly)
 
-# Mask cleanup via 3x3 morphological opening (default MORPH=1; 0 = bypass)
-make run-pipeline CTRL_FLOW=mask MORPH=0                    # raw mask, morph opening bypassed
-make run-pipeline CTRL_FLOW=mask MORPH=1                    # opening applied (erase salt + thin features < 3 px)
+# Algorithm profile selection (default: default; mirror is OFF in default)
+make run-pipeline CFG=default
+make run-pipeline CFG=default_hflip          # selfie-cam mirror enabled
+make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencing
+make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
+make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 
-# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/ALPHA_SHIFT to dv/data/config.mk.
+# 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/CFG to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
 make prepare SOURCE="synthetic:moving_box" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
 make sim                     # uses saved options
-
-# EMA background model tuning (ALPHA_SHIFT/ALPHA_SHIFT_SLOW are compile-time Verilator parameters)
-make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT=2 ALPHA_SHIFT_SLOW=6 FRAMES=8
-
-# Horizontal mirror (selfie-cam). Default HFLIP=1; 0 = bypass.
-make run-pipeline HFLIP=0                                # bypass (no flip)
-make run-pipeline HFLIP=1                                # mirror (default)
 
 # Other targets
 make lint                    # Verilator lint
@@ -74,6 +70,8 @@ make sim-waves               # RTL sim + GTKWave
 make setup                   # One-time setup (install deps)
 ```
 
+> **Adding a tuning knob.** New tunable algorithm parameter? Add a field to `cfg_t` in `hw/top/sparevideo_pkg.sv` and a matching key in every dict in `py/profiles.py`. The TB and Makefiles do not change. The parity test (`py/tests/test_profiles.py`) catches drift between SV and Python.
+
 > **Note:** Verilator simulation previously had a race condition — `tuser` was sampled as 0 on the posedge of `clk_pix` due to INITIALDLY (NBA-in-initial-block treated as blocking). Fixed by introducing `drv_*` intermediary signals written with blocking `=` in the initial block, and an `always_ff @(negedge clk_pix)` as the sole driver of `s_axis_*`. Driving on negedge ensures DUT inputs are stable at the posedge sampling point.
 
 ## Project Structure
@@ -81,7 +79,7 @@ make setup                   # One-time setup (install deps)
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
 - `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
-- `hw/ip/hflip/rtl/` — Horizontal mirror (axis_hflip: single line buffer + RECV/XMIT FSM + enable_i bypass; runtime knob via top-level HFLIP parameter)
+- `hw/ip/hflip/rtl/` — Horizontal mirror (axis_hflip: single line buffer + RECV/XMIT FSM + enable_i bypass; enabled via `hflip_en` field of `cfg_t`)
 - `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge handling; `EDGE_POLICY` parameter, today only `EDGE_REPLICATE=0`). Wrapped by every filter module.
 - `hw/ip/filters/rtl/` — Spatial filters over axis_window3x3 (axis_gauss3x3, axis_morph3x3_erode, axis_morph3x3_dilate, axis_morph3x3_open; future: axis_sobel — all land here as peer `.sv` files under one `filters.core`)
 - `hw/ip/motion/rtl/` — Motion detection (axis_motion_detect, motion_core)
@@ -96,6 +94,7 @@ make setup                   # One-time setup (install deps)
 - `dv/data/` — Generated simulator input/output scratch files (gitignored)
 - `renders/` — PNG comparison grids produced by `make render` (gitignored)
 - `py/harness.py` — Pipeline harness CLI (prepare / verify / render)
+- `py/profiles.py` — Algorithm profile definitions (Python mirror of `cfg_t` and named profiles in `sparevideo_pkg.sv`)
 - `py/frames/frame_io.py` — Read/write text and binary frame files
 - `py/frames/video_source.py` — Load video from MP4/PNG/synthetic, resize, extract frames
 - `py/models/` — Control-flow reference models for pixel-accurate verification
@@ -107,6 +106,7 @@ make setup                   # One-time setup (install deps)
 - `py/viz/render.py` — Render input/output frames as comparison image grid
 - `py/tests/test_frame_io.py` — Unit tests for frame I/O round-trips
 - `py/tests/test_models.py` — Unit tests for control-flow reference models
+- `py/tests/test_profiles.py` — Parity test: verifies Python profile dicts match `cfg_t` field names in `sparevideo_pkg.sv`
 - `py/tests/test_vga.py` — Cocotb VGA timing tests (requires VGA IP)
 - FuseSoC core files: `sparevideo_top.core`, `hw/ip/axis/axis.core`, `hw/ip/motion/motion.core`, `hw/ip/vga/vga.core`, `verilog-axis.core`
 
@@ -126,7 +126,7 @@ The single testbench (`dv/sim/tb_sparevideo.sv`) supports two modes:
 
 **SW dry-run** (`+sw_dry_run`): Bypasses RTL entirely. File loopback at zero sim time — reads input, writes output directly. Useful for testing the Python harness flow without waiting for RTL sim.
 
-Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion|mask|ccl_bbox`, `+sw_dry_run`, `+DUMP_VCD`.
+Plusargs: `+INFILE=`, `+OUTFILE=`, `+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=text|binary`, `+CTRL_FLOW=passthrough|motion|mask|ccl_bbox`, `+CFG_NAME=default|default_hflip|no_ema|no_morph|no_gauss`, `+sw_dry_run`, `+DUMP_VCD`.
 
 TB blanking parameters: H: 4+8+4, V: 2+2+16 (the 16-line V_BLANK absorbs the axis_ccl EOF FSM's worst-case cycle budget).
 
@@ -229,17 +229,17 @@ The SVAs `assert_fifo_in_not_full` and `assert_fifo_out_not_full` (in `sparevide
 
 These apply to any future motion pipeline block (Gaussian, morphology, CCL, adaptive threshold).
 
-**Frame-0 hard-init + selective EMA.** The background RAM is primed in frame 0 by writing `y_smooth` directly (mask forced to 0 for that frame), then from frame 1 onward the EMA rate is selected per pixel: `ALPHA_SHIFT` (fast, α=1/8) when the pixel is *not* flagged as motion, `ALPHA_SHIFT_SLOW` (slow, α=1/64) when it *is*. The slow rate on motion pixels prevents foreground contamination (trails) while still absorbing stopped objects over ~1/α_slow frames. This combination supersedes the earlier "no first-frame priming" rule, whose failure mode (departure ghosts from frame-0 foreground) is prevented by the selective rate, not by avoiding priming.
+**Frame-0 hard-init + selective EMA.** The background RAM is primed in frame 0 by writing `y_smooth` directly (mask forced to 0 for that frame), then from frame 1 onward the EMA rate is selected per pixel: `cfg_t.alpha_shift` (fast, α=1/8) when the pixel is *not* flagged as motion, `cfg_t.alpha_shift_slow` (slow, α=1/64) when it *is*. The slow rate on motion pixels prevents foreground contamination (trails) while still absorbing stopped objects over ~1/α_slow frames. This combination supersedes the earlier "no first-frame priming" rule, whose failure mode (departure ghosts from frame-0 foreground) is prevented by the selective rate, not by avoiding priming.
 
-**Grace window prevents frame-0 ghosts.** Hard-init seeds bg from frame 0, so any object present in frame 0 contaminates bg[P_original]. When the object moves in frame 1, raw_motion latches at P_original and the slow selective-EMA rate keeps that ghost alive for ~1/α_slow frames. The `GRACE_FRAMES` parameter (default 8) forces the fast rate unconditionally for the first K frames after priming — the ghost decays at α=1/8 within K frames, after which the normal selective-EMA rule resumes. Set GRACE_FRAMES=0 to disable (recovers pre-grace behavior for regression parity).
+**Grace window prevents frame-0 ghosts.** Hard-init seeds bg from frame 0, so any object present in frame 0 contaminates bg[P_original]. When the object moves in frame 1, raw_motion latches at P_original and the slow selective-EMA rate keeps that ghost alive for ~1/α_slow frames. The `grace_frames` field of `cfg_t` (default 8) forces the fast rate unconditionally for the first K frames after priming — the ghost decays at α=1/8 within K frames, after which the normal selective-EMA rule resumes. Set `grace_frames=0` to disable (recovers pre-grace behavior for regression parity).
 
-**Compile-time RTL parameters must propagate through the full Makefile chain.** Any new `-G` parameter (e.g., `ALPHA_SHIFT_SLOW`, `GRACE_FRAMES`, `KERNEL_SIZE`, `MAX_LABELS`) needs: top Makefile `?=` default → SIM_VARS → dv/sim/Makefile `?=` default → VLT_FLAGS `-G` → tb_sparevideo.sv parameter → DUT. The config stamp in dv/sim/Makefile must include it so parameter changes trigger recompilation.
+**Compile-time RTL parameters are propagated from `CFG.<field>` at the top level.** Algorithm fields (e.g., `alpha_shift`, `alpha_shift_slow`, `grace_frames`, `gauss_en`, `morph_en`, `hflip_en`) are packed into a `cfg_t` struct and driven from the active profile selected by `CFG_NAME`. Inside `axis_motion_detect` they are still compile-time `-G` parameters; the top level unpacks the struct and passes each field as a named parameter. The config stamp in dv/sim/Makefile must include the `CFG` name so profile changes trigger recompilation.
 
 **Synthetic test patterns must exercise the feature meaningfully.** Rule of thumb for noise patterns: `2 × noise_amplitude > THRESH` for EMA to demonstrate value over raw differencing. The `noisy_moving_box` pattern uses `noise_amplitude=10` vs `THRESH=16`.
 
-**Departure ghosts under selective EMA.** With the two-rate rule, motion pixels drift at `ALPHA_SHIFT_SLOW` (default α=1/64), so the bg is barely contaminated under a normal-speed moving object. When the object leaves, `raw_motion` drops to 0 on the very next frame and the pixel immediately reverts to the fast rate — no multi-frame ghost. A ghost only appears if an object lingered long enough for the slow EMA to partially absorb it into bg; that window is ~`1/α_slow` frames (≈64 frames at default). Under the old single-rate EMA, departure ghosts lasted ~`1/alpha` frames on every departure; selective EMA suppresses this by design.
+**Departure ghosts under selective EMA.** With the two-rate rule, motion pixels drift at `cfg_t.alpha_shift_slow` (default α=1/64), so the bg is barely contaminated under a normal-speed moving object. When the object leaves, `raw_motion` drops to 0 on the very next frame and the pixel immediately reverts to the fast rate — no multi-frame ghost. A ghost only appears if an object lingered long enough for the slow EMA to partially absorb it into bg; that window is ~`1/α_slow` frames (≈64 frames at default). Under the old single-rate EMA, departure ghosts lasted ~`1/alpha` frames on every departure; selective EMA suppresses this by design.
 
-**Verify all control flows × parameter combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × multiple ALPHA_SHIFT values (0,1,2,3) × multiple ALPHA_SHIFT_SLOW values (5,6,7) × multiple sources at TOLERANCE=0.
+**Verify all control flows × profile combinations.** After any motion pipeline change, test the matrix: all 4 control flows (passthrough, motion, mask, ccl_bbox) × the named profiles (default, no_ema, no_morph, no_gauss, default_hflip) × multiple sources at TOLERANCE=0.
 
 **Vblank FSM modules must deassert tready for the full FSM duration.** `axis_ccl` deasserts `tready` during PHASE_A..PHASE_SWAP (the EOF resolution FSM) so pixels cannot arrive while internal state is exclusively owned by the FSM. Per-pixel writes are additionally gated on `PHASE_IDLE`, but those gates alone are not sufficient — without the tready deassert, the FIFO upstream can push pixels that advance `line_buf` and `col`/`row` without updating `equiv[]` or `acc_*[]`, silently corrupting the labeling state. Vblank timing must exceed the worst-case FSM cycle budget; see `axis_ccl-arch.md §6.7`.
 
@@ -249,7 +249,7 @@ These apply to any future motion pipeline block (Gaussian, morphology, CCL, adap
 
 **AXI-Stream sof/tuser gating in sliding-window primitives.** `axis_window3x3`'s `cur_col/cur_row` combinational must gate its `sof_i` check with `valid_i`. Per AXI-Stream, sideband signals (tuser/sof) are only meaningful when tvalid=1. Producers (including `axis_motion_detect`) may leave `msk_tuser=1` asserted during the end-of-frame idle window (tvalid=0). Without the gate, the primitive resets `cur_col/cur_row` to 0 during that idle, breaking `at_phantom` and stalling the phantom row/column drain — losing H+1 output beats per frame per primitive instance. The always_ff for col/row already has this gate (`sof_i && valid_i`); the always_comb must match.
 
-**Mask cleanup via `axis_morph3x3_open`.** A 3×3 square opening (erode → dilate) sits between `axis_motion_detect` and the downstream mask consumers (CCL, overlay, mask display). Removes single-pixel salt noise and features < 3 px wide. Runtime gate: `MORPH=1` (default) enables, `MORPH=0` is a zero-latency combinational bypass. Consequence: thin features (far-field targets, 1-px lines) are erased — use the `thin_moving_line` synthetic source to exercise this. Python reference model composes `scipy.ndimage.grey_erosion`/`grey_dilation` with `mode='nearest'` when `morph_en=True`, keeping RTL and model in agreement at `TOLERANCE=0` for both knob values. In motion.py/ccl_bbox.py, the EMA background update uses the **raw** (pre-morph) mask — matches the RTL where motion_detect drives EMA internally before morph is applied.
+**Mask cleanup via `axis_morph3x3_open`.** A 3×3 square opening (erode → dilate) sits between `axis_motion_detect` and the downstream mask consumers (CCL, overlay, mask display). Removes single-pixel salt noise and features < 3 px wide. Runtime gate: the `morph_en` field of `cfg_t` (set to `1` in `CFG_DEFAULT`) enables the stage; `morph_en=0` (e.g. profile `no_morph`) is a zero-latency combinational bypass. Consequence: thin features (far-field targets, 1-px lines) are erased — use the `thin_moving_line` synthetic source to exercise this. Python reference model composes `scipy.ndimage.grey_erosion`/`grey_dilation` with `mode='nearest'` when `morph_en=True`, keeping RTL and model in agreement at `TOLERANCE=0` for both values. In motion.py/ccl_bbox.py, the EMA background update uses the **raw** (pre-morph) mask — matches the RTL where motion_detect drives EMA internally before morph is applied.
 
 ### Python environment
 

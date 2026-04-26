@@ -92,31 +92,17 @@ sparevideo_top (top level)
 
 ### 3.1 Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `H_ACTIVE` | pkg | Active pixels per line |
-| `H_FRONT_PORCH` | pkg | Horizontal front porch |
-| `H_SYNC_PULSE` | pkg | Horizontal sync pulse width |
-| `H_BACK_PORCH` | pkg | Horizontal back porch |
-| `V_ACTIVE` | pkg | Active lines per frame |
-| `V_FRONT_PORCH` | pkg | Vertical front porch |
-| `V_SYNC_PULSE` | pkg | Vertical sync pulse height |
-| `V_BACK_PORCH` | pkg | Vertical back porch |
-| `MOTION_THRESH` | 16 | Luma-difference threshold for motion (≈6.25% intensity) |
-| `ALPHA_SHIFT` | 3 | EMA background adaptation rate on non-motion pixels: alpha = 1/(1 << ALPHA_SHIFT). Default 3 → alpha=1/8 |
-| `ALPHA_SHIFT_SLOW` | 6 | EMA background adaptation rate on motion pixels: alpha = 1/(1 << ALPHA_SHIFT_SLOW). Default 6 → alpha=1/64, so moving objects barely contaminate the background model |
-| `GRACE_FRAMES` | 8 | Aggressive-EMA grace window after priming: for this many frames, bg updates at `GRACE_ALPHA_SHIFT` regardless of `raw_motion`, and the mask is blanked. Suppresses frame-0 hard-init ghosts. 0 disables |
-| `GRACE_ALPHA_SHIFT` | 1 | EMA rate during the grace window: alpha = 1/(1 << GRACE_ALPHA_SHIFT). Default 1 → α=1/2 |
-| `GAUSS_EN` | 1 | Enable the 3×3 Gaussian pre-filter inside `u_motion_detect` (0 disables; handy for comparing with/without smoothing) |
-| `MORPH` | 1 | Enable the 3×3 morphological opening in `u_morph_open` (0 = zero-latency combinational bypass) |
-| `HFLIP`              | `int`        | `1`      | Horizontal mirror runtime enable. `1` = mirror (default), `0` = combinational passthrough. Tied to `axis_hflip.enable_i`. |
-| `CCL_N_LABELS_INT` | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0) |
-| `CCL_N_OUT` | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox` |
-| `CCL_MIN_COMPONENT_PIXELS` | pkg (16) | Minimum component area (in pixels) to promote into the top-N bbox output — filters sensor-noise specks |
-| `CCL_MAX_CHAIN_DEPTH` | pkg (8) | Safety cap on parent-pointer chain walks during the EOF fold phase |
-| `CCL_PRIME_FRAMES` | pkg (2) | Number of frames after reset during which `u_ccl` suppresses all bbox outputs, giving the EMA background model time to converge |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `H_ACTIVE` / `V_ACTIVE` / porches | int | pkg | Resolution and VGA timing — structural, see `sparevideo_pkg.sv` for the full list (`H_FRONT_PORCH`, `H_SYNC_PULSE`, `H_BACK_PORCH`, `V_FRONT_PORCH`, `V_SYNC_PULSE`, `V_BACK_PORCH`) |
+| `CFG` | `cfg_t` | `CFG_DEFAULT` | Algorithm tuning bundle. Selects EMA rates, Gaussian/morph/hflip enable, motion threshold, and bbox colour in one struct. See `sparevideo_pkg::cfg_t` for the field list and `py/profiles.py` for the Python mirror. |
+| `CCL_N_LABELS_INT` | int | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0) |
+| `CCL_N_OUT` | int | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox` |
+| `CCL_MIN_COMPONENT_PIXELS` | int | pkg (16) | Minimum component area (in pixels) to promote into the top-N bbox output — filters sensor-noise specks |
+| `CCL_MAX_CHAIN_DEPTH` | int | pkg (8) | Safety cap on parent-pointer chain walks during the EOF fold phase |
+| `CCL_PRIME_FRAMES` | int | pkg (2) | Number of frames after reset during which `u_ccl` suppresses all bbox outputs, giving the EMA background model time to converge |
 
-`ctrl_flow_i` is a quasi-static sideband signal (set before the frame, not changed mid-frame). All defaults reference `sparevideo_pkg`.
+`ctrl_flow_i` is a quasi-static sideband signal (set before the frame, not changed mid-frame). `CFG` is resolved at compile time from the `CFG_NAME` string plusarg (TB) or Makefile `CFG=` knob; `CFG_DEFAULT` has all stages enabled except `hflip_en` (mirror OFF). Add a new algorithm field by extending `cfg_t` in `sparevideo_pkg.sv` and adding a matching key to every profile dict in `py/profiles.py`. All other defaults reference `sparevideo_pkg`.
 
 ---
 
@@ -136,7 +122,7 @@ The processing pipeline itself (motion detection → morph → streaming CCL →
 
 ### 4.1 Dual-path pipeline: what is the "mask"?
 
-Before the fork, `axis_hflip` (`u_hflip`) optionally mirrors each input line horizontally. Because `u_hflip` is upstream of `u_fork`, the motion mask and bbox coordinates are computed on the mirrored view. The user-visible RGB and the mask therefore agree by construction — no coordinate-flip is needed in the overlay. `HFLIP=0` bypasses the stage with a zero-latency combinational path.
+Before the fork, `axis_hflip` (`u_hflip`) optionally mirrors each input line horizontally. Because `u_hflip` is upstream of `u_fork`, the motion mask and bbox coordinates are computed on the mirrored view. The user-visible RGB and the mask therefore agree by construction — no coordinate-flip is needed in the overlay. `CFG.hflip_en=0` bypasses the stage with a zero-latency combinational path.
 
 In motion/mask modes, the pipeline processes two parallel streams forked from the same input video. A top-level `axis_fork` (`u_fork`) broadcasts the DSP-domain input to two consumers:
 
@@ -188,7 +174,7 @@ This chapter explains what each processing sub-block contributes to the video/ma
 
 ### 5.1 `u_motion_detect` — detects moving pixels
 
-Takes the input RGB stream and produces a 1-bit-per-pixel motion mask: `1` where the current pixel differs from a learned per-pixel background model, `0` elsewhere. Internally it converts RGB → Y8 (luma captures nearly all motion information at 1/3 the bandwidth), optionally smooths the Y8 plane with a 3×3 Gaussian (`GAUSS_EN=1`) to reject sensor noise spikes, and then thresholds `|Y_current − Y_background|` against `MOTION_THRESH`. The background model is an exponential moving average (EMA) stored in shared RAM, updated every frame so slow lighting drift is absorbed into the background rather than being reported as motion. A two-rate EMA keeps the background stable even under a moving object — fast on non-motion pixels, very slow on motion pixels — and a short grace window after reset prevents frame-0 ghosts.
+Takes the input RGB stream and produces a 1-bit-per-pixel motion mask: `1` where the current pixel differs from a learned per-pixel background model, `0` elsewhere. Internally it converts RGB → Y8 (luma captures nearly all motion information at 1/3 the bandwidth), optionally smooths the Y8 plane with a 3×3 Gaussian (`CFG.gauss_en=1`) to reject sensor noise spikes, and then thresholds `|Y_current − Y_background|` against `CFG.motion_thresh`. The background model is an exponential moving average (EMA) stored in shared RAM, updated every frame so slow lighting drift is absorbed into the background rather than being reported as motion. A two-rate EMA keeps the background stable even under a moving object — fast on non-motion pixels (`CFG.alpha_shift`), very slow on motion pixels (`CFG.alpha_shift_slow`) — and a short grace window after reset (`CFG.grace_frames`) prevents frame-0 ghosts.
 
 Without this stage there is no mask. Details: [axis_motion_detect-arch.md](axis_motion_detect-arch.md).
 
@@ -196,7 +182,7 @@ Without this stage there is no mask. Details: [axis_motion_detect-arch.md](axis_
 
 Reads each input line into a 320-entry RGB line buffer, then emits the line in reverse column order. Latency: 1 line. Throughput: 1 pixel/cycle long-term. The stage sits before `u_fork`, so the motion mask and bbox coordinates downstream are computed on the mirrored frame — overlay rectangles land on top of the same pixels the user sees, with no axis-flip math elsewhere.
 
-Why this matters: the natural front-camera mental model is that the user's right hand should appear on the right of the image. Without this stage, that requires either a host-side flip on every consumer or a bbox-coordinate flip in the overlay. Doing the flip once at the head of the pipeline keeps every downstream stage coordinate-consistent. `HFLIP=0` is a zero-latency combinational bypass for testing and for callers that prefer the raw input. Details: [axis_hflip-arch.md](axis_hflip-arch.md).
+Why this matters: the natural front-camera mental model is that the user's right hand should appear on the right of the image. Without this stage, that requires either a host-side flip on every consumer or a bbox-coordinate flip in the overlay. Doing the flip once at the head of the pipeline keeps every downstream stage coordinate-consistent. `CFG.hflip_en=0` (the default in `CFG_DEFAULT`) is a zero-latency combinational bypass for testing and for callers that prefer the raw input. Details: [axis_hflip-arch.md](axis_hflip-arch.md).
 
 **Backpressure note:** `axis_hflip` alternates between RX (asserts `s_axis_tready_o`) and TX (asserts `m_axis_tvalid_o`) phases over a single line buffer. During TX, upstream is stalled; the input CDC FIFO must absorb up to one line of write-clock pixels. `IN_FIFO_DEPTH = 128` is sized for `pix_clk = 25 MHz`, `dsp_clk = 100 MHz`, `H_ACTIVE = 320` (worst case ~80 entries with margin).
 
@@ -206,7 +192,7 @@ The output CDC FIFO mirrors this concern in the opposite direction: hflip emits 
 
 Applies a 3×3 square morphological opening (erosion followed by dilation) to the raw 1-bit mask. Erosion deletes isolated foreground pixels and foreground stripes narrower than three pixels; the subsequent dilation restores the surviving blobs to approximately their original shape. The net effect is "erase salt noise and sub-3px features, keep everything else intact".
 
-Why this matters: without opening, each sensor-noise speckle that survives motion detection becomes its own connected component in `u_ccl` — either crowding out real objects from the `N_OUT` bbox list or littering the overlay with tiny rectangles. `MORPH=0` is a zero-latency combinational bypass so the raw vs. cleaned mask can be A/B compared. Details: [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md).
+Why this matters: without opening, each sensor-noise speckle that survives motion detection becomes its own connected component in `u_ccl` — either crowding out real objects from the `N_OUT` bbox list or littering the overlay with tiny rectangles. `CFG.morph_en=0` (profile `no_morph`) is a zero-latency combinational bypass so the raw vs. cleaned mask can be A/B compared. Details: [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md).
 
 ### 5.4 `u_ccl` — group motion pixels into distinct objects
 
@@ -248,7 +234,7 @@ Two distinct latencies, not to be conflated:
 - **Pixel-pipeline latency** — cycles from input pixel to matching RGB edge at the VGA output, varies by control flow.
 - **Bbox latency** — fixed at **1 frame** by design; see §5.7.
 
-End-to-end pixel-path latency per control flow (steady-state fill, GAUSS_EN=1, MORPH=1):
+End-to-end pixel-path latency per control flow (steady-state fill, `CFG_DEFAULT`: `gauss_en=1`, `morph_en=1`):
 
 | Control flow | Pixel total (≈) |
 |---|---|
@@ -300,7 +286,7 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
   │             ▼                                             │                  │
   │    ┌──────────────────┐                                   │                  │
   │    │ u_morph_open     │  erode → dilate (3×3), or         │                  │
-  │    │  (MORPH=1)       │  zero-latency bypass (MORPH=0)    │                  │
+  │    │  (morph_en=1)    │  zero-latency bypass (morph_en=0) │                  │
   │    └────────┬─────────┘                                   │                  │
   │             │  msk_clean (1-bit + tlast + tuser)          │                  │
   │             ├───────────────────────────────────┐         │                  │
@@ -406,7 +392,7 @@ A compile-time guard checks that `BASE + SIZE ≤ RAM_DEPTH`. Each client module
 
 ### 8.1 Future CSR register file (deferred)
 
-When runtime configurability is needed, the descriptor table and control knobs (`MOTION_THRESH`, `BBOX_COLOR`) migrate to a `sparevideo_csr` AXI-Lite slave on a new top-level port. Client module parameters become input ports of the same width; CSR values are latched on SOF to prevent mid-frame glitches.
+When runtime configurability is needed, the descriptor table and the `CFG` fields (`motion_thresh`, `bbox_color`, EMA rates, stage enables) migrate to a `sparevideo_csr` AXI-Lite slave on a new top-level port. Client module parameters become input ports of the same width; CSR values are latched on SOF to prevent mid-frame glitches.
 
 ---
 
@@ -429,8 +415,8 @@ When runtime configurability is needed, the descriptor table and control knobs (
 - **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box would span the full frame and the overlay would draw a border around the image edge. This is a known cosmetic artifact. `axis_ccl` suppresses bboxes for the first `CCL_PRIME_FRAMES` frames so no rectangle is drawn until the EMA background has converged.
 - **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §5.7. Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
-- **Thin-feature deletion under morph**: `u_morph_open` erases foreground features narrower than 3 pixels (single-pixel lines, far-field point targets). `MORPH=0` is the escape hatch; see [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md) §4.4.
-- **No AXI-Lite control**: `MOTION_THRESH`, `BBOX_COLOR`, `MORPH`, and the EMA rates are compile-time parameters. Runtime override requires synthesizing a CSR slave (see §8.1).
+- **Thin-feature deletion under morph**: `u_morph_open` erases foreground features narrower than 3 pixels (single-pixel lines, far-field point targets). Profile `no_morph` (`CFG.morph_en=0`) is the escape hatch; see [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md) §4.4.
+- **No AXI-Lite control**: all algorithm parameters (motion threshold, bbox colour, EMA rates, stage enables) are compile-time fields of `CFG`. Runtime override requires synthesizing a CSR slave (see §8.1).
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
 - **Single pixel clock**: both the input source and VGA output share `clk_pix`. Independent source/display clocks would need a third clock domain.
 
@@ -443,8 +429,8 @@ When runtime configurability is needed, the descriptor table and control knobs (
 | Memory | Module | 320×240 | 640×480 | 1920×1080 | Technology |
 |--------|--------|---------|---------|-----------|------------|
 | EMA background model | `u_ram` | **75 kB** | **300 kB** | **~1.98 MB** | Behavioral TDPRAM → BRAM on FPGA |
-| Gaussian line buffers (×2) | `u_motion_detect` (`GAUSS_EN=1`) | 640 B | **1.25 kB** | **3.75 kB** | Distributed LUT-RAM |
-| Morph opening line buffers (×4) | `u_morph_open` (`MORPH=1`) | 160 B | 320 B | 960 B | Distributed LUT-RAM |
+| Gaussian line buffers (×2) | `u_motion_detect` (`gauss_en=1`) | 640 B | **1.25 kB** | **3.75 kB** | Distributed LUT-RAM |
+| Morph opening line buffers (×4) | `u_morph_open` (`morph_en=1`) | 160 B | 320 B | 960 B | Distributed LUT-RAM |
 | CCL label line buffer | `u_ccl` | 240 B | 480 B | **1.41 kB** | Distributed LUT-RAM |
 | CCL accumulator bank (×5 arrays) | `u_ccl` | 408 B | 456 B | 520 B | Distributed LUT-RAM |
 | CCL equivalence table | `u_ccl` | 48 B | 48 B | 48 B | Distributed LUT-RAM |

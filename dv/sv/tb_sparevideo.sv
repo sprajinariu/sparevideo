@@ -10,25 +10,20 @@
 //   +HEIGHT=<n>        Frame height (default 240)
 //   +FRAMES=<n>        Number of frames (default 4)
 //   +MODE=text|binary  File format (default "text")
-//   +THRESH=<n>        Motion threshold (informational; MOTION_THRESH is a
-//                      compile-time parameter — recompile to change it)
-//   +HFLIP=<n>         Horizontal mirror enable (informational; HFLIP is
-//                      a compile-time -G parameter — recompile to change)
+//   +CTRL_FLOW=<name>  passthrough|motion|mask|ccl_bbox
 //   +sw_dry_run=1      Bypass RTL — direct file loopback (no clock)
 //   +DUMP_VCD          Dump waveforms to VCD
+//
+// Compile-time -G overrides:
+//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss)
+//   -GH_ACTIVE / -GV_ACTIVE Resolution overrides
 
 `timescale 1ns / 1ps
 
 module tb_sparevideo #(
-    parameter int H_ACTIVE    = 320,
-    parameter int V_ACTIVE    = 240,
-    parameter int ALPHA_SHIFT       = 3,
-    parameter int ALPHA_SHIFT_SLOW  = 6,
-    parameter int GRACE_FRAMES      = 8,
-    parameter int GRACE_ALPHA_SHIFT = 1,
-    parameter int GAUSS_EN          = 1,
-    parameter int MORPH             = 1,
-    parameter int HFLIP             = 1
+    parameter int    H_ACTIVE  = 320,
+    parameter int    V_ACTIVE  = 240,
+    parameter string CFG_NAME  = "default"
 );
 
 `ifdef VERILATOR
@@ -102,6 +97,25 @@ module tb_sparevideo #(
     logic [7:0] vga_g;
     logic [7:0] vga_b;
 
+    // Elaboration-time profile lookup. Add new entries here AND in
+    // sparevideo_pkg.sv AND in py/profiles.py. The Python parity test
+    // catches mismatches between SV and Python.
+    localparam sparevideo_pkg::cfg_t CFG =
+        (CFG_NAME == "default_hflip") ? sparevideo_pkg::CFG_DEFAULT_HFLIP :
+        (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
+        (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
+        (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
+                                        sparevideo_pkg::CFG_DEFAULT;
+
+    initial begin
+        if (CFG_NAME != "default"       &&
+            CFG_NAME != "default_hflip" &&
+            CFG_NAME != "no_ema"        &&
+            CFG_NAME != "no_morph"      &&
+            CFG_NAME != "no_gauss")
+            $warning("Unknown CFG_NAME '%s'; using CFG_DEFAULT. Valid: default|default_hflip|no_ema|no_morph|no_gauss", CFG_NAME);
+    end
+
     // The DUT's VGA controller is parameterised at instantiation; we
     // override here so the timing matches the small TB blanking values.
     sparevideo_top #(
@@ -113,13 +127,7 @@ module tb_sparevideo #(
         .V_FRONT_PORCH (V_FRONT_PORCH),
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH),
-        .ALPHA_SHIFT       (ALPHA_SHIFT),
-        .ALPHA_SHIFT_SLOW  (ALPHA_SHIFT_SLOW),
-        .GRACE_FRAMES      (GRACE_FRAMES),
-        .GRACE_ALPHA_SHIFT (GRACE_ALPHA_SHIFT),
-        .GAUSS_EN          (GAUSS_EN),
-        .MORPH             (MORPH),
-        .HFLIP             (HFLIP)
+        .CFG           (CFG)
     ) u_dut (
         .clk_pix_i       (clk_pix),
         .clk_dsp_i       (clk_dsp),
@@ -197,14 +205,6 @@ module tb_sparevideo #(
             end
         end
 
-        begin : log_thresh
-            integer thresh_arg;
-            thresh_arg = 16;
-            if ($value$plusargs("THRESH=%d", thresh_arg))
-                $display("TB note: +THRESH=%0d seen (informational; MOTION_THRESH is compile-time)",
-                         thresh_arg);
-        end
-
         $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_frames, cfg_mode);
         $display("  ctrl_flow: %s",
@@ -212,6 +212,10 @@ module tb_sparevideo #(
             (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion"      :
             (ctrl_flow == sparevideo_pkg::CTRL_MASK_DISPLAY)  ? "mask"        :
             (ctrl_flow == sparevideo_pkg::CTRL_CCL_BBOX)      ? "ccl_bbox"    : "unknown");
+        $display("  CFG=%s thresh=%0d a=%0d a_slow=%0d grace=%0d ga=%0d gauss=%0b morph=%0b hflip=%0b bbox=0x%06x",
+                 CFG_NAME, CFG.motion_thresh, CFG.alpha_shift, CFG.alpha_shift_slow,
+                 CFG.grace_frames, CFG.grace_alpha_shift,
+                 CFG.gauss_en, CFG.morph_en, CFG.hflip_en, CFG.bbox_color);
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 

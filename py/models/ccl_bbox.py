@@ -25,7 +25,7 @@ def _mask_to_grey_canvas(mask):
     return out
 
 
-def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
+def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
         grace_alpha_shift=1, gauss_en=True, morph_en=True, **kwargs):
     """ccl_bbox reference model.
 
@@ -58,7 +58,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             y_bg = y_cur_filt.copy()
             primed = True
         else:
-            raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            raw_mask = _compute_mask(y_cur_filt, y_bg, motion_thresh)
             # Morph opening cleans the mask for display and CCL; EMA uses
             # raw_mask to match the RTL datapath.
             clean_mask = morph_open(raw_mask) if morph_en else raw_mask

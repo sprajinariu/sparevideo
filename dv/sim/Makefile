@@ -22,21 +22,15 @@ DPI_SRC  = ../sv/tb_utils.c
 VOBJ_DIR = obj_dir
 
 # Simulation defaults
-SIMULATOR   ?= verilator
-WIDTH       ?= 320
-HEIGHT      ?= 240
-FRAMES      ?= 4
-MODE        ?= text
-CTRL_FLOW   ?= motion
-ALPHA_SHIFT       ?= 3
-ALPHA_SHIFT_SLOW  ?= 6
-GRACE_FRAMES      ?= 8
-GRACE_ALPHA_SHIFT ?= 1
-GAUSS_EN          ?= 1
-MORPH             ?= 1
-HFLIP             ?= 1
-INFILE      ?= ../data/input.txt
-OUTFILE     ?= ../data/output.txt
+SIMULATOR ?= verilator
+WIDTH     ?= 320
+HEIGHT    ?= 240
+FRAMES    ?= 4
+MODE      ?= text
+CTRL_FLOW ?= motion
+CFG       ?= default
+INFILE    ?= ../data/input.txt
+OUTFILE   ?= ../data/output.txt
 
 SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
            +WIDTH=$(WIDTH) +HEIGHT=$(HEIGHT) \
@@ -85,7 +79,7 @@ VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
-            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GALPHA_SHIFT=$(ALPHA_SHIFT) -GALPHA_SHIFT_SLOW=$(ALPHA_SHIFT_SLOW) -GGRACE_FRAMES=$(GRACE_FRAMES) -GGRACE_ALPHA_SHIFT=$(GRACE_ALPHA_SHIFT) -GGAUSS_EN=$(GAUSS_EN) -GMORPH=$(MORPH) -GHFLIP=$(HFLIP) \
+            -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GCFG_NAME='"$(CFG)"' \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -95,11 +89,12 @@ VLT_FLAGS = --binary -sv --timing \
             -Wno-CASEINCOMPLETE \
             --trace
 
-# Recompile when WIDTH/HEIGHT change (they affect -G parameters).
+# Recompile when WIDTH/HEIGHT/CFG change.
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GRACE_ALPHA_SHIFT) $(GAUSS_EN) $(MORPH) $(HFLIP)" | cmp -s - $@ || echo "$(WIDTH) $(HEIGHT) $(ALPHA_SHIFT) $(ALPHA_SHIFT_SLOW) $(GRACE_FRAMES) $(GRACE_ALPHA_SHIFT) $(GAUSS_EN) $(MORPH) $(HFLIP)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(CFG)" | cmp -s - $@ || \
+	  echo "$(WIDTH) $(HEIGHT) $(CFG)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo
