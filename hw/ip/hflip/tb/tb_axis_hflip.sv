@@ -8,10 +8,10 @@
 //   T1 -- enable_i=1, gradient ramp: output is exactly the input mirrored
 //         left-to-right, line by line, frame by frame.
 //   T2 -- enable_i=1, multi-frame: two distinct frames; second frame's
-//         first-line tuser asserts on the first XMIT pixel of frame 2.
-//   T3 -- enable_i=1, downstream stall in the middle of XMIT: output is
+//         first-line tuser asserts on the first TX pixel of frame 2.
+//   T3 -- enable_i=1, downstream stall in the middle of TX: output is
 //         identical to the no-stall reference (golden mirror).
-//   T4 -- enable_i=1, mid-RECV upstream pause (tvalid=0): output unchanged.
+//   T4 -- enable_i=1, mid-RX upstream pause (tvalid=0): output unchanged.
 //   T5 -- enable_i=0 passthrough: input emerges combinationally on the
 //         output with zero latency and no mirror.
 
@@ -187,14 +187,14 @@ module tb_axis_hflip;
         drive_frame(frame_b);
         check_mirror(frame_b, "T2");
 
-        // T3: downstream stall mid-XMIT
-        $display("T3: downstream stall mid-XMIT");
+        // T3: downstream stall mid-TX
+        $display("T3: downstream stall mid-TX");
         clear_capture();
         fork
             drive_frame(frame_a);
             begin
                 // Hold m_tready low for a brief window in the middle of the
-                // first XMIT phase, then release. Output count must remain V*H.
+                // first TX phase, then release. Output count must remain V*H.
                 for (int b = 0; b < H * 3; b++) @(posedge clk);
                 m_tready = 1'b0;
                 for (int b = 0; b < 5; b++)         @(posedge clk);
@@ -203,7 +203,7 @@ module tb_axis_hflip;
         join
         check_mirror(frame_a, "T3");
 
-        // T4: mid-RECV upstream pause -- TB drops drv_tvalid for a few cycles
+        // T4: mid-RX upstream pause -- TB drops drv_tvalid for a few cycles
         // mid-line (drive_frame already does this implicitly between rows; here
         // we additionally insert a single in-row pause).
         $display("T4: in-row upstream tvalid bubble");

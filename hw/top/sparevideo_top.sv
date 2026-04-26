@@ -93,8 +93,8 @@ module sparevideo_top #(
     // -----------------------------------------------------------------
     // Input async FIFO: clk_pix -> clk_dsp
     // -----------------------------------------------------------------
-    // Sized to absorb the axis_hflip RECV/XMIT alternation. While hflip is
-    // in XMIT (320 dsp cycles = ~80 pix_clk cycles), the upstream cannot be
+    // Sized to absorb the axis_hflip RX/TX alternation. While hflip is
+    // in TX (320 dsp cycles = ~80 pix_clk cycles), the upstream cannot be
     // accepted; the input CDC FIFO must hold the worst-case ~80 entries.
     // 128 gives ~50% headroom.
     localparam int IN_FIFO_DEPTH = 128;
@@ -553,7 +553,7 @@ module sparevideo_top #(
     // -----------------------------------------------------------------
     // Output async FIFO: clk_dsp -> clk_pix
     // -----------------------------------------------------------------
-    // Sized to absorb axis_hflip XMIT bursts. During XMIT, hflip emits at
+    // Sized to absorb axis_hflip TX bursts. During TX, hflip emits at
     // 1 pix/dsp_clk = 100 MHz while VGA drains at 1 pix/pix_clk = 25 MHz, so
     // the FIFO accumulates ~3*H_ACTIVE/4 entries per line before flow control
     // throttles upstream. At H_ACTIVE=320 that's ~240 entries; 256 covers it
@@ -562,7 +562,7 @@ module sparevideo_top #(
     //
     // NOTE: This sizing is calibrated for H_ACTIVE <= 320. Future SCALER=1
     // configurations (H_ACTIVE=640) require revisiting -- doubling H_ACTIVE
-    // doubles the per-XMIT delta (~480), exceeding 256.
+    // doubles the per-TX delta (~480), exceeding 256.
     localparam int OUT_FIFO_DEPTH = 256;
 
     logic [23:0] pix_out_tdata;

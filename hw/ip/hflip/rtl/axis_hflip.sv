@@ -4,19 +4,18 @@
 
 // axis_hflip -- horizontal mirror stage (selfie-cam) on a 24-bit RGB AXIS.
 //
-// FSM-driven RECV/XMIT alternation over a single H_ACTIVE x 24-bit line
-// buffer. Receive phase fills line_buf[col]; transmit phase reads
-// line_buf[H_ACTIVE-1-col]. SOF is latched at write-phase start and
-// re-emitted on the first XMIT pixel; EOL emitted on the last XMIT pixel
-// of every line. No inter-frame state.
+// FSM-driven RX/TX alternation over a single H_ACTIVE x 24-bit line buffer.
+// RX phase fills line_buf[col]; TX phase reads line_buf[H_ACTIVE-1-col].
+// SOF is latched on its accepted RX beat and re-emitted on the first TX
+// pixel; EOL emitted on the last TX pixel of every line. No inter-frame
+// state.
 //
 // Latency: ~1 line (H_ACTIVE proc_clk cycles).
-// Throughput: 1 pixel/cycle long-term; bursty (RECV/XMIT alternation).
+// Throughput: 1 pixel/cycle long-term; bursty (RX/TX alternation).
 //
-// Blanking / FIFO sizing requirements:
-//   The upstream CDC FIFO must absorb one line of write-clock pixels
-//   during XMIT. For pix_clk = 25 MHz, dsp_clk = 100 MHz, H_ACTIVE = 320,
-//   that's <= 80 entries. IN_FIFO_DEPTH = 128 in the top is safe.
+// Backpressure: s_axis_tready_o is deasserted for the full TX phase. The
+// system-level CDC FIFO must be sized to absorb the resulting upstream
+// stall (see sparevideo-top-arch.md for the project-wide sizing).
 //
 // enable_i: when 1, the FSM-driven mirror path drives the output. When 0,
 // s_axis_* is forwarded combinatorially to m_axis_* with zero latency and
@@ -52,66 +51,66 @@ module axis_hflip #(
     localparam int COL_W = $clog2(H_ACTIVE + 1);
 
     // ---- FSM ----
-    typedef enum logic [0:0] { S_RECV, S_XMIT } state_e;
+    typedef enum logic [0:0] { S_RX, S_TX } state_e;
     state_e state_q;
 
-    logic [COL_W-1:0] wr_col;          // 0..H_ACTIVE-1 during RECV
-    logic [COL_W-1:0] rd_col;          // 0..H_ACTIVE-1 during XMIT
-    logic             sof_pending_q;   // latched SOF, applied on first XMIT pixel
+    logic [COL_W-1:0] wr_col;          // 0..H_ACTIVE-1 during RX
+    logic [COL_W-1:0] rd_col;          // 0..H_ACTIVE-1 during TX
+    logic             sof_pending_q;   // latched SOF, applied on first TX pixel
 
     // ---- Line buffer ----
     logic [23:0] line_buf [H_ACTIVE];
 
-    // ---- RECV-phase combinational ----
-    logic recv_ready;
-    logic recv_accept;
-    assign recv_ready  = (state_q == S_RECV);
-    assign recv_accept = recv_ready && s_axis_tvalid_i && enable_i;
+    // ---- RX-phase combinational ----
+    logic rx_ready;
+    logic rx_accept;
+    assign rx_ready  = (state_q == S_RX);
+    assign rx_accept = rx_ready && s_axis_tvalid_i && enable_i;
 
-    // ---- XMIT-phase combinational ----
-    logic        xmit_active;
-    logic [23:0] xmit_data;
-    logic        xmit_sof;
-    logic        xmit_eol;
-    logic        xmit_accept;
-    assign xmit_active = (state_q == S_XMIT);
-    assign xmit_data   = line_buf[(COL_W)'(H_ACTIVE - 1) - rd_col];
-    assign xmit_sof    = sof_pending_q && (rd_col == '0);
-    assign xmit_eol    = (rd_col == (COL_W)'(H_ACTIVE - 1));
-    assign xmit_accept = xmit_active && m_axis_tready_i;
+    // ---- TX-phase combinational ----
+    logic        tx_active;
+    logic [23:0] tx_data;
+    logic        tx_sof;
+    logic        tx_eol;
+    logic        tx_accept;
+    assign tx_active = (state_q == S_TX);
+    assign tx_data   = line_buf[(COL_W)'(H_ACTIVE - 1) - rd_col];
+    assign tx_sof    = sof_pending_q && (rd_col == '0);
+    assign tx_eol    = (rd_col == (COL_W)'(H_ACTIVE - 1));
+    assign tx_accept = tx_active && m_axis_tready_i;
 
     // ---- Sequential: state, counters, line buffer write ----
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
-            state_q       <= S_RECV;
+            state_q       <= S_RX;
             wr_col        <= '0;
             rd_col        <= '0;
             sof_pending_q <= 1'b0;
         end else begin
             unique case (state_q)
-                S_RECV: begin
-                    if (recv_accept) begin
+                S_RX: begin
+                    if (rx_accept) begin
                         // SOF realigns wr_col to 0 (and clears any stale state)
                         if (s_axis_tuser_i)
                             wr_col <= (COL_W)'(1);
                         else
                             wr_col <= wr_col + (COL_W)'(1);
                         line_buf[s_axis_tuser_i ? '0 : wr_col] <= s_axis_tdata_i;
-                        // Latch sof for the upcoming XMIT
+                        // Latch sof for the upcoming TX
                         if (s_axis_tuser_i)
                             sof_pending_q <= 1'b1;
                         // EOL terminates the receive phase
                         if (s_axis_tlast_i) begin
-                            state_q <= S_XMIT;
+                            state_q <= S_TX;
                             rd_col  <= '0;
                             wr_col  <= '0;
                         end
                     end
                 end
-                S_XMIT: begin
-                    if (xmit_accept) begin
-                        if (xmit_eol) begin
-                            state_q       <= S_RECV;
+                S_TX: begin
+                    if (tx_accept) begin
+                        if (tx_eol) begin
+                            state_q       <= S_RX;
                             rd_col        <= '0;
                             sof_pending_q <= 1'b0;
                         end else begin
@@ -119,7 +118,7 @@ module axis_hflip #(
                         end
                     end
                 end
-                default: state_q <= S_RECV;
+                default: state_q <= S_RX;
             endcase
         end
     end
@@ -127,11 +126,11 @@ module axis_hflip #(
     // ---- enable_i bypass mux ----
     always_comb begin
         if (enable_i) begin
-            s_axis_tready_o = recv_ready;
-            m_axis_tdata_o  = xmit_data;
-            m_axis_tvalid_o = xmit_active;
-            m_axis_tlast_o  = xmit_active && xmit_eol;
-            m_axis_tuser_o  = xmit_active && xmit_sof;
+            s_axis_tready_o = rx_ready;
+            m_axis_tdata_o  = tx_data;
+            m_axis_tvalid_o = tx_active;
+            m_axis_tlast_o  = tx_active && tx_eol;
+            m_axis_tuser_o  = tx_active && tx_sof;
         end else begin
             s_axis_tready_o = m_axis_tready_i;
             m_axis_tdata_o  = s_axis_tdata_i;
