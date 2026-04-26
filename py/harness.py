@@ -114,12 +114,14 @@ def cmd_verify(args):
     grace_alpha_shift = getattr(args, "grace_alpha_shift", 1)
     gauss_en = bool(getattr(args, "gauss_en", 1))
     morph_en = bool(getattr(args, "morph", 1))
+    hflip_en = bool(getattr(args, "hflip", 1))
     expected_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift,
                                 alpha_shift_slow=alpha_shift_slow,
                                 grace_frames=grace_frames,
                                 grace_alpha_shift=grace_alpha_shift,
                                 gauss_en=gauss_en,
-                                morph_en=morph_en)
+                                morph_en=morph_en,
+                                hflip_en=hflip_en)
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
@@ -156,6 +158,7 @@ def cmd_render(args):
     grace_alpha_shift = getattr(args, "grace_alpha_shift", 1)
     gauss_en = bool(getattr(args, "gauss_en", 1))
     morph_en = bool(getattr(args, "morph", 1))
+    hflip_en = bool(getattr(args, "hflip", 1))
     reference_frames = None
     if ctrl_flow:
         reference_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift,
@@ -163,7 +166,8 @@ def cmd_render(args):
                                      grace_frames=grace_frames,
                                      grace_alpha_shift=grace_alpha_shift,
                                      gauss_en=gauss_en,
-                                     morph_en=morph_en)
+                                     morph_en=morph_en,
+                                     hflip_en=hflip_en)
     out_path = render_grid(input_frames, output_frames, args.render_output,
                            reference_frames=reference_frames)
     print(f"Rendered comparison grid to {out_path}")
@@ -190,6 +194,8 @@ def main():
                         help="Output file path")
     p_prep.add_argument("--morph", type=int, default=1, dest="morph",
                         help="3x3 morphological opening on mask (0/1)")
+    p_prep.add_argument("--hflip", type=int, default=1, dest="hflip",
+                        help="Horizontal flip on/off (0/1, default 1)")
 
     # verify
     p_ver = sub.add_parser("verify", parents=[common],
@@ -217,6 +223,8 @@ def main():
                        help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
     p_ver.add_argument("--morph", type=int, default=1, dest="morph",
                        help="3x3 morphological opening on mask (0/1)")
+    p_ver.add_argument("--hflip", type=int, default=1, dest="hflip",
+                       help="Horizontal flip on/off (0/1, default 1)")
 
     # render
     p_ren = sub.add_parser("render", parents=[common],
@@ -240,6 +248,8 @@ def main():
                        help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
     p_ren.add_argument("--morph", type=int, default=1, dest="morph",
                        help="3x3 morphological opening on mask (0/1)")
+    p_ren.add_argument("--hflip", type=int, default=1, dest="hflip",
+                       help="Horizontal flip on/off (0/1, default 1)")
     p_ren.add_argument("--render-output", default="renders/comparison.png",
                        help="Output PNG path")
 

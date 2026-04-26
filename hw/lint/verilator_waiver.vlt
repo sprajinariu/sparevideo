@@ -23,6 +23,8 @@ lint_off -rule TIMESCALEMOD    -file "*axis_fork.sv"
 // axis_window3x3 and axis_gauss3x3 have no `timescale directive.
 lint_off -rule TIMESCALEMOD    -file "*axis_window3x3.sv"
 lint_off -rule TIMESCALEMOD    -file "*axis_gauss3x3.sv"
+// axis_hflip has no `timescale directive; harmless mismatch vs vendored files.
+lint_off -rule TIMESCALEMOD    -file "*axis_hflip.sv"
 // EMA step is 9-bit signed but only [7:0] feeds the 8-bit write-back.
 // Bit [8] (sign extension) is intentionally unused.
 lint_off -rule UNUSEDSIGNAL    -file "*motion_core.sv" -match "*ema_step*"

@@ -13,6 +13,7 @@ filesets:
       - opensoc:ip:vga
       - sparevideo:third_party:verilog-axis
       - sparevideo:ip:axis
+      - sparevideo:ip:hflip
       - sparevideo:ip:motion
       - sparevideo:ip:ccl
       - sparevideo:ip:overlay

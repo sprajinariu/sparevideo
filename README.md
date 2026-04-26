@@ -12,6 +12,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 |----------|--------|
 | [`sparevideo-top-arch.md`](docs/specs/sparevideo-top-arch.md) | Top-level pipeline, clock domains, FIFO sizing, SVAs |
 | [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
+| [`axis_hflip-arch.md`](docs/specs/axis_hflip-arch.md) | Horizontal mirror (selfie-cam) AXIS stage with single line buffer + `enable_i` bypass |
 | [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; `EDGE_POLICY` parameter) |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
 | [`axis_morph3x3_open-arch.md`](docs/specs/axis_morph3x3_open-arch.md) | 3x3 morphological opening on mask (erode → dilate) |
@@ -36,6 +37,9 @@ hw/ip/rgb2ycrcb/rtl/
 
 hw/ip/axis/rtl/
 └── axis_fork.sv               Zero-latency AXI4-Stream 1-to-2 broadcast fork with per-output acceptance tracking
+
+hw/ip/hflip/rtl/
+└── axis_hflip.sv             Horizontal mirror (selfie-cam) — single line buffer, RECV/XMIT FSM, enable_i bypass
 
 hw/ip/window/rtl/
 └── axis_window3x3.sv          Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; EDGE_POLICY parameter)
@@ -72,6 +76,9 @@ third_party/verilog-axis/rtl/  Vendored alexforencich/verilog-axis (MIT)
 ```
 hw/ip/rgb2ycrcb/tb/
 └── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
+
+hw/ip/hflip/tb/
+└── tb_axis_hflip.sv          5 tests: gradient mirror, multi-frame SOF, downstream stall, in-row tvalid bubble, enable_i passthrough
 
 hw/ip/window/tb/
 └── tb_axis_window3x3.sv       6 tests: window ordering, top/left/right/bottom edge replication, no-blanking busy_o
@@ -174,6 +181,10 @@ make run-pipeline SOURCE="synthetic:noisy_moving_box" CTRL_FLOW=mask ALPHA_SHIFT
 make run-pipeline SOURCE="synthetic:thin_moving_line" CTRL_FLOW=mask MORPH=0 FRAMES=6
 make run-pipeline SOURCE="synthetic:thin_moving_line" CTRL_FLOW=mask MORPH=1 FRAMES=6
 
+# Horizontal mirror (selfie-cam). Default HFLIP=1; 0 = bypass.
+make run-pipeline HFLIP=0                                # bypass (no flip)
+make run-pipeline HFLIP=1                                # mirror (default)
+
 # Grace window tuning — suppress frame-0 hard-init ghosts
 make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=8 FRAMES=12
 make run-pipeline SOURCE="synthetic:moving_box" CTRL_FLOW=mask GRACE_FRAMES=16 FRAMES=12
@@ -229,6 +240,7 @@ make render
 make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
+make test-ip-hflip           # axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough
 make test-ip-window          # axis_window3x3: 6 tests, window ordering + edge replication + busy_o fallback
 make test-ip-gauss3x3        # axis_gauss3x3: 11 tests, centered Gaussian + latency + busy_o fallback
 make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
@@ -256,6 +268,8 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `ALPHA_SHIFT_SLOW` | `6` | EMA background adaptation rate for motion pixels: `alpha = 1/(1 << N)`. Default 6 (α=1/64). Larger than `ALPHA_SHIFT` so motion pixels barely drift bg → no trails. Also governs absorption time of stopped objects. Compile-time RTL parameter propagated via `-G`. |
 | `GRACE_FRAMES` | `8` | Frames after priming where bg updates use the fast EMA rate unconditionally. Suppresses frame-0 hard-init ghosts. Set to 0 to disable. |
 | `GAUSS_EN` | `1` | Gaussian pre-filter on Y channel: `1` = enabled (3x3 blur before motion threshold), `0` = disabled (raw Y). Reduces salt-and-pepper noise in the motion mask. Compile-time RTL parameter propagated to Verilator via `-G`. |
+| `MORPH` | `1` | Morphological opening on/off (default 1, 0 = bypass). |
+| `HFLIP` | `1` | Horizontal mirror on/off (default 1, 0 = bypass). |
 
 ### Synthetic Sources
 
