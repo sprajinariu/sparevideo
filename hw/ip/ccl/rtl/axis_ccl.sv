@@ -25,20 +25,12 @@ module axis_ccl #(
     input  logic rst_n_i,
 
     // AXI4-Stream input — mask (1 bit)
-    input  logic s_axis_tdata_i,
-    input  logic s_axis_tvalid_i,
-    output logic s_axis_tready_o,
-    input  logic s_axis_tlast_i,
-    input  logic s_axis_tuser_i,
+    axis_if.rx s_axis,
 
     // Sideband output — packed arrays, one slot per output bbox.
-    output logic [N_OUT-1:0]                       bbox_valid_o,   // per-slot valid
-    output logic [N_OUT-1:0][$clog2(H_ACTIVE)-1:0] bbox_min_x_o,
-    output logic [N_OUT-1:0][$clog2(H_ACTIVE)-1:0] bbox_max_x_o,
-    output logic [N_OUT-1:0][$clog2(V_ACTIVE)-1:0] bbox_min_y_o,
-    output logic [N_OUT-1:0][$clog2(V_ACTIVE)-1:0] bbox_max_y_o,
-    output logic                                   bbox_swap_o,    // 1-cycle strobe on new frame
-    output logic                                   bbox_empty_o    // no valid slots
+    bbox_if.tx bboxes,
+    output logic bbox_swap_o,    // 1-cycle strobe on new frame
+    output logic bbox_empty_o    // no valid slots
 );
 
     // Backpressure during the EOF resolution FSM — see the tready assign
@@ -61,11 +53,11 @@ module axis_ccl #(
         if (!rst_n_i) begin
             col <= '0;
             row <= '0;
-        end else if (s_axis_tvalid_i && s_axis_tready_o) begin
-            if (s_axis_tuser_i) begin
+        end else if (s_axis.tvalid && s_axis.tready) begin
+            if (s_axis.tuser) begin
                 col <= COL_W'(1);
                 row <= '0;
-            end else if (s_axis_tlast_i) begin
+            end else if (s_axis.tlast) begin
                 col <= '0;
                 row <= row + 1;
             end else begin
@@ -105,11 +97,11 @@ module axis_ccl #(
     logic [N_OUT-1:0][ROW_W-1:0]            back_min_y;
     logic [N_OUT-1:0][ROW_W-1:0]            back_max_y;
 
-    assign bbox_valid_o = front_valid;
-    assign bbox_min_x_o = front_min_x;
-    assign bbox_max_x_o = front_max_x;
-    assign bbox_min_y_o = front_min_y;
-    assign bbox_max_y_o = front_max_y;
+    assign bboxes.valid = front_valid;
+    assign bboxes.min_x = front_min_x;
+    assign bboxes.max_x = front_max_x;
+    assign bboxes.min_y = front_min_y;
+    assign bboxes.max_y = front_max_y;
     assign bbox_empty_o = (front_valid == '0);
 
     // ----------------------------------------------------------------
@@ -154,16 +146,16 @@ module axis_ccl #(
             col_d1    <= '0;
             row_d1    <= '0;
         end else begin
-            accept_d1 <= s_axis_tvalid_i && s_axis_tready_o;
-            tdata_d1  <= s_axis_tdata_i;
-            tuser_d1  <= s_axis_tuser_i;
-            tlast_d1  <= s_axis_tlast_i;
+            accept_d1 <= s_axis.tvalid && s_axis.tready;
+            tdata_d1  <= s_axis.tdata;
+            tuser_d1  <= s_axis.tuser;
+            tlast_d1  <= s_axis.tlast;
             // On SOF, the counters still hold post-tlast values from the
             // previous frame (col=0, row=V_ACTIVE). The logical position of
             // the tuser pixel is (0, 0) — force col_d1/row_d1 to match so
             // accumulator updates use the correct coordinate.
-            col_d1    <= s_axis_tuser_i ? '0 : col;
-            row_d1    <= s_axis_tuser_i ? '0 : row;
+            col_d1    <= s_axis.tuser ? '0 : col;
+            row_d1    <= s_axis.tuser ? '0 : row;
         end
     end
 
@@ -320,7 +312,7 @@ module axis_ccl #(
     // (~1,300 cycles worst case); the fork + motion_detect propagate the
     // stall and the input async FIFO absorbs it during vblank. The
     // `assert_no_accept_during_eof_fsm` SVA is a regression trip-wire.
-    assign s_axis_tready_o = (phase == PHASE_IDLE);
+    assign s_axis.tready = (phase == PHASE_IDLE);
 
     // Walker for labels 1..N_LABELS_INT-1 (fits in LABEL_W bits).
     logic [LABEL_W-1:0] lbl_idx;
@@ -582,7 +574,7 @@ module axis_ccl #(
     // if a downstream change lets a beat slip through during PHASE_A..SWAP.
     assert_no_accept_during_eof_fsm: assert property (
         @(posedge clk_i) disable iff (!rst_n_i)
-            !(s_axis_tvalid_i && s_axis_tready_o && (phase != PHASE_IDLE))
+            !(s_axis.tvalid && s_axis.tready && (phase != PHASE_IDLE))
     ) else $error("axis_ccl: input beat accepted during EOF FSM (phase=%0d) — V_BLANK insufficient or tready gate missing",
                   phase);
 `endif

@@ -57,21 +57,13 @@ sparevideo_top
 
 ### 3.2 Ports
 
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
-| `clk_i`           | input  | 1  | `clk_dsp`, rising edge |
-| `rst_n_i`         | input  | 1  | Active-low synchronous reset |
-| `enable_i`        | input  | 1  | 1 = mirror via FSM; 0 = zero-latency combinational passthrough. Frame-stable. |
-| `s_axis_tdata_i`  | input  | 24 | RGB pixel: `[23:16]` R, `[15:8]` G, `[7:0]` B |
-| `s_axis_tvalid_i` | input  | 1  | AXI4-Stream valid |
-| `s_axis_tready_o` | output | 1  | Ready. 1 during RX phase, 0 during TX. When `enable_i=0`, mirrors `m_axis_tready_i`. |
-| `s_axis_tlast_i`  | input  | 1  | EOL (last pixel of input row) |
-| `s_axis_tuser_i`  | input  | 1  | SOF (first pixel of input frame) |
-| `m_axis_tdata_o`  | output | 24 | Mirrored RGB pixel |
-| `m_axis_tvalid_o` | output | 1  | Valid. Asserted during TX phase. |
-| `m_axis_tready_i` | input  | 1  | Downstream ready |
-| `m_axis_tlast_o`  | output | 1  | EOL (last pixel of output row) |
-| `m_axis_tuser_o`  | output | 1  | SOF (first pixel of output frame) |
+| Signal | Direction | Type | Description |
+|--------|-----------|------|-------------|
+| `clk_i`    | input  | `logic`      | `clk_dsp`, rising edge |
+| `rst_n_i`  | input  | `logic`      | Active-low synchronous reset |
+| `enable_i` | input  | `logic`      | 1 = mirror via FSM; 0 = zero-latency combinational passthrough. Frame-stable. |
+| `s_axis`   | input  | `axis_if.rx` | RGB input stream (DATA_W=24, USER_W=1; tuser=SOF). tready=1 during RX phase, 0 during TX; when `enable_i=0` mirrors `m_axis.tready`. |
+| `m_axis`   | output | `axis_if.tx` | RGB mirrored output stream (DATA_W=24, USER_W=1). tvalid asserted during TX phase. |
 
 ---
 

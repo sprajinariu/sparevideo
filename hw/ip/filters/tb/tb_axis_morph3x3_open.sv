@@ -5,7 +5,7 @@
 // Unit testbench for axis_morph3x3_open.
 //
 // axis_morph3x3_open is a pure structural composite of axis_morph3x3_erode feeding
-// axis_morph3x3_dilate on an internal AXI4-Stream link. The combined operation
+// axis_morph3x3_dilate on an internal AXI4-Stream interface. The combined operation
 // is morphological opening: erosion followed by dilation. EDGE_REPLICATE at
 // all four borders is inherited from both sub-modules.
 //
@@ -59,39 +59,36 @@ module tb_axis_morph3x3_open;
     logic drv_tready = 1'b1;
     logic drv_enable = 1'b1;
 
-    logic dut_tvalid, dut_tlast, dut_tuser, dut_tdata;
     logic dut_tready, dut_enable;
 
     always_ff @(posedge clk) begin
-        dut_tvalid <= drv_tvalid;
-        dut_tlast  <= drv_tlast;
-        dut_tuser  <= drv_tuser;
-        dut_tdata  <= drv_tdata;
         dut_tready <= drv_tready;
         dut_enable <= drv_enable;
     end
 
-    // ---- DUT ----
-    logic m_tdata, m_tvalid, m_tlast, m_tuser;
-    logic s_tready;
+    // ---- AXI4-Stream interfaces ----
+    axis_if #(.DATA_W(1), .USER_W(1)) s_axis ();
+    axis_if #(.DATA_W(1), .USER_W(1)) m_axis ();
 
+    always_ff @(posedge clk) begin
+        s_axis.tdata  <= drv_tdata;
+        s_axis.tvalid <= drv_tvalid;
+        s_axis.tlast  <= drv_tlast;
+        s_axis.tuser  <= drv_tuser;
+    end
+
+    assign m_axis.tready = dut_tready;
+
+    // ---- DUT ----
     axis_morph3x3_open #(
         .H_ACTIVE (H),
         .V_ACTIVE (V)
     ) u_dut (
-        .clk_i          (clk),
-        .rst_n_i        (rst_n),
-        .enable_i       (dut_enable),
-        .s_axis_tdata_i (dut_tdata),
-        .s_axis_tvalid_i(dut_tvalid),
-        .s_axis_tready_o(s_tready),
-        .s_axis_tlast_i (dut_tlast),
-        .s_axis_tuser_i (dut_tuser),
-        .m_axis_tdata_o (m_tdata),
-        .m_axis_tvalid_o(m_tvalid),
-        .m_axis_tready_i(dut_tready),
-        .m_axis_tlast_o (m_tlast),
-        .m_axis_tuser_o (m_tuser)
+        .clk_i    (clk),
+        .rst_n_i  (rst_n),
+        .enable_i (dut_enable),
+        .s_axis   (s_axis),
+        .m_axis   (m_axis)
     );
 
     // ---- Golden: 3x3 AND (erode) with edge replication ----
@@ -233,8 +230,8 @@ module tb_axis_morph3x3_open;
         cap_cnt = 0;
         while (cap_cnt < NUM_PIX) begin
             @(posedge clk);
-            if (m_tvalid && dut_tready) begin
-                captured[cap_cnt] = m_tdata;
+            if (m_axis.tvalid && m_axis.tready) begin
+                captured[cap_cnt] = m_axis.tdata;
                 cap_cnt = cap_cnt + 1;
             end
         end
@@ -511,11 +508,11 @@ module tb_axis_morph3x3_open;
                     while (saw_valid_out == 0) begin
                         @(posedge clk);
                         cyc = cyc + 1;
-                        if (saw_valid_in == 0 && dut_tvalid && s_tready) begin
+                        if (saw_valid_in == 0 && s_axis.tvalid && s_axis.tready) begin
                             first_valid_in_cyc = cyc;
                             saw_valid_in = 1;
                         end
-                        if (saw_valid_out == 0 && m_tvalid && dut_tready) begin
+                        if (saw_valid_out == 0 && m_axis.tvalid && m_axis.tready) begin
                             first_valid_out_cyc = cyc;
                             saw_valid_out = 1;
                         end
@@ -526,12 +523,12 @@ module tb_axis_morph3x3_open;
             repeat (5) @(posedge clk);
 
             if (saw_valid_in == 0 || saw_valid_out == 0) begin
-                $display("FAIL test10: did not observe both first valid_i (%0d) and first valid_o (%0d)",
+                $display("FAIL test10: did not observe valid_i (%0d) or valid_o (%0d)",
                          saw_valid_in, saw_valid_out);
                 num_errors = num_errors + 1;
             end else begin
                 measured_latency = first_valid_out_cyc - first_valid_in_cyc;
-                $display("Test 10: first valid_i @cyc %0d, first valid_o @cyc %0d, latency %0d (expected %0d)",
+                $display("Test 10: in @%0d out @%0d latency %0d (exp %0d)",
                          first_valid_in_cyc, first_valid_out_cyc,
                          measured_latency, expected_latency);
                 if (measured_latency != expected_latency) begin

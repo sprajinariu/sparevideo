@@ -20,6 +20,12 @@ lint_off -rule UNUSEDSIGNAL    -file "*rgb2ycrcb.sv"
 // mismatch vs vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*rgb2ycrcb.sv"
 lint_off -rule TIMESCALEMOD    -file "*axis_fork.sv"
+// axis_fork's DATA_WIDTH and USER_WIDTH parameters are retained for
+// documentation / future use but are not consumed by the module body after
+// conversion to axis_if ports. The interface instances at the call site carry
+// the actual widths.
+lint_off -rule UNUSEDPARAM     -file "*axis_fork.sv" -match "*DATA_WIDTH*"
+lint_off -rule UNUSEDPARAM     -file "*axis_fork.sv" -match "*USER_WIDTH*"
 // axis_window3x3 and axis_gauss3x3 have no `timescale directive.
 lint_off -rule TIMESCALEMOD    -file "*axis_window3x3.sv"
 lint_off -rule TIMESCALEMOD    -file "*axis_gauss3x3.sv"
@@ -43,3 +49,16 @@ lint_off -rule TIMESCALEMOD   -file "*sparevideo_pkg.sv"
 // file list (or once the TB is moved into the FuseSoC core's lint target).
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_DEFAULT_HFLIP*"
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_NO_*"
+// sparevideo_if.sv declares two interfaces (axis_if + bbox_if) in one file —
+// intentional one-file pattern mirroring sparevideo_pkg.sv. Suppresses the
+// DECLFILENAME warning. Also no `timescale directive, like sparevideo_pkg.sv.
+lint_off -rule DECLFILENAME    -file "*sparevideo_if.sv"
+lint_off -rule TIMESCALEMOD    -file "*sparevideo_if.sv"
+// axis_async_fifo_ifc is a wrapper that exposes only a minimal subset of
+// the vendored axis_async_fifo's ports (data, valid, ready, last, user, and
+// status depths). Optional ports (tkeep, tid, tdest, pause, overflow, bad_frame,
+// good_frame) are left unconnected by design — not errors, but lint warnings.
+lint_off -rule PINMISSING      -file "*axis_async_fifo_ifc.sv"
+lint_off -rule PINCONNECTEMPTY -file "*axis_async_fifo_ifc.sv"
+// axis_async_fifo_ifc has no `timescale directive; harmless mismatch vs vendored files.
+lint_off -rule TIMESCALEMOD    -file "*axis_async_fifo_ifc.sv"

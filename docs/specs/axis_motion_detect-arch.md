@@ -140,28 +140,18 @@ the input to `axis_overlay_bbox` independently of mask processing.
 
 ### 3.2 Ports
 
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
-| `clk_i` | input | 1 | DSP clock (`clk_dsp`) |
-| `rst_n_i` | input | 1 | Active-low synchronous reset |
-| **AXI4-Stream input (RGB888)** | | | |
-| `s_axis_tdata_i` | input | 24 | RGB888 pixel input |
-| `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
-| `s_axis_tready_o` | output | 1 | AXI4-Stream ready (= `NOT pipe_valid OR msk_tready`) |
-| `s_axis_tlast_i` | input | 1 | End-of-line |
-| `s_axis_tuser_i` | input | 1 | Start-of-frame |
-| **AXI4-Stream output — mask (1 bit)** | | | |
-| `m_axis_msk_tdata_o` | output | 1 | Motion mask bit |
-| `m_axis_msk_tvalid_o` | output | 1 | Mask stream valid |
-| `m_axis_msk_tready_i` | input | 1 | Mask stream ready |
-| `m_axis_msk_tlast_o` | output | 1 | Mask end-of-line |
-| `m_axis_msk_tuser_o` | output | 1 | Mask start-of-frame |
+| Signal | Direction | Type | Description |
+|--------|-----------|------|-------------|
+| `clk_i` | input | `logic` | DSP clock (`clk_dsp`) |
+| `rst_n_i` | input | `logic` | Active-low synchronous reset |
+| `s_axis` | input | `axis_if.rx` | RGB888 input stream (DATA_W=24, USER_W=1; tuser=SOF, tlast=EOL). tready = `NOT pipe_valid OR msk_tready`. |
+| `m_axis_msk` | output | `axis_if.tx` | Motion mask output stream (DATA_W=1, USER_W=1). tdata[0]=mask bit; 1=motion, 0=static. |
 | **Memory port (to shared RAM port A)** | | | |
-| `mem_rd_addr_o` | output | `$clog2(RGN_BASE+RGN_SIZE)` | RAM read address |
-| `mem_rd_data_i` | input | 8 | RAM read data (valid 1 cycle after address) |
-| `mem_wr_addr_o` | output | `$clog2(RGN_BASE+RGN_SIZE)` | RAM write address |
-| `mem_wr_data_o` | output | 8 | RAM write data (EMA-updated background value) |
-| `mem_wr_en_o` | output | 1 | RAM write enable |
+| `mem_rd_addr_o` | output | `logic` | RAM read address (`$clog2(RGN_BASE+RGN_SIZE)` bits) |
+| `mem_rd_data_i` | input | `logic [7:0]` | RAM read data (valid 1 cycle after address) |
+| `mem_wr_addr_o` | output | `logic` | RAM write address (`$clog2(RGN_BASE+RGN_SIZE)` bits) |
+| `mem_wr_data_o` | output | `logic [7:0]` | RAM write data (EMA-updated background value) |
+| `mem_wr_en_o` | output | `logic` | RAM write enable |
 
 ---
 

@@ -76,11 +76,7 @@ sparevideo_top (top level)
 | `rst_pix_n_i` | input | 1 | Active-low synchronous reset, `clk_pix` domain |
 | `rst_dsp_n_i` | input | 1 | Active-low synchronous reset, `clk_dsp` domain |
 | **AXI4-Stream video input (clk_pix domain)** | | | |
-| `s_axis_tdata_i` | input | 24 | AXI4-Stream pixel payload `{R[7:0], G[7:0], B[7:0]}` |
-| `s_axis_tvalid_i` | input | 1 | AXI4-Stream producer valid |
-| `s_axis_tready_o` | output | 1 | AXI4-Stream sink ready (back-pressures producer) |
-| `s_axis_tlast_i` | input | 1 | End-of-line marker (last pixel of each row) |
-| `s_axis_tuser_i` | input | 1 | Start-of-frame marker (first pixel of frame) |
+| `s_axis` | input | `axis_if.rx` | RGB888 pixel input stream (DATA_W=24, USER_W=1; `tdata={R,G,B}`, tuser=SOF, tlast=EOL). tready back-pressures the TB/source producer. |
 | **Control flow** | | | |
 | `ctrl_flow_i` | input | 2 | Control flow select: 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask, 2'b11 = ccl_bbox |
 | **VGA output (clk_pix domain)** | | | |
@@ -259,21 +255,26 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
                          sparevideo_top
   ┌──────────────────────────────────────────────────────────────────────────────┐
   │                                                                              │
-  │  s_axis (RGB888 + tlast + tuser)          clk_pix domain                     │
+  │  s_axis (axis_if.rx: RGB888 + tlast + tuser)  clk_pix domain                 │
   │  ─────────────────────────────────────────────────────────                   │
   │           │                                                                  │
   │           ▼                                                                  │
   │    ┌─────────────┐  CDC: clk_pix → clk_dsp                                   │
   │    │  u_fifo_in  │                                                           │
   │    └──────┬──────┘                                                           │
-  │           │  dsp_in (RGB + tlast + tuser)   clk_dsp domain                   │
+  │           │  pix_in_to_hflip (axis_if: RGB + tlast + tuser)  clk_dsp domain  │
   │           │  ──────────────────────────────────────────────                  │
   │           ▼                                                                  │
-  │    ┌─────────────┐  1-to-2 broadcast (gated tvalid=0 for passthrough)        │
+  │    ┌─────────────┐  optional horizontal mirror (hflip_en)                    │
+  │    │   u_hflip   │                                                           │
+  │    └──────┬──────┘                                                           │
+  │           │  hflip_to_fork / fork_s_axis (axis_if, gated tvalid=0 for pt)    │
+  │           ▼                                                                  │
+  │    ┌─────────────┐  1-to-2 broadcast with per-output acceptance tracking     │
   │    │   u_fork    │                                                           │
   │    └──┬───────┬──┘                                                           │
   │       │       └───────────────────────────────────────────┐                  │
-  │  fork_a (Mask pipe)                                 fork_b (RGB pipe)        │
+  │  fork_a_to_motion (axis_if)                    fork_b_to_overlay (axis_if)   │
   │       │                                                   │                  │
   │       ▼                                                   │                  │
   │    ┌──────────────────┐    ┌───────────┐                  │                  │
@@ -282,13 +283,13 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
   │    │  [gauss3x3]      │    └───────────┘                  │                  │
   │    │  motion_core     │                                   │                  │
   │    └────────┬─────────┘                                   │                  │
-  │             │  msk (1-bit + tlast + tuser)  [raw mask]    │                  │
+  │             │  motion_to_morph (axis_if: 1-bit mask)      │                  │
   │             ▼                                             │                  │
   │    ┌──────────────────┐                                   │                  │
   │    │ u_morph_open     │  erode → dilate (3×3), or         │                  │
   │    │  (morph_en=1)    │  zero-latency bypass (morph_en=0) │                  │
   │    └────────┬─────────┘                                   │                  │
-  │             │  msk_clean (1-bit + tlast + tuser)          │                  │
+  │             │  morph_to_ccl_strobed / ccl_s_axis (axis_if: 1-bit mask)       │
   │             ├───────────────────────────────────┐         │                  │
   │             ▼                                   │         │                  │
   │    ┌──────────────────┐                         │         │                  │
@@ -296,37 +297,38 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
   │    │                  │  EOF FSM resolves +     │         │                  │
   │    │                  │  swaps N_OUT bboxes     │         │                  │
   │    └────────┬─────────┘                         │         │                  │
-  │             │  N_OUT × {min_x,max_x,min_y,max_y,valid}    │                  │
+  │             │  u_ccl_bboxes (bbox_if)            │         │                  │
   │             │                                   │         │                  │
   │             │   ┌───────────────────────────────┘         │                  │
-  │             │   │  (ccl_bbox mode) msk_clean → grey mux   │                  │
+  │             │   │  (ccl_bbox mode) mask → grey mux        │                  │
   │             │   ▼                                         ▼                  │
   │             │  ┌──────────────────────────────────────────────────┐          │
-  │             │  │  ovl_in mux:                                     │          │
-  │             │  │    motion              → fork_b RGB              │          │
+  │             │  │  overlay_in mux:                                 │          │
+  │             │  │    motion              → fork_b_to_overlay RGB   │          │
   │             │  │    ccl_bbox            → mask_grey_rgb           │          │
   │             │  └────────────────────┬─────────────────────────────┘          │
   │             ▼                       ▼                                        │
   │    ┌────────────────────────────────────────────────────────────┐            │
   │    │                   u_overlay_bbox                           │            │
   │    │   N_OUT-wide rectangle-edge hit test → BBOX_COLOR,         │            │
-  │    │   otherwise pass-through of ovl_in                         │            │
+  │    │   otherwise pass-through of overlay_in                     │            │
   │    └────────────────────┬───────────────────────────────────────┘            │
-  │                         │  ovl (RGB + tlast + tuser)                         │
+  │                         │  overlay_to_pix_out (axis_if: RGB + tlast + tuser) │
   │                         │                                                    │
   │    ┌────────────────────┴─────────────────────────────┐                      │
   │    │  ctrl_flow output mux                            │                      │
-  │    │  passthrough → dsp_in                            │                      │
-  │    │  motion      → ovl                               │                      │
-  │    │  mask        → msk_rgb (B/W expansion of msk_clean)│                    │
-  │    │  ccl_bbox    → ovl (grey canvas + CCL bboxes)    │                      │
+  │    │  passthrough → pix_in_to_hflip (flat bridge)     │                      │
+  │    │  motion      → overlay_to_pix_out                │                      │
+  │    │  mask        → msk_rgb (B/W expansion of morph)  │                      │
+  │    │  ccl_bbox    → overlay_to_pix_out (grey canvas)  │                      │
   │    └────────────────────┬─────────────────────────────┘                      │
-  │                         │  proc (RGB + tlast + tuser)                        │
+  │                         │  proc (axis_if: RGB + tlast + tuser)               │
   │                         ▼                                                    │
   │                 ┌──────────────┐  CDC: clk_dsp → clk_pix                     │
   │                 │  u_fifo_out  │                                             │
   │                 └──────┬───────┘                                             │
-  │                        │  pix_out (RGB + tlast + tuser)    clk_pix domain    │
+  │                        │  pix_out_axis (flat bridge: RGB + tlast + tuser)    │
+  │                        │                            clk_pix domain           │
   │                        ▼                                                     │
   │                 ┌──────────────┐  held in reset until first tuser=1          │
   │                 │    u_vga     │                                             │
@@ -339,10 +341,10 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
 ```
 
 The control-flow mux selects between:
-- **Passthrough** (`ctrl_flow_i = 2'b00`): `dsp_in` feeds directly into `u_fifo_out`. `u_fork` input `tvalid` is gated to 0; overlay output `tready` is tied to 1.
-- **Motion detect** (`ctrl_flow_i = 2'b01`): `ovl` (overlay output) feeds into `u_fifo_out`. Both fork outputs are active; `u_fork` provides RGB to the overlay (via `ovl_in mux` = `fork_b`) while also feeding `u_motion_detect` → `u_morph_open` → `u_ccl` for bbox generation. This is the default path.
-- **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (cleaned 1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (`ovl_tready = 1`). Mask `tready` carries output FIFO backpressure; `u_ccl` still receives the cleaned mask via the broadcast handshake but its bboxes are not used.
-- **CCL bbox** (`ctrl_flow_i = 2'b11`): `ovl` (overlay output) feeds into `u_fifo_out`, but the overlay's video input is `mask_grey_rgb` (a combinational grey canvas derived from the cleaned mask) instead of `fork_b`. `fork_b_tready` is tied to 1 so the unused RGB pipe drains. `u_ccl` runs normally and its bboxes are drawn on top of the grey canvas — a direct visual readout of the CCL stage.
+- **Passthrough** (`ctrl_flow_i = 2'b00`): `pix_in_to_hflip` feeds directly into `u_fifo_out` (flat-bridge). `u_fork` input `tvalid` is gated to 0; overlay output `tready` is tied to 1.
+- **Motion detect** (`ctrl_flow_i = 2'b01`): `overlay_to_pix_out` feeds into `u_fifo_out`. Both fork outputs are active; `fork_b_to_overlay` provides RGB to the overlay while `fork_a_to_motion` feeds `u_motion_detect` → `u_morph_open` → `u_ccl` for bbox generation via `u_ccl_bboxes`. This is the default path.
+- **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (cleaned 1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (overlay `tready = 1`). Mask `tready` carries output FIFO backpressure; `u_ccl` still receives the cleaned mask via the broadcast handshake but its bboxes are not used.
+- **CCL bbox** (`ctrl_flow_i = 2'b11`): `overlay_to_pix_out` feeds into `u_fifo_out`, but the overlay's video input (`overlay_in`) is `mask_grey_rgb` (a combinational grey canvas derived from the cleaned mask) instead of `fork_b_to_overlay`. `fork_b_to_overlay.tready` is tied to 1 so the unused RGB pipe drains. `u_ccl` runs normally and its `u_ccl_bboxes` are drawn on top of the grey canvas — a direct visual readout of the CCL stage.
 
 ### 6.1 Plumbing and glue
 

@@ -52,41 +52,39 @@ module tb_axis_morph3x3_erode;
     logic drv_tready = 1'b1;
     logic drv_enable = 1'b1;
 
-    logic dut_tvalid, dut_tlast, dut_tuser, dut_tdata;
     logic dut_tready, dut_enable;
 
     always_ff @(posedge clk) begin
-        dut_tvalid <= drv_tvalid;
-        dut_tlast  <= drv_tlast;
-        dut_tuser  <= drv_tuser;
-        dut_tdata  <= drv_tdata;
         dut_tready <= drv_tready;
         dut_enable <= drv_enable;
     end
 
+    // ---- AXI4-Stream interfaces ----
+    axis_if #(.DATA_W(1), .USER_W(1)) s_axis ();
+    axis_if #(.DATA_W(1), .USER_W(1)) m_axis ();
+
+    always_ff @(posedge clk) begin
+        s_axis.tdata  <= drv_tdata;
+        s_axis.tvalid <= drv_tvalid;
+        s_axis.tlast  <= drv_tlast;
+        s_axis.tuser  <= drv_tuser;
+    end
+
+    assign m_axis.tready = dut_tready;
+
     // ---- DUT ----
-    logic m_tdata, m_tvalid, m_tlast, m_tuser;
-    logic s_tready;
     logic busy_out;
 
     axis_morph3x3_erode #(
         .H_ACTIVE (H),
         .V_ACTIVE (V)
     ) u_dut (
-        .clk_i          (clk),
-        .rst_n_i        (rst_n),
-        .enable_i       (dut_enable),
-        .s_axis_tdata_i (dut_tdata),
-        .s_axis_tvalid_i(dut_tvalid),
-        .s_axis_tready_o(s_tready),
-        .s_axis_tlast_i (dut_tlast),
-        .s_axis_tuser_i (dut_tuser),
-        .m_axis_tdata_o (m_tdata),
-        .m_axis_tvalid_o(m_tvalid),
-        .m_axis_tready_i(dut_tready),
-        .m_axis_tlast_o (m_tlast),
-        .m_axis_tuser_o (m_tuser),
-        .busy_o         (busy_out)
+        .clk_i    (clk),
+        .rst_n_i  (rst_n),
+        .enable_i (dut_enable),
+        .s_axis   (s_axis),
+        .m_axis   (m_axis),
+        .busy_o   (busy_out)
     );
 
     // ---- Golden: 3x3 AND with edge replication ----
@@ -195,8 +193,8 @@ module tb_axis_morph3x3_erode;
         cap_cnt = 0;
         while (cap_cnt < NUM_PIX) begin
             @(posedge clk);
-            if (m_tvalid && dut_tready) begin
-                captured[cap_cnt] = m_tdata;
+            if (m_axis.tvalid && m_axis.tready) begin
+                captured[cap_cnt] = m_axis.tdata;
                 cap_cnt = cap_cnt + 1;
             end
         end
@@ -452,26 +450,29 @@ module tb_axis_morph3x3_erode;
                     // Monitor output for one frame's worth of valid beats.
                     while (captured_out < V * H) begin
                         @(posedge clk);
-                        if (m_tvalid && dut_tready) begin
+                        if (m_axis.tvalid && m_axis.tready) begin
                             if (captured_out == 0) begin
-                                if (!m_tuser) begin
-                                    $display("FAIL test10: tuser not asserted on first output pixel");
+                                if (!m_axis.tuser) begin
+                                    $display("FAIL test10: tuser not asserted on first pixel");
                                     num_errors = num_errors + 1;
                                 end
                             end else begin
-                                if (m_tuser) begin
-                                    $display("FAIL test10: tuser asserted on non-first pixel %0d", captured_out);
+                                if (m_axis.tuser) begin
+                                    $display("FAIL test10: tuser on non-first pixel %0d",
+                                             captured_out);
                                     num_errors = num_errors + 1;
                                 end
                             end
-                            if (m_tlast) tlast_high_count = tlast_high_count + 1;
+                            if (m_axis.tlast) tlast_high_count = tlast_high_count + 1;
                             // tlast must assert on the last pixel of each row (col H-1)
-                            if (m_tlast && ((captured_out % H) != (H - 1))) begin
-                                $display("FAIL test10: tlast asserted at mid-row (idx %0d)", captured_out);
+                            if (m_axis.tlast && ((captured_out % H) != (H - 1))) begin
+                                $display("FAIL test10: tlast at mid-row (idx %0d)",
+                                         captured_out);
                                 num_errors = num_errors + 1;
                             end
-                            if (!m_tlast && ((captured_out % H) == (H - 1))) begin
-                                $display("FAIL test10: tlast NOT asserted at row end (idx %0d)", captured_out);
+                            if (!m_axis.tlast && ((captured_out % H) == (H - 1))) begin
+                                $display("FAIL test10: tlast NOT at row end (idx %0d)",
+                                         captured_out);
                                 num_errors = num_errors + 1;
                             end
                             captured_out = captured_out + 1;

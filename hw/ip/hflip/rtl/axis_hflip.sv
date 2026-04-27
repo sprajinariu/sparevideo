@@ -13,12 +13,12 @@
 // Latency: ~1 line (H_ACTIVE proc_clk cycles).
 // Throughput: 1 pixel/cycle long-term; bursty (RX/TX alternation).
 //
-// Backpressure: s_axis_tready_o is deasserted for the full TX phase. The
+// Backpressure: s_axis.tready is deasserted for the full TX phase. The
 // system-level CDC FIFO must be sized to absorb the resulting upstream
 // stall (see sparevideo-top-arch.md for the project-wide sizing).
 //
 // enable_i: when 1, the FSM-driven mirror path drives the output. When 0,
-// s_axis_* is forwarded combinatorially to m_axis_* with zero latency and
+// s_axis is forwarded combinatorially to m_axis with zero latency and
 // the line buffer is idle. enable_i must be held frame-stable.
 
 module axis_hflip #(
@@ -33,18 +33,10 @@ module axis_hflip #(
     input  logic enable_i,
 
     // --- AXI4-Stream input (24-bit RGB) ---
-    input  logic [23:0] s_axis_tdata_i,
-    input  logic        s_axis_tvalid_i,
-    output logic        s_axis_tready_o,
-    input  logic        s_axis_tlast_i,
-    input  logic        s_axis_tuser_i,
+    axis_if.rx s_axis,
 
     // --- AXI4-Stream output (24-bit RGB) ---
-    output logic [23:0] m_axis_tdata_o,
-    output logic        m_axis_tvalid_o,
-    input  logic        m_axis_tready_i,
-    output logic        m_axis_tlast_o,
-    output logic        m_axis_tuser_o
+    axis_if.tx m_axis
 );
 
     // ---- Counter widths ----
@@ -65,7 +57,7 @@ module axis_hflip #(
     logic rx_ready;
     logic rx_accept;
     assign rx_ready  = (state_q == S_RX);
-    assign rx_accept = rx_ready && s_axis_tvalid_i && enable_i;
+    assign rx_accept = rx_ready && s_axis.tvalid && enable_i;
 
     // ---- TX-phase combinational ----
     logic        tx_active;
@@ -77,7 +69,7 @@ module axis_hflip #(
     assign tx_data   = line_buf[(COL_W)'(H_ACTIVE - 1) - rd_col];
     assign tx_sof    = sof_pending_q && (rd_col == '0);
     assign tx_eol    = (rd_col == (COL_W)'(H_ACTIVE - 1));
-    assign tx_accept = tx_active && m_axis_tready_i;
+    assign tx_accept = tx_active && m_axis.tready;
 
     // ---- Sequential: state, counters, line buffer write ----
     always_ff @(posedge clk_i) begin
@@ -91,16 +83,16 @@ module axis_hflip #(
                 S_RX: begin
                     if (rx_accept) begin
                         // SOF realigns wr_col to 0 (and clears any stale state)
-                        if (s_axis_tuser_i)
+                        if (s_axis.tuser)
                             wr_col <= (COL_W)'(1);
                         else
                             wr_col <= wr_col + (COL_W)'(1);
-                        line_buf[s_axis_tuser_i ? '0 : wr_col] <= s_axis_tdata_i;
+                        line_buf[s_axis.tuser ? '0 : wr_col] <= s_axis.tdata;
                         // Latch sof for the upcoming TX
-                        if (s_axis_tuser_i)
+                        if (s_axis.tuser)
                             sof_pending_q <= 1'b1;
                         // EOL terminates the receive phase
-                        if (s_axis_tlast_i) begin
+                        if (s_axis.tlast) begin
                             state_q <= S_TX;
                             rd_col  <= '0;
                             wr_col  <= '0;
@@ -126,17 +118,17 @@ module axis_hflip #(
     // ---- enable_i bypass mux ----
     always_comb begin
         if (enable_i) begin
-            s_axis_tready_o = rx_ready;
-            m_axis_tdata_o  = tx_data;
-            m_axis_tvalid_o = tx_active;
-            m_axis_tlast_o  = tx_active && tx_eol;
-            m_axis_tuser_o  = tx_active && tx_sof;
+            s_axis.tready = rx_ready;
+            m_axis.tdata  = tx_data;
+            m_axis.tvalid = tx_active;
+            m_axis.tlast  = tx_active && tx_eol;
+            m_axis.tuser  = tx_active && tx_sof;
         end else begin
-            s_axis_tready_o = m_axis_tready_i;
-            m_axis_tdata_o  = s_axis_tdata_i;
-            m_axis_tvalid_o = s_axis_tvalid_i;
-            m_axis_tlast_o  = s_axis_tlast_i;
-            m_axis_tuser_o  = s_axis_tuser_i;
+            s_axis.tready = m_axis.tready;
+            m_axis.tdata  = s_axis.tdata;
+            m_axis.tvalid = s_axis.tvalid;
+            m_axis.tlast  = s_axis.tlast;
+            m_axis.tuser  = s_axis.tuser;
         end
     end
 
