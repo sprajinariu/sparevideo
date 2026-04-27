@@ -907,6 +907,24 @@ def test_lit_moving_object_bboxes_under_illumination_shift():
     assert green.any(), "bbox should appear at frame 5 despite lighting shift"
 
 
+# ---- gamma_en composition (Task 9) ----
+
+def test_gamma_en_applied_to_passthrough():
+    """With gamma_en=True, passthrough output = gamma_cor(input)."""
+    from models.ops.gamma_cor import gamma_cor
+    frame = np.tile(np.arange(256, dtype=np.uint8)[None, :, None], (1, 1, 3))[:, :8, :]
+    out = run_model("passthrough", [frame], gamma_en=True)[0]
+    expect = gamma_cor(frame)
+    assert np.array_equal(out, expect)
+
+
+def test_gamma_en_off_passthrough_unchanged():
+    """With gamma_en=False, passthrough output is unchanged from input."""
+    frame = np.full((4, 4, 3), 128, dtype=np.uint8)
+    out = run_model("passthrough", [frame], gamma_en=False)[0]
+    assert np.array_equal(out, frame)
+
+
 # ---- Run all tests ----
 
 if __name__ == "__main__":

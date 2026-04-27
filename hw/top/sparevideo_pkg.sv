@@ -62,6 +62,7 @@ package sparevideo_pkg;
         logic       gauss_en;            // 3x3 Gaussian pre-filter on Y
         logic       morph_en;            // 3x3 opening on mask
         logic       hflip_en;            // horizontal mirror on input
+        logic       gamma_en;            // sRGB display gamma at output tail
         pixel_t     bbox_color;          // overlay colour
     } cfg_t;
 
@@ -83,6 +84,7 @@ package sparevideo_pkg;
         gauss_en:          1'b1,
         morph_en:          1'b1,
         hflip_en:          1'b0,
+        gamma_en:          1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -96,6 +98,7 @@ package sparevideo_pkg;
         gauss_en:          1'b1,
         morph_en:          1'b1,
         hflip_en:          1'b1,
+        gamma_en:          1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -111,6 +114,7 @@ package sparevideo_pkg;
         gauss_en:          1'b1,
         morph_en:          1'b1,
         hflip_en:          1'b0,
+        gamma_en:          1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -124,6 +128,7 @@ package sparevideo_pkg;
         gauss_en:          1'b1,
         morph_en:          1'b0,
         hflip_en:          1'b0,
+        gamma_en:          1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -137,6 +142,21 @@ package sparevideo_pkg;
         gauss_en:          1'b0,
         morph_en:          1'b1,
         hflip_en:          1'b0,
+        gamma_en:          1'b1,
+        bbox_color:        24'h00_FF_00
+    };
+
+    // sRGB gamma correction bypassed (linear passthrough at output tail).
+    localparam cfg_t CFG_NO_GAMMA_COR = '{
+        motion_thresh:     8'd16,
+        alpha_shift:       3,
+        alpha_shift_slow:  6,
+        grace_frames:      0,
+        grace_alpha_shift: 1,
+        gauss_en:          1'b1,
+        morph_en:          1'b1,
+        hflip_en:          1'b0,
+        gamma_en:          1'b0,
         bbox_color:        24'h00_FF_00
     };
 

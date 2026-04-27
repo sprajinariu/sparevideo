@@ -1,0 +1,16 @@
+CAPI=2:
+name: "sparevideo:ip:gamma"
+description: "Per-channel sRGB gamma correction (33-entry LUT, linear interp, 1-cycle latency, runtime bypass)"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_gamma_cor.sv
+    file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
+
+targets:
+  default:
+    filesets:
+      - files_rtl

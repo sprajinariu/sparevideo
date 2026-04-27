@@ -20,6 +20,7 @@ DEFAULT: ProfileT = dict(
     gauss_en=True,
     morph_en=True,
     hflip_en=False,
+    gamma_en=True,
     bbox_color=0x00_FF_00,
 )
 
@@ -35,12 +36,16 @@ NO_MORPH: ProfileT = dict(DEFAULT, morph_en=False)
 # 3x3 Gaussian pre-filter bypassed.
 NO_GAUSS: ProfileT = dict(DEFAULT, gauss_en=False)
 
+# sRGB gamma correction bypassed (linear passthrough at output tail).
+NO_GAMMA_COR: ProfileT = dict(DEFAULT, gamma_en=False)
+
 PROFILES: dict[str, ProfileT] = {
     "default":       DEFAULT,
     "default_hflip": DEFAULT_HFLIP,
     "no_ema":        NO_EMA,
     "no_morph":      NO_MORPH,
     "no_gauss":      NO_GAUSS,
+    "no_gamma_cor":  NO_GAMMA_COR,
 }
 
 

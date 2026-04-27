@@ -16,6 +16,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 | [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; `EDGE_POLICY` parameter) |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
 | [`axis_morph3x3_open-arch.md`](docs/specs/axis_morph3x3_open-arch.md) | 3x3 morphological opening on mask (erode → dilate) |
+| [`axis_gamma_cor-arch.md`](docs/specs/axis_gamma_cor-arch.md) | Per-channel sRGB gamma correction at output tail (33-entry LUT + linear interp, `enable_i` bypass) |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
@@ -49,6 +50,9 @@ hw/ip/filters/rtl/
 ├── axis_morph3x3_erode.sv        3x3 morphological erosion on 1-bit mask (wraps axis_window3x3 + 9-way AND)
 ├── axis_morph3x3_dilate.sv       3x3 morphological dilation on 1-bit mask (wraps axis_window3x3 + 9-way OR)
 └── axis_morph3x3_open.sv         3x3 opening composite: axis_morph3x3_erode → axis_morph3x3_dilate
+
+hw/ip/gamma/rtl/
+└── axis_gamma_cor.sv          Per-channel sRGB gamma correction (33-entry LUT, linear interp, 1-cycle skid, enable_i bypass)
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
@@ -88,6 +92,9 @@ hw/ip/filters/tb/
 ├── tb_axis_morph3x3_erode.sv     10 tests: salt removal, thin-stripe erasure, enable_i bypass, stall, SOF reset, framing (tlast EOL / tuser SOF)
 ├── tb_axis_morph3x3_dilate.sv    9 tests: mirror of erode with OR reduction (stripe thickening, corner replication)
 └── tb_axis_morph3x3_open.sv      10 tests: composite erode→dilate (salt removal, thin-stripe Risk D1, 5×5 idempotence, latency 2*(H+3))
+
+hw/ip/gamma/tb/
+└── tb_axis_gamma_cor.sv      4 tests: sRGB endpoint, ramp interpolation, mid-line tready stall, enable_i passthrough
 
 hw/ip/motion/tb/
 └── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
@@ -182,6 +189,7 @@ make run-pipeline CFG=default_hflip          # selfie-cam mirror enabled
 make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencing
 make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
+make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -231,6 +239,7 @@ make lint                    # Verilator lint
 make test-ip                 # All per-block IP unit testbenches (Verilator)
 make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
 make test-ip-hflip           # axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough
+make test-ip-gamma-cor       # axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough
 make test-ip-window          # axis_window3x3: 6 tests, window ordering + edge replication + busy_o fallback
 make test-ip-gauss3x3        # axis_gauss3x3: 11 tests, centered Gaussian + latency + busy_o fallback
 make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
@@ -248,7 +257,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator`) |
 | `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), `mask` (raw motion mask as B/W image), or `ccl_bbox` (mask-as-grey + CCL bboxes) |
-| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed). |
+| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed), `no_gamma_cor` (sRGB gamma bypassed). |
 | `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |

@@ -101,6 +101,7 @@ module tb_sparevideo #(
         (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
         (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
         (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
+        (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
                                         sparevideo_pkg::CFG_DEFAULT;
 
     initial begin
@@ -108,8 +109,10 @@ module tb_sparevideo #(
             CFG_NAME != "default_hflip" &&
             CFG_NAME != "no_ema"        &&
             CFG_NAME != "no_morph"      &&
-            CFG_NAME != "no_gauss")
-            $warning("Unknown CFG_NAME '%s'; using CFG_DEFAULT. Valid: default|default_hflip|no_ema|no_morph|no_gauss", CFG_NAME);
+            CFG_NAME != "no_gauss"      &&
+            CFG_NAME != "no_gamma_cor")
+            $warning("Unknown CFG_NAME '%s'; falling back to CFG_DEFAULT",
+                     CFG_NAME);
     end
 
     // The DUT's VGA controller is parameterised at instantiation; we
@@ -204,10 +207,11 @@ module tb_sparevideo #(
             (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion"      :
             (ctrl_flow == sparevideo_pkg::CTRL_MASK_DISPLAY)  ? "mask"        :
             (ctrl_flow == sparevideo_pkg::CTRL_CCL_BBOX)      ? "ccl_bbox"    : "unknown");
-        $display("  CFG=%s thresh=%0d a=%0d a_slow=%0d grace=%0d ga=%0d gauss=%0b morph=%0b hflip=%0b bbox=0x%06x",
+        $display("  CFG=%s thresh=%0d a=%0d a_slow=%0d grace=%0d ga=%0d",
                  CFG_NAME, CFG.motion_thresh, CFG.alpha_shift, CFG.alpha_shift_slow,
-                 CFG.grace_frames, CFG.grace_alpha_shift,
-                 CFG.gauss_en, CFG.morph_en, CFG.hflip_en, CFG.bbox_color);
+                 CFG.grace_frames, CFG.grace_alpha_shift);
+        $display("  gauss=%0b morph=%0b hflip=%0b gamma=%0b bbox=0x%06x",
+                 CFG.gauss_en, CFG.morph_en, CFG.hflip_en, CFG.gamma_en, CFG.bbox_color);
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 

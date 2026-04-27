@@ -15,9 +15,10 @@
   - [5.3 `u_morph_open` — clean up speckle in the mask](#53-u_morph_open--clean-up-speckle-in-the-mask)
   - [5.4 `u_ccl` — group motion pixels into distinct objects](#54-u_ccl--group-motion-pixels-into-distinct-objects)
   - [5.5 `u_overlay_bbox` — draw rectangles on the video](#55-u_overlay_bbox--draw-rectangles-on-the-video)
-  - [5.6 `u_vga` — drive the display with proper timing](#56-u_vga--drive-the-display-with-proper-timing)
-  - [5.7 1-frame bbox latency](#57-1-frame-bbox-latency)
-  - [5.8 Latency and timing budget](#58-latency-and-timing-budget)
+  - [5.6 `u_gamma_cor` — sRGB display gamma at the post-mux tail](#56-u_gamma_cor--srgb-display-gamma-at-the-post-mux-tail)
+  - [5.7 `u_vga` — drive the display with proper timing](#57-u_vga--drive-the-display-with-proper-timing)
+  - [5.8 1-frame bbox latency](#58-1-frame-bbox-latency)
+  - [5.9 Latency and timing budget](#59-latency-and-timing-budget)
 - [6. Internal Architecture](#6-internal-architecture)
   - [6.1 Plumbing and glue](#61-plumbing-and-glue)
   - [6.2 AXI4-Stream protocol](#62-axi4-stream-protocol)
@@ -60,6 +61,7 @@ sparevideo_top (top level)
 ├── axis_morph3x3_open    (u_morph_open)    — 3×3 opening (erode → dilate) on the mask; runtime bypassable
 ├── axis_ccl           (u_ccl)           — cleaned mask → N_OUT × {min_x,max_x,min_y,max_y,valid}
 ├── axis_overlay_bbox  (u_overlay_bbox)  — draw N_OUT-wide bbox rectangles on RGB video
+├── axis_gamma_cor     (u_gamma_cor)     — per-channel sRGB gamma correction; runtime bypassable
 ├── axis_async_fifo    (u_fifo_out)      — CDC clk_dsp → clk_pix, vendored verilog-axis
 └── vga_controller     (u_vga)          — streaming pixel → VGA timing + RGB output
 ```
@@ -90,15 +92,36 @@ sparevideo_top (top level)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `H_ACTIVE` / `V_ACTIVE` / porches | int | pkg | Resolution and VGA timing — structural, see `sparevideo_pkg.sv` for the full list (`H_FRONT_PORCH`, `H_SYNC_PULSE`, `H_BACK_PORCH`, `V_FRONT_PORCH`, `V_SYNC_PULSE`, `V_BACK_PORCH`) |
-| `CFG` | `cfg_t` | `CFG_DEFAULT` | Algorithm tuning bundle. Selects EMA rates, Gaussian/morph/hflip enable, motion threshold, and bbox colour in one struct. See `sparevideo_pkg::cfg_t` for the field list and `py/profiles.py` for the Python mirror. |
-| `CCL_N_LABELS_INT` | int | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0) |
-| `CCL_N_OUT` | int | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox` |
-| `CCL_MIN_COMPONENT_PIXELS` | int | pkg (16) | Minimum component area (in pixels) to promote into the top-N bbox output — filters sensor-noise specks |
-| `CCL_MAX_CHAIN_DEPTH` | int | pkg (8) | Safety cap on parent-pointer chain walks during the EOF fold phase |
-| `CCL_PRIME_FRAMES` | int | pkg (2) | Number of frames after reset during which `u_ccl` suppresses all bbox outputs, giving the EMA background model time to converge |
+| `H_ACTIVE` | `int` | pkg (320) | Active pixels per line. |
+| `V_ACTIVE` | `int` | pkg (240) | Active lines per frame. |
+| `H_FRONT_PORCH` | `int` | pkg (4) | VGA horizontal front-porch length, in pixel clocks. |
+| `H_SYNC_PULSE` | `int` | pkg (8) | VGA horizontal sync-pulse width, in pixel clocks. |
+| `H_BACK_PORCH` | `int` | pkg (4) | VGA horizontal back-porch length, in pixel clocks. |
+| `V_FRONT_PORCH` | `int` | pkg (2) | VGA vertical front-porch length, in lines. |
+| `V_SYNC_PULSE` | `int` | pkg (2) | VGA vertical sync-pulse width, in lines. |
+| `V_BACK_PORCH` | `int` | pkg (2) | VGA vertical back-porch length, in lines. |
+| **`CFG`** | **`cfg_t`** | **`CFG_DEFAULT`** | **Algorithm tuning bundle (`sparevideo_pkg::cfg_t`). The fields below are members of this struct, addressed in RTL as `CFG.<field>`.** |
+| `CFG.motion_thresh` | `component_t` (8-bit) | `16` | Raw `abs(Y_cur − Y_bg)` threshold above which a pixel is flagged as motion. Driven into `u_motion_detect.THRESH`. |
+| `CFG.alpha_shift` | `int` | `3` | EMA shift for **non-motion** pixels (`bg ← bg + (Y − bg) >> alpha_shift`); larger value = slower adaptation. Driven into `u_motion_detect.ALPHA_SHIFT`. |
+| `CFG.alpha_shift_slow` | `int` | `6` | EMA shift for **motion-flagged** pixels — kept slower to avoid baking foreground into the background. Driven into `u_motion_detect.ALPHA_SHIFT_SLOW`. |
+| `CFG.grace_frames` | `int` | `0` | Number of frames after priming during which both EMA rates are forced to `grace_alpha_shift` (faster convergence, suppresses frame-0 ghost). `0` disables the grace window — appropriate for synthetic sources whose frame 0 is bg-only. |
+| `CFG.grace_alpha_shift` | `int` | `1` | EMA shift used during the grace window (typically aggressive — `1` means α=1/2). |
+| `CFG.gauss_en` | `logic` | `1` | Enable the 3×3 Gaussian pre-filter on the luma stream inside `u_motion_detect`. `0` bypasses the filter. |
+| `CFG.morph_en` | `logic` | `1` | Enable the 3×3 morphological opening (`u_morph_open`) on the mask. `0` bypasses (raw mask flows downstream). |
+| `CFG.hflip_en` | `logic` | `0` | Enable the horizontal mirror (`u_hflip`) at the head of the proc-clock pipeline. `0` passes the input through unchanged. |
+| `CFG.gamma_en` | `logic` | `1` | Enable the sRGB gamma-correction stage (`u_gamma_cor`) at the post-mux tail. `0` bypasses (linear-light pixels reach the output FIFO). |
+| `CFG.bbox_color` | `pixel_t` (24-bit RGB) | `0x00_FF_00` (green) | RGB triple drawn by `u_overlay_bbox` for every bounding-box edge pixel. Driven into `u_overlay_bbox.BBOX_COLOR`. |
+| `CCL_N_LABELS_INT` | `int` | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0). |
+| `CCL_N_OUT` | `int` | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox`. |
+| `CCL_MIN_COMPONENT_PIXELS` | `int` | pkg (16) | Minimum component area (in pixels) to promote into the top-N bbox output — filters sensor-noise specks. |
+| `CCL_MAX_CHAIN_DEPTH` | `int` | pkg (8) | Safety cap on parent-pointer chain walks during the EOF fold phase. |
+| `CCL_PRIME_FRAMES` | `int` | pkg (0) | Number of frames after reset during which `u_ccl` suppresses all bbox outputs, giving the EMA background model time to converge. |
 
-`ctrl_flow_i` is a quasi-static sideband signal (set before the frame, not changed mid-frame). `CFG` is resolved at compile time from the `CFG_NAME` string plusarg (TB) or Makefile `CFG=` knob; `CFG_DEFAULT` has all stages enabled except `hflip_en` (mirror OFF). Add a new algorithm field by extending `cfg_t` in `sparevideo_pkg.sv` and adding a matching key to every profile dict in `py/profiles.py`. All other defaults reference `sparevideo_pkg`.
+`H_ACTIVE` and `V_ACTIVE` set the active video region; the eight porch parameters set the surrounding blanking intervals. Together they determine the VGA frame format used by `u_vga` and the timing the input driver must mirror.
+
+`CFG` is resolved at compile time from the `CFG_NAME` string (TB plusarg / Makefile `CFG=` knob) and routed by `sparevideo_top` to the appropriate sub-module ports. The Python reference models in `py/models/` mirror the same fields via `py/profiles.py`; a parity test (`py/tests/test_profiles.py`) guards against drift. Adding a new algorithm knob costs one field in `cfg_t`, one matching key in every profile dict in `py/profiles.py`, and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. The existing profile set is `default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`.
+
+`ctrl_flow_i` is a quasi-static sideband signal (set before the frame, not changed mid-frame).
 
 ---
 
@@ -202,13 +225,19 @@ Consumes the `N_OUT` bbox slots as a sideband and the RGB video as an AXIS strea
 
 This is purely a rendering step — all detection and grouping happens upstream. The overlay has no memory of past frames and no opinion about which objects are "interesting"; it just draws what CCL committed. Details: [axis_overlay_bbox-arch.md](axis_overlay_bbox-arch.md).
 
-### 5.6 `u_vga` — drive the display with proper timing
+### 5.6 `u_gamma_cor` — sRGB display gamma at the post-mux tail
+
+The last AXIS stage on `clk_dsp` before the output CDC FIFO. Each of the three RGB channels is independently passed through a 33-entry sRGB encode LUT, with linear interpolation across the low 3 bits (`addr = pixel[7:3]`, `frac = pixel[2:0]`, `out = (LUT[addr]*(8-frac) + LUT[addr+1]*frac) >> 3`). 1-cycle pipeline; the LUT is baked into the SV `localparam` and is the single source of truth shared with `py/models/ops/gamma_cor.py` (a parity test guards against drift).
+
+Why this matters: the upstream pipeline operates in linear-light intensity; the display expects sRGB-encoded values. Without this stage the output looks muddy in midtones. `CFG.gamma_en=0` (profile `no_gamma_cor`) is a zero-latency combinational bypass — useful both for verifying that the integration is byte-clean against pre-gamma goldens and for capturing un-encoded RGB for downstream tone-mapping experiments. Details: [axis_gamma_cor-arch.md](axis_gamma_cor-arch.md).
+
+### 5.7 `u_vga` — drive the display with proper timing
 
 Takes the processed RGB stream (after CDC back to `clk_pix`) and emits it with VGA-compliant timing: horizontal and vertical sync pulses, front/back porches, and blanking intervals during which RGB is gated to 0. The controller is held in reset until the first start-of-frame pixel arrives from the output FIFO, so the VGA scan always aligns to a frame boundary regardless of how long the pipeline takes to fill.
 
 Including the VGA controller inside the DUT means end-to-end simulation captures what an actual monitor would see, including blanking — which in turn catches long-term rate mismatches (output FIFO overflow) that are invisible if the downstream timing generator is mocked away. Details: [vga_controller-arch.md](vga_controller-arch.md).
 
-### 5.7 1-frame bbox latency
+### 5.8 1-frame bbox latency
 
 The bbox drawn on frame N is computed from motion observed during frame N−1. This is a deliberate architectural choice, not an accident of the implementation. A same-frame overlay is technically possible but strictly worse at this resolution:
 
@@ -223,7 +252,7 @@ The pipeline is streaming (raster order). The bottommost motion pixel can lie on
 
 At 60 fps, one frame is 16.7 ms — imperceptible. The user-visible result is indistinguishable between the two designs. Same-frame overlay would only matter at very low frame rates (e.g., 1 fps security camera) where a 1-second bbox lag would be noticeable. The current 1-frame delay is the standard approach in streaming video pipelines and is the right trade-off here.
 
-### 5.8 Latency and timing budget
+### 5.9 Latency and timing budget
 
 Two distinct latencies, not to be conflated:
 

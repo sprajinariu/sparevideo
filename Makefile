@@ -39,7 +39,7 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-window test-ip-hflip setup clean
+        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -69,6 +69,7 @@ help:
 	@echo "    test-ip-overlay-bbox       axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
 	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
 	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
+	@echo "    test-ip-gamma-cor          axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator              Simulator: verilator"
@@ -79,7 +80,7 @@ help:
 	@echo "    MODE=text|binary                 File format"
 	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default ccl_bbox)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
-	@echo "    CFG=default                      Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss)"
+	@echo "    CFG=default                      Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
 	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
@@ -166,6 +167,9 @@ test-ip-window:
 
 test-ip-hflip:
 	$(MAKE) -C dv/sim test-ip-hflip SIMULATOR=$(SIMULATOR)
+
+test-ip-gamma-cor:
+	$(MAKE) -C dv/sim test-ip-gamma-cor SIMULATOR=$(SIMULATOR)
 
 setup:
 	sudo apt install -y verilator
