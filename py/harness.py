@@ -11,6 +11,7 @@ import numpy as np
 from frames.frame_io import read_frames, write_frames
 from frames.video_source import load_frames
 from models import run_model
+from profiles import PROFILES, resolve as resolve_cfg
 from viz.render import compare_frames, render_grid
 
 META_FILENAME = "meta.json"
@@ -108,20 +109,8 @@ def cmd_verify(args):
     ctrl_flow = args.ctrl_flow
     tolerance = args.tolerance
 
-    alpha_shift = getattr(args, "alpha_shift", 3)
-    alpha_shift_slow = getattr(args, "alpha_shift_slow", 6)
-    grace_frames = getattr(args, "grace_frames", 0)
-    grace_alpha_shift = getattr(args, "grace_alpha_shift", 1)
-    gauss_en = bool(getattr(args, "gauss_en", 1))
-    morph_en = bool(getattr(args, "morph", 1))
-    hflip_en = bool(getattr(args, "hflip", 1))
-    expected_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift,
-                                alpha_shift_slow=alpha_shift_slow,
-                                grace_frames=grace_frames,
-                                grace_alpha_shift=grace_alpha_shift,
-                                gauss_en=gauss_en,
-                                morph_en=morph_en,
-                                hflip_en=hflip_en)
+    cfg = resolve_cfg(getattr(args, "cfg", "default"))
+    expected_frames = run_model(ctrl_flow, input_frames, **cfg)
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
@@ -152,22 +141,10 @@ def cmd_render(args):
     """Render input vs output comparison grid."""
     input_frames, output_frames = _load_input_output(args)
     ctrl_flow = getattr(args, "ctrl_flow", None)
-    alpha_shift = getattr(args, "alpha_shift", 3)
-    alpha_shift_slow = getattr(args, "alpha_shift_slow", 6)
-    grace_frames = getattr(args, "grace_frames", 0)
-    grace_alpha_shift = getattr(args, "grace_alpha_shift", 1)
-    gauss_en = bool(getattr(args, "gauss_en", 1))
-    morph_en = bool(getattr(args, "morph", 1))
-    hflip_en = bool(getattr(args, "hflip", 1))
+    cfg = resolve_cfg(getattr(args, "cfg", "default"))
     reference_frames = None
     if ctrl_flow:
-        reference_frames = run_model(ctrl_flow, input_frames, alpha_shift=alpha_shift,
-                                     alpha_shift_slow=alpha_shift_slow,
-                                     grace_frames=grace_frames,
-                                     grace_alpha_shift=grace_alpha_shift,
-                                     gauss_en=gauss_en,
-                                     morph_en=morph_en,
-                                     hflip_en=hflip_en)
+        reference_frames = run_model(ctrl_flow, input_frames, **cfg)
     out_path = render_grid(input_frames, output_frames, args.render_output,
                            reference_frames=reference_frames)
     print(f"Rendered comparison grid to {out_path}")
@@ -192,10 +169,6 @@ def main():
                         help="Video file, image dir, or synthetic:<pattern>")
     p_prep.add_argument("--output", default="dv/data/input.txt",
                         help="Output file path")
-    p_prep.add_argument("--morph", type=int, default=1, dest="morph",
-                        help="3x3 morphological opening on mask (0/1)")
-    p_prep.add_argument("--hflip", type=int, default=1, dest="hflip",
-                        help="Horizontal flip on/off (0/1, default 1)")
 
     # verify
     p_ver = sub.add_parser("verify", parents=[common],
@@ -211,20 +184,9 @@ def main():
     p_ver.add_argument("--tolerance", type=int, default=0,
                        help="Max differing pixels per frame that still counts "
                             "as PASS (default 0 = exact match).")
-    p_ver.add_argument("--alpha-shift", type=int, default=3, dest="alpha_shift",
-                       help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")
-    p_ver.add_argument("--alpha-shift-slow", type=int, default=6, dest="alpha_shift_slow",
-                       help="EMA alpha on motion pixels = 1/(1 << N). Default 6 (α=1/64).")
-    p_ver.add_argument("--grace-frames", type=int, default=0, dest="grace_frames",
-                       help="Grace window frames after priming (default 0, must match RTL).")
-    p_ver.add_argument("--grace-alpha-shift", type=int, default=1, dest="grace_alpha_shift",
-                       help="EMA shift during grace = 1/(1 << N). Default 1 (α=1/2), must match RTL.")
-    p_ver.add_argument("--gauss-en", type=int, default=1, dest="gauss_en",
-                       help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
-    p_ver.add_argument("--morph", type=int, default=1, dest="morph",
-                       help="3x3 morphological opening on mask (0/1)")
-    p_ver.add_argument("--hflip", type=int, default=1, dest="hflip",
-                       help="Horizontal flip on/off (0/1, default 1)")
+    p_ver.add_argument("--cfg", default="default",
+                       choices=list(PROFILES.keys()),
+                       help="Algorithm profile name (see py/profiles.py)")
 
     # render
     p_ren = sub.add_parser("render", parents=[common],
@@ -236,20 +198,9 @@ def main():
     p_ren.add_argument("--ctrl-flow", default=None,
                        choices=["passthrough", "motion", "mask", "ccl_bbox"],
                        help="Control flow model to include as reference row")
-    p_ren.add_argument("--alpha-shift", type=int, default=3, dest="alpha_shift",
-                       help="EMA alpha = 1/(1 << N). Default 3 (alpha=1/8).")
-    p_ren.add_argument("--alpha-shift-slow", type=int, default=6, dest="alpha_shift_slow",
-                       help="EMA alpha on motion pixels = 1/(1 << N). Default 6 (α=1/64).")
-    p_ren.add_argument("--grace-frames", type=int, default=0, dest="grace_frames",
-                       help="Grace window frames after priming (default 0, must match RTL).")
-    p_ren.add_argument("--grace-alpha-shift", type=int, default=1, dest="grace_alpha_shift",
-                       help="EMA shift during grace = 1/(1 << N). Default 1 (α=1/2), must match RTL.")
-    p_ren.add_argument("--gauss-en", type=int, default=1, dest="gauss_en",
-                       help="Gaussian pre-filter: 1=enabled, 0=disabled (default 1).")
-    p_ren.add_argument("--morph", type=int, default=1, dest="morph",
-                       help="3x3 morphological opening on mask (0/1)")
-    p_ren.add_argument("--hflip", type=int, default=1, dest="hflip",
-                       help="Horizontal flip on/off (0/1, default 1)")
+    p_ren.add_argument("--cfg", default="default",
+                       choices=list(PROFILES.keys()),
+                       help="Algorithm profile name (see py/profiles.py)")
     p_ren.add_argument("--render-output", default="renders/comparison.png",
                        help="Output PNG path")
 

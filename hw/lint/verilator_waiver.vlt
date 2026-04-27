@@ -34,3 +34,12 @@ lint_off -rule UNUSEDSIGNAL    -file "*axis_gauss3x3.sv" -match "*conv_sum*"
 // sparevideo_pkg has no `timescale directive; harmless mismatch vs
 // vendored verilog-axis files.
 lint_off -rule TIMESCALEMOD   -file "*sparevideo_pkg.sv"
+// CFG_DEFAULT_HFLIP and CFG_NO_* are named profiles exposed as a library API
+// in sparevideo_pkg. The TB ternary (tb_sparevideo.sv) references all four
+// profiles, but make lint only checks sparevideo_top, not the TB. Suppress
+// UNUSEDPARAM for the three non-default profiles here; CFG_DEFAULT is wired
+// to sparevideo_top's .CFG default and does not need suppression.
+// Remove these waivers once make lint is expanded to include the TB in its
+// file list (or once the TB is moved into the FuseSoC core's lint target).
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_DEFAULT_HFLIP*"
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_NO_*"

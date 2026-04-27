@@ -119,7 +119,7 @@ def _selective_ema_update(y_cur, bg_prev, mask, alpha_shift, alpha_shift_slow):
     return np.clip(new_bg, 0, 255).astype(np.uint8)
 
 
-def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+def _run_bg_trace(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6,
                   grace_frames=0, grace_alpha_shift=1, gauss_en=True):
     """Run the motion model's bg trajectory for inspection. Returns a list of
     bg arrays — one per frame, representing the RAM state after that frame is
@@ -145,7 +145,7 @@ def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
             y_bg = y_cur_filt.copy()
             primed = True
         else:
-            mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            mask = _compute_mask(y_cur_filt, y_bg, motion_thresh)
             in_grace = grace_cnt < grace_frames
             if in_grace:
                 y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
@@ -157,7 +157,7 @@ def _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
     return trace
 
 
-def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
+def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
         grace_alpha_shift=1, gauss_en=True, morph_en=True, **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).
 
@@ -202,7 +202,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             y_bg = y_cur_filt.copy()
             primed = True
         else:
-            raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            raw_mask = _compute_mask(y_cur_filt, y_bg, motion_thresh)
             # Morph opening cleans the mask for downstream (CCL) only; EMA
             # always uses raw_mask to match the RTL datapath.
             clean_mask = morph_open(raw_mask) if morph_en else raw_mask

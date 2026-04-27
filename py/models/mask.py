@@ -24,7 +24,7 @@ from models.motion import (
 from models.ops.morph_open import morph_open
 
 
-def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
+def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
         grace_alpha_shift=1, gauss_en=True, morph_en=True, **kwargs):
     """Mask display reference model.
 
@@ -34,7 +34,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
 
     Args:
         frames: List of numpy arrays (H, W, 3), dtype uint8, RGB order.
-        thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
+        motion_thresh: Motion threshold (default 16, matching RTL MOTION_THRESH).
         alpha_shift: Fast EMA shift (non-motion pixels, default 3, alpha=1/8).
         alpha_shift_slow: Slow EMA shift (motion pixels, default 6, alpha=1/64).
         grace_frames: Fast-EMA grace window after priming (default 0 = no grace).
@@ -70,7 +70,7 @@ def run(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
             primed = True
         else:
             # Frame N>0: grace window or selective EMA
-            raw_mask = _compute_mask(y_cur_filt, y_bg, thresh)
+            raw_mask = _compute_mask(y_cur_filt, y_bg, motion_thresh)
             # Optional morph opening for display / downstream only; EMA
             # always uses raw_mask to match the RTL (motion_detect drives
             # the EMA before morph_open runs).

@@ -251,7 +251,7 @@ def test_mask_threshold_boundary():
     f2_above = np.zeros((h, w, 3), dtype=np.uint8)
     f2_above[:, :, 0] = 110  # Y = 33, diff = |33-16| = 17 > 16
 
-    out = run_model("mask", [f0, f1_at, f2_above], thresh=thresh)
+    out = run_model("mask", [f0, f1_at, f2_above], motion_thresh=thresh)
     # Frame 1: |16 - 0| = 16 = thresh → NOT > thresh → black
     assert not out[1].any(), "Diff == thresh should NOT trigger motion"
     # Frame 2: |33 - 16| = 17 > thresh → white
@@ -684,7 +684,7 @@ def test_motion_grace_window_clears_frame0_ghost():
         frames.append(f)
 
     from models.motion import _run_bg_trace, _rgb_to_y, _compute_mask
-    trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+    trace = _run_bg_trace(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6,
                           grace_frames=8, gauss_en=False)
     y_f10 = _rgb_to_y(frames[10])
     mask_f10 = _compute_mask(y_f10, trace[9], 16)
@@ -710,7 +710,7 @@ def test_motion_grace_window_preserves_trail_suppression():
     for i in range(5):
         frames.append(np.full((h, w, 3), 220, dtype=np.uint8))
 
-    trace = _run_bg_trace(frames, thresh=16, alpha_shift=3, alpha_shift_slow=6,
+    trace = _run_bg_trace(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6,
                           grace_frames=8, gauss_en=False)
 
     y_f18 = _rgb_to_y(frames[18])
