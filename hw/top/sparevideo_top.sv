@@ -1,8 +1,8 @@
 // sparevideo_top — AXI4-Stream video pipeline top level.
 //
-//   s_axis (clk_pix) -> async_fifo -> motion detect pipeline (clk_dsp)
-//                                  -> async_fifo -> vga_controller (clk_pix)
-//                                                -> RGB + hsync/vsync
+//   s_axis (axis_if.rx, clk_pix) -> async_fifo -> motion detect pipeline (clk_dsp)
+//                                               -> async_fifo -> vga_controller (clk_pix)
+//                                                             -> RGB + hsync/vsync
 //
 // Motion detect pipeline (clk_dsp domain):
 //   axis_fork -> axis_motion_detect (mask-only) -> axis_ccl -> bbox sideband (N_OUT-wide)
@@ -37,11 +37,7 @@ module sparevideo_top
     input  logic        rst_dsp_n_i,    // active-low synchronous reset, clk_dsp domain
 
     // ---- AXI4-Stream video input (clk_pix domain) ------------------
-    input  logic [23:0] s_axis_tdata_i,   // pixel payload, packed {R[7:0], G[7:0], B[7:0]}
-    input  logic        s_axis_tvalid_i,  // producer asserts when tdata is valid
-    output logic        s_axis_tready_o,  // sink ready; back-pressures producer when low
-    input  logic        s_axis_tlast_i,   // end-of-line marker (asserted on last pixel of each row)
-    input  logic        s_axis_tuser_i,   // start-of-frame marker (asserted on first pixel of frame)
+    axis_if.rx          s_axis,           // {tdata[23:0], tvalid, tready, tlast, tuser[0]}
 
     // ---- Control flow (quasi-static sideband, directly usable in clk_dsp) ---
     input  logic [1:0]  ctrl_flow_i,      // 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask
@@ -53,12 +49,6 @@ module sparevideo_top
     output logic [7:0]  vga_g_o,        // green channel
     output logic [7:0]  vga_b_o         // blue channel
 );
-
-    // verilog-axis modules use active-high resets internally.
-    logic rst_pix;
-    logic rst_dsp;
-    assign rst_pix = ~rst_pix_n_i;
-    assign rst_dsp = ~rst_dsp_n_i;
 
     // FIFO overflow flags (write-clock domain; sticky until reset).
     // Checked by SVAs below.
@@ -74,62 +64,22 @@ module sparevideo_top
     // 128 gives ~50% headroom.
     localparam int IN_FIFO_DEPTH = 128;
 
-    logic [23:0] dsp_in_tdata;
-    logic        dsp_in_tvalid;
-    logic        dsp_in_tready;
-    logic        dsp_in_tlast;
-    logic        dsp_in_tuser;
-
     logic [$clog2(IN_FIFO_DEPTH):0] fifo_in_depth;   // write-side (clk_pix)
 
-    axis_async_fifo #(
-        .DEPTH       (IN_FIFO_DEPTH),
-        .DATA_WIDTH  (24),
-        .KEEP_ENABLE (0),
-        .LAST_ENABLE (1),
-        .ID_ENABLE   (0),
-        .DEST_ENABLE (0),
-        .USER_ENABLE (1),
-        .USER_WIDTH  (1),
-        .FRAME_FIFO  (0)
+    axis_async_fifo_ifc #(
+        .DEPTH  (IN_FIFO_DEPTH),
+        .DATA_W (24),
+        .USER_W (1)
     ) u_fifo_in (
         .s_clk            (clk_pix_i),
-        .s_rst            (rst_pix),
-        .s_axis_tdata     (s_axis_tdata_i),
-        .s_axis_tkeep     (3'b0),
-        .s_axis_tvalid    (s_axis_tvalid_i),
-        .s_axis_tready    (s_axis_tready_o),
-        .s_axis_tlast     (s_axis_tlast_i),
-        .s_axis_tid       (8'b0),
-        .s_axis_tdest     (8'b0),
-        .s_axis_tuser     (s_axis_tuser_i),
-
+        .s_rst_n          (rst_pix_n_i),
         .m_clk            (clk_dsp_i),
-        .m_rst            (rst_dsp),
-        .m_axis_tdata     (dsp_in_tdata),
-        .m_axis_tkeep     (),
-        .m_axis_tvalid    (dsp_in_tvalid),
-        .m_axis_tready    (dsp_in_tready),
-        .m_axis_tlast     (dsp_in_tlast),
-        .m_axis_tid       (),
-        .m_axis_tdest     (),
-        .m_axis_tuser     (dsp_in_tuser),
-
-        .s_pause_req      (1'b0),
-        .s_pause_ack      (),
-        .m_pause_req      (1'b0),
-        .m_pause_ack      (),
-
-        .s_status_depth        (fifo_in_depth),
-        .s_status_depth_commit (),
-        .s_status_overflow     (fifo_in_overflow),
-        .s_status_bad_frame    (),
-        .s_status_good_frame   (),
-        .m_status_depth        (),
-        .m_status_depth_commit (),
-        .m_status_overflow     (),
-        .m_status_bad_frame    (),
-        .m_status_good_frame   ()
+        .m_rst_n          (rst_dsp_n_i),
+        .s_axis           (s_axis),
+        .m_axis           (pix_in_to_hflip),
+        .s_status_depth   (fifo_in_depth),
+        .s_status_overflow(fifo_in_overflow),
+        .m_status_depth   ()
     );
 
     // -----------------------------------------------------------------
@@ -142,6 +92,7 @@ module sparevideo_top
     localparam int RGN_Y_PREV_SIZE = H_ACTIVE * V_ACTIVE;
     localparam int RAM_DEPTH       = RGN_Y_PREV_SIZE;
     localparam int RAM_ADDR_W      = $clog2(RAM_DEPTH);
+    localparam int N_OUT_TOP       = sparevideo_pkg::CCL_N_OUT;
 
 
     initial begin
@@ -177,29 +128,26 @@ module sparevideo_top
     //     agree with the user-visible frame.
     //   - enable_i tied to CFG.hflip_en at compile time (CSR-ready).
     // -----------------------------------------------------------------
-    logic [23:0] flip_tdata;
-    logic        flip_tvalid;
-    logic        flip_tready;
-    logic        flip_tlast;
-    logic        flip_tuser;
+
+    // pix_in_to_hflip: input async FIFO m_axis -> u_hflip.s_axis.
+    // Connected directly to u_fifo_in.m_axis (interface bundle).
+    axis_if #(.DATA_W(24), .USER_W(1)) pix_in_to_hflip ();
+
+    // hflip_to_fork: u_hflip.m_axis -> u_fork.s_axis.
+    // u_fork.s_axis.tvalid is gated by fork_s_tvalid (motion_pipe_active guard),
+    // so two bridging assigns remain instead of a fully-transparent pass-through
+    // (Option A per Task 9 spec).
+    axis_if #(.DATA_W(24), .USER_W(1)) hflip_to_fork ();
 
     axis_hflip #(
         .H_ACTIVE (H_ACTIVE),
         .V_ACTIVE (V_ACTIVE)
     ) u_hflip (
-        .clk_i           (clk_dsp_i),
-        .rst_n_i         (rst_dsp_n_i),
-        .enable_i        (CFG.hflip_en),
-        .s_axis_tdata_i  (dsp_in_tdata),
-        .s_axis_tvalid_i (dsp_in_tvalid),
-        .s_axis_tready_o (dsp_in_tready),
-        .s_axis_tlast_i  (dsp_in_tlast),
-        .s_axis_tuser_i  (dsp_in_tuser),
-        .m_axis_tdata_o  (flip_tdata),
-        .m_axis_tvalid_o (flip_tvalid),
-        .m_axis_tready_i (flip_tready),
-        .m_axis_tlast_o  (flip_tlast),
-        .m_axis_tuser_o  (flip_tuser)
+        .clk_i    (clk_dsp_i),
+        .rst_n_i  (rst_dsp_n_i),
+        .enable_i (CFG.hflip_en),
+        .s_axis   (pix_in_to_hflip),
+        .m_axis   (hflip_to_fork)
     );
 
     // -----------------------------------------------------------------
@@ -211,72 +159,13 @@ module sparevideo_top
     //                       bbox sideband → overlaid RGB out
     // -----------------------------------------------------------------
 
-    // Top-level fork: broadcasts the gated dsp_in to both motion detect and overlay
+    // Top-level fork: broadcasts the gated hflip output to both motion detect (A)
+    // and overlay (B). tvalid is gated by motion_pipe_active (passthrough mode
+    // sends no data into the motion pipeline). Because u_fork.s_axis.tvalid
+    // needs this gate, hflip_to_fork is a shared interface bundle but its
+    // tvalid/tready bridging assigns inject the gating (Option A, Task 9 spec).
     logic        fork_s_tvalid;
     logic        fork_s_tready;
-    logic [23:0] fork_a_tdata;
-    logic        fork_a_tvalid;
-    logic        fork_a_tready;
-    logic        fork_a_tlast;
-    logic        fork_a_tuser;
-    logic [23:0] fork_b_tdata;
-    logic        fork_b_tvalid;
-    logic        fork_b_tready;
-    logic        fork_b_tlast;
-    logic        fork_b_tuser;
-
-    // Motion mask stream (1-bit per pixel) — raw output of axis_motion_detect,
-    // input to axis_morph3x3_open. Downstream consumers read msk_clean_* instead.
-    logic        msk_tdata;
-    logic        msk_tvalid;
-    logic        msk_tready;
-    logic        msk_tlast;
-    logic        msk_tuser;
-
-    // Cleaned mask stream — output of axis_morph3x3_open. In multi-consumer
-    // ctrl flows (mask display, ccl_bbox), downstream consumers read from
-    // these signals, not from msk_* (raw).
-    logic msk_clean_tdata;
-    logic msk_clean_tvalid;
-    logic msk_clean_tready;
-    logic msk_clean_tlast;
-    logic msk_clean_tuser;
-
-    // Mask display: expand 1-bit mask to 24-bit RGB for VGA output
-    logic [23:0] msk_rgb_tdata;
-    logic        msk_rgb_tvalid;
-    logic        msk_rgb_tlast;
-    logic        msk_rgb_tuser;
-
-    assign msk_rgb_tdata  = msk_clean_tdata ? 24'hFF_FF_FF : 24'h00_00_00;
-    // Gate by bbox_msk_tready so the FIFO only writes when the multi-consumer
-    // advance (proc && ccl) actually happens. Without this, msk_clean_tvalid
-    // stays asserted while ccl's EOF FSM holds bbox_msk_tready low, and the
-    // FIFO duplicates the held beat every cycle — corrupting the output and
-    // eventually deadlocking when the FIFO fills.
-    assign msk_rgb_tvalid = msk_clean_tvalid && bbox_msk_tready;
-    assign msk_rgb_tlast  = msk_clean_tlast;
-    assign msk_rgb_tuser  = msk_clean_tuser;
-
-    // Bbox sideband: N_OUT-wide arrays latched by axis_ccl and held for next frame.
-    localparam int N_OUT_TOP = sparevideo_pkg::CCL_N_OUT;
-    logic [N_OUT_TOP-1:0]                       ccl_bbox_valid;
-    logic [N_OUT_TOP-1:0][$clog2(H_ACTIVE)-1:0] ccl_bbox_min_x, ccl_bbox_max_x;
-    logic [N_OUT_TOP-1:0][$clog2(V_ACTIVE)-1:0] ccl_bbox_min_y, ccl_bbox_max_y;
-
-    // Overlay output (to output async FIFO via control-flow mux)
-    logic [23:0] ovl_tdata;
-    logic        ovl_tvalid;
-    logic        ovl_tready;
-    logic        ovl_tlast;
-    logic        ovl_tuser;
-
-    // Processing output mux (feeds u_fifo_out)
-    logic [23:0] proc_tdata;
-    logic        proc_tvalid;
-    logic        proc_tready;   // driven by u_fifo_out write-side tready
-    logic        proc_tlast;
-    logic        proc_tuser;
 
     // Gate fork input: passthrough mode sends no data into the motion pipeline.
     // Both motion and mask modes require the motion detect pipeline to run.
@@ -284,32 +173,38 @@ module sparevideo_top
     assign motion_pipe_active = (ctrl_flow_i == sparevideo_pkg::CTRL_MOTION_DETECT)
                              || (ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
                              || (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX);
-    assign fork_s_tvalid = motion_pipe_active ? flip_tvalid : 1'b0;
+    assign fork_s_tvalid = motion_pipe_active ? hflip_to_fork.tvalid : 1'b0;
+
+    // fork_s_axis: hflip_to_fork -> u_fork.s_axis with gated tvalid.
+    // Cannot bind hflip_to_fork directly to u_fork.s_axis because tvalid needs
+    // the motion_pipe_active gate; tdata/tlast/tuser pass through unmodified.
+    axis_if #(.DATA_W(24), .USER_W(1)) fork_s_axis ();
+    assign fork_s_axis.tdata  = hflip_to_fork.tdata;
+    assign fork_s_axis.tvalid = fork_s_tvalid;
+    assign fork_s_axis.tlast  = hflip_to_fork.tlast;
+    assign fork_s_axis.tuser  = hflip_to_fork.tuser;
+    assign fork_s_tready      = fork_s_axis.tready;
+
+    // fork_a_to_motion: u_fork.m_a_axis -> u_motion_detect.s_axis (direct pass-through).
+    axis_if #(.DATA_W(24), .USER_W(1)) fork_a_to_motion ();
+
+    // fork_b_to_overlay: u_fork.m_b_axis -> u_overlay_bbox.s_axis
+    // (via mux for ccl_bbox mode — see overlay input mux below).
+    axis_if #(.DATA_W(24), .USER_W(1)) fork_b_to_overlay ();
 
     axis_fork #(
-        .DATA_WIDTH (24)
+        .DATA_WIDTH (24),
+        .USER_WIDTH (1)
     ) u_fork (
-        .clk_i             (clk_dsp_i),
-        .rst_n_i           (rst_dsp_n_i),
-        // Input: gated flipped dsp_in
-        .s_axis_tdata_i    (flip_tdata),
-        .s_axis_tvalid_i   (fork_s_tvalid),
-        .s_axis_tready_o   (fork_s_tready),
-        .s_axis_tlast_i    (flip_tlast),
-        .s_axis_tuser_i    (flip_tuser),
-        // Output A: to axis_motion_detect (mask-only)
-        .m_a_axis_tdata_o  (fork_a_tdata),
-        .m_a_axis_tvalid_o (fork_a_tvalid),
-        .m_a_axis_tready_i (fork_a_tready),
-        .m_a_axis_tlast_o  (fork_a_tlast),
-        .m_a_axis_tuser_o  (fork_a_tuser),
-        // Output B: to axis_overlay_bbox
-        .m_b_axis_tdata_o  (fork_b_tdata),
-        .m_b_axis_tvalid_o (fork_b_tvalid),
-        .m_b_axis_tready_i (fork_b_tready),
-        .m_b_axis_tlast_o  (fork_b_tlast),
-        .m_b_axis_tuser_o  (fork_b_tuser)
+        .clk_i    (clk_dsp_i),
+        .rst_n_i  (rst_dsp_n_i),
+        .s_axis   (fork_s_axis),
+        .m_a_axis (fork_a_to_motion),
+        .m_b_axis (fork_b_to_overlay)
     );
+
+    // motion_to_morph: u_motion_detect.m_axis_msk -> u_morph_open.s_axis (direct pass-through).
+    axis_if #(.DATA_W(1), .USER_W(1)) motion_to_morph ();
 
     axis_motion_detect #(
         .H_ACTIVE          (H_ACTIVE),
@@ -323,53 +218,39 @@ module sparevideo_top
         .RGN_BASE          (RGN_Y_PREV_BASE),
         .RGN_SIZE          (RGN_Y_PREV_SIZE)
     ) u_motion_detect (
-        .clk_i               (clk_dsp_i),
-        .rst_n_i             (rst_dsp_n_i),
-        // AXI4-Stream input (from fork output A)
-        .s_axis_tdata_i      (fork_a_tdata),
-        .s_axis_tvalid_i     (fork_a_tvalid),
-        .s_axis_tready_o     (fork_a_tready),
-        .s_axis_tlast_i      (fork_a_tlast),
-        .s_axis_tuser_i      (fork_a_tuser),
-        // AXI4-Stream output — mask (1 bit)
-        .m_axis_msk_tdata_o  (msk_tdata),
-        .m_axis_msk_tvalid_o (msk_tvalid),
-        .m_axis_msk_tready_i (msk_tready),
-        .m_axis_msk_tlast_o  (msk_tlast),
-        .m_axis_msk_tuser_o  (msk_tuser),
+        .clk_i         (clk_dsp_i),
+        .rst_n_i       (rst_dsp_n_i),
+        .s_axis        (fork_a_to_motion),
+        .m_axis_msk    (motion_to_morph),
         // Memory port (to shared RAM port A)
-        .mem_rd_addr_o       (ram_a_rd_addr),
-        .mem_rd_data_i       (ram_a_rd_data),
-        .mem_wr_addr_o       (ram_a_wr_addr),
-        .mem_wr_data_o       (ram_a_wr_data),
-        .mem_wr_en_o         (ram_a_wr_en)
+        .mem_rd_addr_o (ram_a_rd_addr),
+        .mem_rd_data_i (ram_a_rd_data),
+        .mem_wr_addr_o (ram_a_wr_addr),
+        .mem_wr_data_o (ram_a_wr_data),
+        .mem_wr_en_o   (ram_a_wr_en)
     );
 
     // -----------------------------------------------------------------
     // Morphological opening (erode->dilate) on the 1-bit mask stream.
     // enable_i=0 is a zero-latency combinational bypass.
+    //
+    // morph_to_ccl: u_morph_open.m_axis -> raw bundle (un-strobed).
+    // ccl_s_axis below copies tdata/tlast/tuser and injects ccl_beat_strobe as
+    // tvalid, so u_ccl sees one beat per upstream beat-fire (tvalid && tready).
     // -----------------------------------------------------------------
+
+    // morph output — shared interface bundle (tready driven back from ccl gating).
+    axis_if #(.DATA_W(1), .USER_W(1)) morph_to_ccl ();
+
     axis_morph3x3_open #(
         .H_ACTIVE (H_ACTIVE),
         .V_ACTIVE (V_ACTIVE)
     ) u_morph_open (
-        // --- Clocks and resets ---
-        .clk_i           (clk_dsp_i),
-        .rst_n_i         (rst_dsp_n_i),
-        // --- Sideband ---
-        .enable_i        (CFG.morph_en),
-        // --- AXI4-Stream input (1-bit mask) ---
-        .s_axis_tdata_i  (msk_tdata),
-        .s_axis_tvalid_i (msk_tvalid),
-        .s_axis_tready_o (msk_tready),
-        .s_axis_tlast_i  (msk_tlast),
-        .s_axis_tuser_i  (msk_tuser),
-        // --- AXI4-Stream output (1-bit mask) ---
-        .m_axis_tdata_o  (msk_clean_tdata),
-        .m_axis_tvalid_o (msk_clean_tvalid),
-        .m_axis_tready_i (msk_clean_tready),
-        .m_axis_tlast_o  (msk_clean_tlast),
-        .m_axis_tuser_o  (msk_clean_tuser)
+        .clk_i    (clk_dsp_i),
+        .rst_n_i  (rst_dsp_n_i),
+        .enable_i (CFG.morph_en),
+        .s_axis   (motion_to_morph),
+        .m_axis   (morph_to_ccl)
     );
 
     // Mask tready backpressure, re-expressed on the morph-cleaned stream.
@@ -378,77 +259,76 @@ module sparevideo_top
     // canvas source (ccl_bbox). In motion mode, axis_ccl is the sole
     // consumer and drives bbox_msk_tready.
     logic bbox_msk_tready;
-    assign msk_clean_tready =
-        ((ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
-      || (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX))
-        ? (proc_tready && bbox_msk_tready)
-        : bbox_msk_tready;
+    assign morph_to_ccl.tready = ((ctrl_flow_i == sparevideo_pkg::CTRL_MASK_DISPLAY)
+                               || (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX))
+                                  ? (proc_axis.tready && bbox_msk_tready) : bbox_msk_tready;
 
     // axis_ccl asserts bbox_msk_tready during streaming and deasserts it only
     // while its EOF resolution FSM is active (vblank). In multi-consumer
-    // modes the upstream may also hold beats across cycles when proc_tready=0.
+    // modes the upstream may also hold beats across cycles when proc_axis.tready=0.
     // Feed axis_ccl the global-handshake strobe (tvalid && tready) as its
     // tvalid so it advances exactly once per accepted beat, regardless of
     // which consumer gated the stall.
     logic ccl_beat_strobe;
-    assign ccl_beat_strobe = msk_clean_tvalid && msk_clean_tready;
+    assign ccl_beat_strobe = morph_to_ccl.tvalid && morph_to_ccl.tready;
+
+    // ccl_s_axis: morph_to_ccl tdata/tlast/tuser pass-through with
+    // ccl_beat_strobe injected as tvalid; bbox_msk_tready back from u_ccl.tready.
+    axis_if #(.DATA_W(1), .USER_W(1)) ccl_s_axis ();
+    assign ccl_s_axis.tdata    = morph_to_ccl.tdata;
+    assign ccl_s_axis.tvalid   = ccl_beat_strobe;
+    assign ccl_s_axis.tlast    = morph_to_ccl.tlast;
+    assign ccl_s_axis.tuser    = morph_to_ccl.tuser;
+    assign bbox_msk_tready     = ccl_s_axis.tready;
+
+    // bbox_if connects u_ccl sideband output directly to u_overlay_bbox.
+    bbox_if u_ccl_bboxes ();
 
     axis_ccl #(
         .H_ACTIVE (H_ACTIVE),
         .V_ACTIVE (V_ACTIVE),
         .N_OUT    (N_OUT_TOP)
     ) u_ccl (
-        .clk_i           (clk_dsp_i),
-        .rst_n_i         (rst_dsp_n_i),
-        // AXI4-Stream input — cleaned mask (1 bit per pixel)
-        .s_axis_tdata_i  (msk_clean_tdata),
-        .s_axis_tvalid_i (ccl_beat_strobe),
-        .s_axis_tready_o (bbox_msk_tready),
-        .s_axis_tlast_i  (msk_clean_tlast),
-        .s_axis_tuser_i  (msk_clean_tuser),
-        // Sideband output — packed arrays, one slot per output bbox.
-        .bbox_valid_o    (ccl_bbox_valid),
-        .bbox_min_x_o    (ccl_bbox_min_x),
-        .bbox_max_x_o    (ccl_bbox_max_x),
-        .bbox_min_y_o    (ccl_bbox_min_y),
-        .bbox_max_y_o    (ccl_bbox_max_y),
-        .bbox_swap_o     (),                // unused
-        .bbox_empty_o    ()                 // unused: overlay uses per-slot valids
+        .clk_i        (clk_dsp_i),
+        .rst_n_i      (rst_dsp_n_i),
+        .s_axis       (ccl_s_axis),
+        .bboxes       (u_ccl_bboxes),
+        .bbox_swap_o  (),   // unused
+        .bbox_empty_o ()    // unused: overlay uses per-slot valids
     );
 
     // Overlay video input mux: in CTRL_CCL_BBOX mode, the overlay draws bboxes
     // onto a grey canvas derived combinationally from the mask stream; in
     // other modes, the overlay consumes the fork-B RGB stream.
-    logic [23:0] ovl_in_tdata;
-    logic        ovl_in_tvalid;
-    logic        ovl_in_tready;
-    logic        ovl_in_tlast;
-    logic        ovl_in_tuser;
+    //
+    // overlay_to_pix_out: u_overlay_bbox.m_axis -> output async FIFO s_axis.
+    // Connected directly to u_fifo_out.s_axis (interface bundle).
+    axis_if #(.DATA_W(24), .USER_W(1)) overlay_in ();
+    axis_if #(.DATA_W(24), .USER_W(1)) overlay_to_pix_out ();
 
     logic [23:0] mask_grey_rgb;
-    assign mask_grey_rgb = msk_clean_tdata ? 24'h80_80_80 : 24'h20_20_20;
+    assign mask_grey_rgb = morph_to_ccl.tdata ? 24'h80_80_80 : 24'h20_20_20;
 
     always_comb begin
         if (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX) begin
-            ovl_in_tdata  = mask_grey_rgb;
-            // Same multi-consumer gating as mask display (see msk_rgb_tvalid
-            // above): bbox_msk_tready=0 during ccl's EOF FSM must suppress
-            // ovl_in_tvalid so the overlay+FIFO don't duplicate stalled beats.
-            ovl_in_tvalid = msk_clean_tvalid && bbox_msk_tready;
-            ovl_in_tlast  = msk_clean_tlast;
-            ovl_in_tuser  = msk_clean_tuser;
+            overlay_in.tdata  = mask_grey_rgb;
+            // Same multi-consumer gating as mask display: bbox_msk_tready=0
+            // during ccl's EOF FSM must suppress tvalid so the overlay+FIFO
+            // don't duplicate stalled beats.
+            overlay_in.tvalid = morph_to_ccl.tvalid && bbox_msk_tready;
+            overlay_in.tlast  = morph_to_ccl.tlast;
+            overlay_in.tuser  = morph_to_ccl.tuser;
         end else begin
-            ovl_in_tdata  = fork_b_tdata;
-            ovl_in_tvalid = fork_b_tvalid;
-            ovl_in_tlast  = fork_b_tlast;
-            ovl_in_tuser  = fork_b_tuser;
+            overlay_in.tdata  = fork_b_to_overlay.tdata;
+            overlay_in.tvalid = fork_b_to_overlay.tvalid;
+            overlay_in.tlast  = fork_b_to_overlay.tlast;
+            overlay_in.tuser  = fork_b_to_overlay.tuser;
         end
     end
 
     // Fork-B backpressure: in CCL_BBOX mode the fork-B path is unused (drained);
     // in other modes it feeds the overlay video input.
-    assign fork_b_tready = (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX) ? 1'b1
-                                                                         : ovl_in_tready;
+    assign fork_b_to_overlay.tready = (ctrl_flow_i == sparevideo_pkg::CTRL_CCL_BBOX) ? 1'b1 : overlay_in.tready;
 
     axis_overlay_bbox #(
         .H_ACTIVE   (H_ACTIVE),
@@ -456,70 +336,66 @@ module sparevideo_top
         .N_OUT      (N_OUT_TOP),
         .BBOX_COLOR (CFG.bbox_color)
     ) u_overlay_bbox (
-        .clk_i           (clk_dsp_i),
-        .rst_n_i         (rst_dsp_n_i),
+        .clk_i   (clk_dsp_i),
+        .rst_n_i (rst_dsp_n_i),
         // AXI4-Stream input — from mux (fork-B RGB, or grey canvas in CCL_BBOX mode)
-        .s_axis_tdata_i  (ovl_in_tdata),
-        .s_axis_tvalid_i (ovl_in_tvalid),
-        .s_axis_tready_o (ovl_in_tready),
-        .s_axis_tlast_i  (ovl_in_tlast),
-        .s_axis_tuser_i  (ovl_in_tuser),
+        .s_axis  (overlay_in),
         // AXI4-Stream output — video with bbox rectangles overlaid (RGB888)
-        .m_axis_tdata_o  (ovl_tdata),
-        .m_axis_tvalid_o (ovl_tvalid),
-        .m_axis_tready_i (ovl_tready),
-        .m_axis_tlast_o  (ovl_tlast),
-        .m_axis_tuser_o  (ovl_tuser),
-        // Sideband input — packed-array bboxes from axis_ccl
-        .bbox_valid_i    (ccl_bbox_valid),
-        .bbox_min_x_i    (ccl_bbox_min_x),
-        .bbox_max_x_i    (ccl_bbox_max_x),
-        .bbox_min_y_i    (ccl_bbox_min_y),
-        .bbox_max_y_i    (ccl_bbox_max_y)
+        .m_axis  (overlay_to_pix_out),
+        // Sideband input — bbox_if directly from u_ccl
+        .bboxes  (u_ccl_bboxes)
     );
 
     // -----------------------------------------------------------------
     // Control-flow output mux
-    //   Passthrough: flipped dsp_in -> output FIFO; fork inactive (tvalid=0).
+    //   Passthrough: hflip output -> output FIFO directly; fork inactive (tvalid=0).
     //                (Mirror when CFG.hflip_en=1; raw input when CFG.hflip_en=0.)
-    //   Motion:      ovl (overlay output) → output FIFO; fork drives both paths.
-    //   Mask:        msk_rgb (B/W mask) → output FIFO; overlay path drained.
-    //   CCL bbox:    ovl (overlay on grey canvas) → output FIFO; fork-B drained.
+    //   Motion:      overlay output -> output FIFO; fork drives both paths.
+    //   Mask:        1-bit mask expanded inline to B/W RGB -> output FIFO; overlay drained.
+    //   CCL bbox:    overlay on grey canvas -> output FIFO; fork-B drained.
     // -----------------------------------------------------------------
     always_comb begin
+        // Defaults
+        proc_axis.tdata           = '0;
+        proc_axis.tvalid          = 1'b0;
+        proc_axis.tlast           = 1'b0;
+        proc_axis.tuser           = 1'b0;
+        overlay_to_pix_out.tready = 1'b0;
+        hflip_to_fork.tready      = fork_s_tready;
+
         case (ctrl_flow_i)
             sparevideo_pkg::CTRL_PASSTHROUGH: begin
-                proc_tdata    = flip_tdata;
-                proc_tvalid   = flip_tvalid;
-                proc_tlast    = flip_tlast;
-                proc_tuser    = flip_tuser;
-                flip_tready   = proc_tready;
-                ovl_tready    = 1'b1;       // fork inactive, no overlay data
+                proc_axis.tdata           = hflip_to_fork.tdata;
+                proc_axis.tvalid          = hflip_to_fork.tvalid;
+                proc_axis.tlast           = hflip_to_fork.tlast;
+                proc_axis.tuser           = hflip_to_fork.tuser;
+                hflip_to_fork.tready      = proc_axis.tready;
+                overlay_to_pix_out.tready = 1'b1;   // fork inactive, no overlay data
             end
             sparevideo_pkg::CTRL_MASK_DISPLAY: begin
-                proc_tdata    = msk_rgb_tdata;
-                proc_tvalid   = msk_rgb_tvalid;
-                proc_tlast    = msk_rgb_tlast;
-                proc_tuser    = msk_rgb_tuser;
-                flip_tready   = fork_s_tready;
-                ovl_tready    = 1'b1;       // overlay path unused, drain
+                // Inline 1-bit mask expansion to 24-bit black/white RGB.
+                // Gate by bbox_msk_tready so the FIFO only writes when the
+                // multi-consumer advance (proc && ccl) actually happens.
+                proc_axis.tdata           = morph_to_ccl.tdata? 24'hFF_FF_FF : 24'h00_00_00;
+                proc_axis.tvalid          = morph_to_ccl.tvalid && bbox_msk_tready;
+                proc_axis.tlast           = morph_to_ccl.tlast;
+                proc_axis.tuser           = morph_to_ccl.tuser;
+                overlay_to_pix_out.tready = 1'b1;   // overlay path unused, drain
             end
             sparevideo_pkg::CTRL_CCL_BBOX: begin
                 // Grey canvas + bboxes from the overlay; fork-B is drained.
-                proc_tdata    = ovl_tdata;
-                proc_tvalid   = ovl_tvalid;
-                proc_tlast    = ovl_tlast;
-                proc_tuser    = ovl_tuser;
-                flip_tready   = fork_s_tready;
-                ovl_tready    = proc_tready;
+                proc_axis.tdata           = overlay_to_pix_out.tdata;
+                proc_axis.tvalid          = overlay_to_pix_out.tvalid;
+                proc_axis.tlast           = overlay_to_pix_out.tlast;
+                proc_axis.tuser           = overlay_to_pix_out.tuser;
+                overlay_to_pix_out.tready = proc_axis.tready;
             end
             default: begin // CTRL_MOTION_DETECT
-                proc_tdata    = ovl_tdata;
-                proc_tvalid   = ovl_tvalid;
-                proc_tlast    = ovl_tlast;
-                proc_tuser    = ovl_tuser;
-                flip_tready   = fork_s_tready;
-                ovl_tready    = proc_tready;
+                proc_axis.tdata           = overlay_to_pix_out.tdata;
+                proc_axis.tvalid          = overlay_to_pix_out.tvalid;
+                proc_axis.tlast           = overlay_to_pix_out.tlast;
+                proc_axis.tuser           = overlay_to_pix_out.tuser;
+                overlay_to_pix_out.tready = proc_axis.tready;
             end
         endcase
     end
@@ -539,60 +415,40 @@ module sparevideo_top
     // doubles the per-TX delta (~480), exceeding 256.
     localparam int OUT_FIFO_DEPTH = 256;
 
+    logic [$clog2(OUT_FIFO_DEPTH):0] fifo_out_depth;  // write-side (clk_dsp)
+
+    // proc_axis: driven directly by the ctrl-flow mux below; feeds u_fifo_out.s_axis.
+    // proc_axis.tready (output FIFO write-side ready) is read back by the mux
+    // and by morph_to_ccl.tready.
+    axis_if #(.DATA_W(24), .USER_W(1)) proc_axis ();
+
+    // pix_out_axis: permanent bridge from output FIFO m_axis to VGA flat ports.
+    // VGA controller is outside the AXI-Stream conversion scope and stays flat.
     logic [23:0] pix_out_tdata;
     logic        pix_out_tvalid;
     logic        pix_out_tready;
     logic        pix_out_tuser;
-    logic [$clog2(OUT_FIFO_DEPTH):0] fifo_out_depth;  // write-side (clk_dsp)
+    axis_if #(.DATA_W(24), .USER_W(1)) pix_out_axis ();
+    assign pix_out_tdata       = pix_out_axis.tdata;
+    assign pix_out_tvalid      = pix_out_axis.tvalid;
+    assign pix_out_tuser       = pix_out_axis.tuser;
+    assign pix_out_axis.tready = pix_out_tready;
+    // pix_out_axis.tlast is not consumed by VGA (m_axis_tlast was unconnected).
 
-    axis_async_fifo #(
-        .DEPTH       (OUT_FIFO_DEPTH),
-        .DATA_WIDTH  (24),
-        .KEEP_ENABLE (0),
-        .LAST_ENABLE (1),
-        .ID_ENABLE   (0),
-        .DEST_ENABLE (0),
-        .USER_ENABLE (1),
-        .USER_WIDTH  (1),
-        .FRAME_FIFO  (0)
+    axis_async_fifo_ifc #(
+        .DEPTH  (OUT_FIFO_DEPTH),
+        .DATA_W (24),
+        .USER_W (1)
     ) u_fifo_out (
         .s_clk            (clk_dsp_i),
-        .s_rst            (rst_dsp),
-        .s_axis_tdata     (proc_tdata),
-        .s_axis_tkeep     (3'b0),
-        .s_axis_tvalid    (proc_tvalid),
-        .s_axis_tready    (proc_tready),
-        .s_axis_tlast     (proc_tlast),
-        .s_axis_tid       (8'b0),
-        .s_axis_tdest     (8'b0),
-        .s_axis_tuser     (proc_tuser),
-
+        .s_rst_n          (rst_dsp_n_i),
         .m_clk            (clk_pix_i),
-        .m_rst            (rst_pix),
-        .m_axis_tdata     (pix_out_tdata),
-        .m_axis_tkeep     (),
-        .m_axis_tvalid    (pix_out_tvalid),
-        .m_axis_tready    (pix_out_tready),
-        .m_axis_tlast     (),
-        .m_axis_tid       (),
-        .m_axis_tdest     (),
-        .m_axis_tuser     (pix_out_tuser),
-
-        .s_pause_req      (1'b0),
-        .s_pause_ack      (),
-        .m_pause_req      (1'b0),
-        .m_pause_ack      (),
-
-        .s_status_depth        (fifo_out_depth),
-        .s_status_depth_commit (),
-        .s_status_overflow     (fifo_out_overflow),
-        .s_status_bad_frame    (),
-        .s_status_good_frame   (),
-        .m_status_depth        (),
-        .m_status_depth_commit (),
-        .m_status_overflow     (),
-        .m_status_bad_frame    (),
-        .m_status_good_frame   ()
+        .m_rst_n          (rst_pix_n_i),
+        .s_axis           (proc_axis),
+        .m_axis           (pix_out_axis),
+        .s_status_depth   (fifo_out_depth),
+        .s_status_overflow(fifo_out_overflow),
+        .m_status_depth   ()
     );
 
     // -----------------------------------------------------------------
@@ -657,7 +513,7 @@ module sparevideo_top
     // (1) Input must not be back-pressured.
     assert_no_input_backpressure: assert property (
         @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
-            s_axis_tvalid_i |-> s_axis_tready_o
+            s_axis.tvalid |-> s_axis.tready
     ) else $error("sparevideo_top: input s_axis was back-pressured (DSP pipeline stalled)");
 
     // (2) Once started, no underruns inside the VGA active region.

@@ -1,12 +1,16 @@
 CAPI=2:
 name: "sparevideo:ip:axis"
-description: "Reusable AXI4-Stream utilities — axis_fork"
+description: "Reusable AXI4-Stream utilities — axis_fork, axis_async_fifo_ifc"
 
 filesets:
   files_rtl:
     files:
       - rtl/axis_fork.sv
+      - rtl/axis_async_fifo_ifc.sv
     file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
+      - sparevideo:third_party:verilog-axis
 
 targets:
   default:

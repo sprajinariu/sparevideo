@@ -9,15 +9,15 @@
 // when the pixel and every neighbour are 1). Multiplications and adds are
 // none -- pure gate tree.
 //
-// Latency: H_ACTIVE + 3 cycles from first s_axis_tvalid_i to first
-// m_axis_tvalid_o (window: H_ACTIVE + 2; wrapper's output register adds 1).
+// Latency: H_ACTIVE + 3 cycles from first s_axis.tvalid to first
+// m_axis.tvalid (window: H_ACTIVE + 2; wrapper's output register adds 1).
 // Throughput: 1 pixel/cycle after fill when !stall.
 //
 // Blanking: defers to axis_window3x3 (min H-blank 1, min V-blank
 // H_ACTIVE + 1). Phantom-cycle back-pressure is surfaced via busy_o.
 //
 // enable_i: when 1, the window-based erode path drives the output. When 0,
-// s_axis_* is forwarded combinatorially to m_axis_* with zero latency and
+// s_axis is forwarded combinatorially to m_axis with zero latency and
 // the line buffers are ignored. enable_i must be held frame-stable.
 
 module axis_morph3x3_erode #(
@@ -32,18 +32,10 @@ module axis_morph3x3_erode #(
     input  logic enable_i,
 
     // --- AXI4-Stream input (1-bit mask) ---
-    input  logic s_axis_tdata_i,
-    input  logic s_axis_tvalid_i,
-    output logic s_axis_tready_o,
-    input  logic s_axis_tlast_i,
-    input  logic s_axis_tuser_i,
+    axis_if.rx s_axis,
 
     // --- AXI4-Stream output (1-bit mask) ---
-    output logic m_axis_tdata_o,
-    output logic m_axis_tvalid_o,
-    input  logic m_axis_tready_i,
-    output logic m_axis_tlast_o,
-    output logic m_axis_tuser_o,
+    axis_if.tx m_axis,
 
     // --- Status ---
     output logic busy_o
@@ -62,7 +54,7 @@ module axis_morph3x3_erode #(
     logic       win_busy;
 
     logic       stall;
-    assign      stall = !m_axis_tready_i;
+    assign      stall = !m_axis.tready;
 
     axis_window3x3 #(
         .DATA_WIDTH  (1),
@@ -72,10 +64,10 @@ module axis_morph3x3_erode #(
     ) u_window (
         .clk_i          (clk_i),
         .rst_n_i        (rst_n_i),
-        .valid_i        (s_axis_tvalid_i),
-        .sof_i          (s_axis_tuser_i),
+        .valid_i        (s_axis.tvalid),
+        .sof_i          (s_axis.tuser),
         .stall_i        (stall),
-        .din_i          (s_axis_tdata_i),
+        .din_i          (s_axis.tdata),
         .window_o       (window),
         .window_valid_o (window_valid),
         .busy_o         (win_busy)
@@ -143,19 +135,19 @@ module axis_morph3x3_erode #(
     // ---- enable_i bypass mux ----
     always_comb begin
         if (enable_i) begin
-            m_axis_tdata_o  = win_tdata_q;
-            m_axis_tvalid_o = win_tvalid_q;
-            m_axis_tlast_o  = win_tlast_q;
-            m_axis_tuser_o  = win_tuser_q;
-            s_axis_tready_o = !stall && !win_busy;
-            busy_o          = win_busy;
+            m_axis.tdata  = win_tdata_q;
+            m_axis.tvalid = win_tvalid_q;
+            m_axis.tlast  = win_tlast_q;
+            m_axis.tuser  = win_tuser_q;
+            s_axis.tready = !stall && !win_busy;
+            busy_o        = win_busy;
         end else begin
-            m_axis_tdata_o  = s_axis_tdata_i;
-            m_axis_tvalid_o = s_axis_tvalid_i;
-            m_axis_tlast_o  = s_axis_tlast_i;
-            m_axis_tuser_o  = s_axis_tuser_i;
-            s_axis_tready_o = m_axis_tready_i;
-            busy_o          = 1'b0;
+            m_axis.tdata  = s_axis.tdata;
+            m_axis.tvalid = s_axis.tvalid;
+            m_axis.tlast  = s_axis.tlast;
+            m_axis.tuser  = s_axis.tuser;
+            s_axis.tready = m_axis.tready;
+            busy_o        = 1'b0;
         end
     end
 

@@ -64,18 +64,10 @@ module axis_motion_detect #(
     input  logic        rst_n_i,
 
     // AXI4-Stream input (RGB888)
-    input  logic [23:0] s_axis_tdata_i,
-    input  logic        s_axis_tvalid_i,
-    output logic        s_axis_tready_o,
-    input  logic        s_axis_tlast_i,
-    input  logic        s_axis_tuser_i,
+    axis_if.rx s_axis,
 
     // AXI4-Stream output — mask (1 bit)
-    output logic        m_axis_msk_tdata_o,
-    output logic        m_axis_msk_tvalid_o,
-    input  logic        m_axis_msk_tready_i,
-    output logic        m_axis_msk_tlast_o,
-    output logic        m_axis_msk_tuser_o,
+    axis_if.tx m_axis_msk,
 
     // Memory port (to shared RAM port A)
     output logic [$clog2(RGN_BASE + RGN_SIZE)-1:0] mem_rd_addr_o,
@@ -88,11 +80,11 @@ module axis_motion_detect #(
     localparam int IDX_W       = $clog2(H_ACTIVE * V_ACTIVE);
     localparam int GRACE_CNT_W = (GRACE_FRAMES > 0) ? $clog2(GRACE_FRAMES + 1) : 1;
 
-    // s_axis_tlast_i is kept for AXIS port symmetry but not consumed here —
+    // s_axis.tlast is kept for AXIS port symmetry but not consumed here —
     // output tlast is regenerated from out_col/out_row counters. Sink it into
     // an unused net so lint stays clean without a waiver.
     logic _unused_tlast;
-    assign _unused_tlast = s_axis_tlast_i;
+    assign _unused_tlast = s_axis.tlast;
 
     // ---- Single-output pipeline control ----
     // The output valid signal comes directly from the Gaussian pre-filter's
@@ -105,13 +97,13 @@ module axis_motion_detect #(
     logic gauss_busy;    // gauss needs a phantom cycle (busy_o)
     logic gauss_consume; // gauss consumes the pending pixel this cycle
 
-    assign pipe_stall = pipe_valid && !m_axis_msk_tready_i;
-    assign beat_done  = pipe_valid && m_axis_msk_tready_i;
+    assign pipe_stall = pipe_valid && !m_axis_msk.tready;
+    assign beat_done  = pipe_valid && m_axis_msk.tready;
 
     // Input ready: accept into the 1-deep pending slot whenever it is empty,
     // or whenever gauss will consume the current pending pixel this cycle
     // (freeing the slot for a simultaneous new accept).
-    assign s_axis_tready_o = !gauss_pixel_valid || gauss_consume;
+    assign s_axis.tready = !gauss_pixel_valid || gauss_consume;
 
     // ---- RGB → Y conversion (1-cycle pipeline) ----
     logic [7:0] y_cur;
@@ -128,8 +120,8 @@ module axis_motion_detect #(
     always_ff @(posedge clk_i) begin
         if (!rst_n_i)
             held_tdata <= '0;
-        else if (s_axis_tvalid_i && s_axis_tready_o)
-            held_tdata <= s_axis_tdata_i;
+        else if (s_axis.tvalid && s_axis.tready)
+            held_tdata <= s_axis.tdata;
     end
 
     // Feed rgb2ycrcb from the live bus on accept, else from held_tdata so the
@@ -137,10 +129,10 @@ module axis_motion_detect #(
     // downstream stalls (keeps y_cur stable while gauss_pixel_valid is held).
     logic [7:0] in_r, in_g, in_b;
     always_comb begin
-        if (s_axis_tvalid_i && s_axis_tready_o) begin
-            in_r = s_axis_tdata_i[23:16];
-            in_g = s_axis_tdata_i[15:8];
-            in_b = s_axis_tdata_i[7:0];
+        if (s_axis.tvalid && s_axis.tready) begin
+            in_r = s_axis.tdata[23:16];
+            in_g = s_axis.tdata[15:8];
+            in_b = s_axis.tdata[7:0];
         end else begin
             in_r = held_tdata[23:16];
             in_g = held_tdata[15:8];
@@ -173,10 +165,10 @@ module axis_motion_detect #(
         if (!rst_n_i) begin
             gauss_pixel_valid <= 1'b0;
             gauss_sof         <= 1'b0;
-        end else if (s_axis_tvalid_i && s_axis_tready_o) begin
+        end else if (s_axis.tvalid && s_axis.tready) begin
             // New accept (may coincide with gauss_consume): overwrite slot.
             gauss_pixel_valid <= 1'b1;
-            gauss_sof         <= s_axis_tuser_i;
+            gauss_sof         <= s_axis.tuser;
         end else if (gauss_consume) begin
             // Consumed without new accept: slot empties.
             gauss_pixel_valid <= 1'b0;
@@ -359,9 +351,9 @@ module axis_motion_detect #(
     // at high-contrast deltas takes longer than GRACE_FRAMES itself. Blanking
     // the mask during grace gives a clean warm-up period: bg converges silently,
     // then the first real mask appears at frame GRACE_FRAMES+1.
-    assign m_axis_msk_tdata_o  = mask_bit && !in_grace;
-    assign m_axis_msk_tvalid_o = pipe_valid;
-    assign m_axis_msk_tlast_o  = end_of_row;
-    assign m_axis_msk_tuser_o  = (out_col == '0) && (out_row == '0);
+    assign m_axis_msk.tdata  = mask_bit && !in_grace;
+    assign m_axis_msk.tvalid = pipe_valid;
+    assign m_axis_msk.tlast  = end_of_row;
+    assign m_axis_msk.tuser  = (out_col == '0) && (out_row == '0);
 
 endmodule

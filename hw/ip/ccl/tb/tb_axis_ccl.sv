@@ -31,19 +31,70 @@ module tb_axis_ccl;
 
     // --- drv_* pattern ---
     logic drv_tdata = 1'b0, drv_tvalid = 1'b0, drv_tlast = 1'b0, drv_tuser = 1'b0;
-    logic s_tdata, s_tvalid, s_tready, s_tlast, s_tuser;
-    always_ff @(posedge clk) begin
-        s_tdata  <= drv_tdata;
-        s_tvalid <= drv_tvalid;
-        s_tlast  <= drv_tlast;
-        s_tuser  <= drv_tuser;
+
+    // Each DUT gets its own axis_if and bbox_if pair.
+    // All three share the same driven stimulus (drv_*), latched at negedge.
+    axis_if #(.DATA_W(1), .USER_W(1)) s_axis_default ();
+    axis_if #(.DATA_W(1), .USER_W(1)) s_axis_mp4     ();
+    axis_if #(.DATA_W(1), .USER_W(1)) s_axis_pf      ();
+
+    bbox_if #(.N_OUT(N_OUT), .H_W($clog2(H)), .V_W($clog2(V))) bboxes_default ();
+    bbox_if #(.N_OUT(N_OUT), .H_W($clog2(H)), .V_W($clog2(V))) bboxes_mp4     ();
+    bbox_if #(.N_OUT(N_OUT), .H_W($clog2(H)), .V_W($clog2(V))) bboxes_pf      ();
+
+    // Negedge driver ensures DUT inputs are stable at posedge sampling.
+    always_ff @(negedge clk) begin
+        s_axis_default.tdata  <= drv_tdata;
+        s_axis_default.tvalid <= drv_tvalid;
+        s_axis_default.tlast  <= drv_tlast;
+        s_axis_default.tuser  <= drv_tuser;
+
+        s_axis_mp4.tdata  <= drv_tdata;
+        s_axis_mp4.tvalid <= drv_tvalid;
+        s_axis_mp4.tlast  <= drv_tlast;
+        s_axis_mp4.tuser  <= drv_tuser;
+
+        s_axis_pf.tdata  <= drv_tdata;
+        s_axis_pf.tvalid <= drv_tvalid;
+        s_axis_pf.tlast  <= drv_tlast;
+        s_axis_pf.tuser  <= drv_tuser;
     end
 
+    // Flat sideband outputs for tasks (read bbox_valid/min_x/etc from default DUT)
     logic [N_OUT-1:0]                bbox_valid;
     logic [N_OUT-1:0][$clog2(H)-1:0] bbox_min_x, bbox_max_x;
     logic [N_OUT-1:0][$clog2(V)-1:0] bbox_min_y, bbox_max_y;
-    logic                            bbox_swap;
-    logic                            bbox_empty;
+    assign bbox_valid = bboxes_default.valid;
+    assign bbox_min_x = bboxes_default.min_x;
+    assign bbox_max_x = bboxes_default.max_x;
+    assign bbox_min_y = bboxes_default.min_y;
+    assign bbox_max_y = bboxes_default.max_y;
+
+    logic bbox_swap;
+    logic bbox_empty;
+
+    // mp4 DUT sideband aliases
+    logic [N_OUT-1:0]                mp4_bbox_valid;
+    logic [N_OUT-1:0][$clog2(H)-1:0] mp4_bbox_min_x, mp4_bbox_max_x;
+    logic [N_OUT-1:0][$clog2(V)-1:0] mp4_bbox_min_y, mp4_bbox_max_y;
+    logic                            mp4_bbox_swap;
+    assign mp4_bbox_valid = bboxes_mp4.valid;
+    assign mp4_bbox_min_x = bboxes_mp4.min_x;
+    assign mp4_bbox_max_x = bboxes_mp4.max_x;
+    assign mp4_bbox_min_y = bboxes_mp4.min_y;
+    assign mp4_bbox_max_y = bboxes_mp4.max_y;
+
+    // pf DUT sideband aliases
+    logic [N_OUT-1:0]                pf_bbox_valid;
+    logic [N_OUT-1:0][$clog2(H)-1:0] pf_bbox_min_x, pf_bbox_max_x;
+    logic [N_OUT-1:0][$clog2(V)-1:0] pf_bbox_min_y, pf_bbox_max_y;
+    logic                            pf_bbox_swap;
+    logic                            pf_bbox_empty;
+    assign pf_bbox_valid = bboxes_pf.valid;
+    assign pf_bbox_min_x = bboxes_pf.min_x;
+    assign pf_bbox_max_x = bboxes_pf.max_x;
+    assign pf_bbox_min_y = bboxes_pf.min_y;
+    assign pf_bbox_max_y = bboxes_pf.max_y;
 
     axis_ccl #(
         .H_ACTIVE             (H),
@@ -54,28 +105,15 @@ module tb_axis_ccl;
         .MAX_CHAIN_DEPTH      (8),
         .PRIME_FRAMES         (0)  // unit TB asserts on first frame's bboxes
     ) u_dut (
-        .clk_i           (clk),
-        .rst_n_i         (rst_n),
-        .s_axis_tdata_i  (s_tdata),
-        .s_axis_tvalid_i (s_tvalid),
-        .s_axis_tready_o (s_tready),
-        .s_axis_tlast_i  (s_tlast),
-        .s_axis_tuser_i  (s_tuser),
-        .bbox_valid_o    (bbox_valid),
-        .bbox_min_x_o    (bbox_min_x),
-        .bbox_max_x_o    (bbox_max_x),
-        .bbox_min_y_o    (bbox_min_y),
-        .bbox_max_y_o    (bbox_max_y),
-        .bbox_swap_o    (bbox_swap),
-        .bbox_empty_o   (bbox_empty)
+        .clk_i        (clk),
+        .rst_n_i      (rst_n),
+        .s_axis       (s_axis_default),
+        .bboxes       (bboxes_default),
+        .bbox_swap_o  (bbox_swap),
+        .bbox_empty_o (bbox_empty)
     );
 
     // Second DUT: MIN_COMPONENT_PIXELS=4 — exercises the size filter.
-    logic [N_OUT-1:0]                mp4_bbox_valid;
-    logic [N_OUT-1:0][$clog2(H)-1:0] mp4_bbox_min_x, mp4_bbox_max_x;
-    logic [N_OUT-1:0][$clog2(V)-1:0] mp4_bbox_min_y, mp4_bbox_max_y;
-    logic                            mp4_bbox_swap;
-
     axis_ccl #(
         .H_ACTIVE             (H),
         .V_ACTIVE             (V),
@@ -85,29 +123,15 @@ module tb_axis_ccl;
         .MAX_CHAIN_DEPTH      (8),
         .PRIME_FRAMES         (0)
     ) u_dut_minpix4 (
-        .clk_i           (clk),
-        .rst_n_i         (rst_n),
-        .s_axis_tdata_i  (s_tdata),
-        .s_axis_tvalid_i (s_tvalid),
-        .s_axis_tready_o (),
-        .s_axis_tlast_i  (s_tlast),
-        .s_axis_tuser_i  (s_tuser),
-        .bbox_valid_o    (mp4_bbox_valid),
-        .bbox_min_x_o    (mp4_bbox_min_x),
-        .bbox_max_x_o    (mp4_bbox_max_x),
-        .bbox_min_y_o    (mp4_bbox_min_y),
-        .bbox_max_y_o    (mp4_bbox_max_y),
-        .bbox_swap_o     (mp4_bbox_swap),
-        .bbox_empty_o    ()
+        .clk_i        (clk),
+        .rst_n_i      (rst_n),
+        .s_axis       (s_axis_mp4),
+        .bboxes       (bboxes_mp4),
+        .bbox_swap_o  (mp4_bbox_swap),
+        .bbox_empty_o ()
     );
 
     // Third DUT: PRIME_FRAMES=1 — exercises the priming skip on frame 0.
-    logic [N_OUT-1:0]                pf_bbox_valid;
-    logic [N_OUT-1:0][$clog2(H)-1:0] pf_bbox_min_x, pf_bbox_max_x;
-    logic [N_OUT-1:0][$clog2(V)-1:0] pf_bbox_min_y, pf_bbox_max_y;
-    logic                            pf_bbox_swap;
-    logic                            pf_bbox_empty;
-
     axis_ccl #(
         .H_ACTIVE             (H),
         .V_ACTIVE             (V),
@@ -117,20 +141,12 @@ module tb_axis_ccl;
         .MAX_CHAIN_DEPTH      (8),
         .PRIME_FRAMES         (1)
     ) u_dut_prime1 (
-        .clk_i           (clk),
-        .rst_n_i         (pf_rst_n),
-        .s_axis_tdata_i  (s_tdata),
-        .s_axis_tvalid_i (s_tvalid),
-        .s_axis_tready_o (),
-        .s_axis_tlast_i  (s_tlast),
-        .s_axis_tuser_i  (s_tuser),
-        .bbox_valid_o    (pf_bbox_valid),
-        .bbox_min_x_o    (pf_bbox_min_x),
-        .bbox_max_x_o    (pf_bbox_max_x),
-        .bbox_min_y_o    (pf_bbox_min_y),
-        .bbox_max_y_o    (pf_bbox_max_y),
-        .bbox_swap_o     (pf_bbox_swap),
-        .bbox_empty_o    (pf_bbox_empty)
+        .clk_i        (clk),
+        .rst_n_i      (pf_rst_n),
+        .s_axis       (s_axis_pf),
+        .bboxes       (bboxes_pf),
+        .bbox_swap_o  (pf_bbox_swap),
+        .bbox_empty_o (pf_bbox_empty)
     );
 
     integer num_errors = 0;

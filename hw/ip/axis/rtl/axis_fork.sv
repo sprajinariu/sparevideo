@@ -10,72 +10,61 @@
 // axis_broadcast).
 //
 // Data, tlast, and tuser are combinational pass-through to both outputs.
-// s_axis_tready_o is asserted only when both consumers have accepted the
+// s_axis.tready is asserted only when both consumers have accepted the
 // current beat (or are both ready to accept). When tvalid is high and one
-// consumer stalls, s_tready stays low and the upstream holds tdata (AXI
+// consumer stalls, s_axis.tready stays low and the upstream holds tdata (AXI
 // rule), so the combinational pass-through always presents the correct data.
 
 module axis_fork #(
-    parameter int DATA_WIDTH = 24
+    parameter int DATA_WIDTH = 24,
+    parameter int USER_WIDTH = 1
 ) (
-    input  logic                  clk_i,
-    input  logic                  rst_n_i,
+    input  logic clk_i,
+    input  logic rst_n_i,
 
     // ---- AXI4-Stream input ------------------------------------------
-    input  logic [DATA_WIDTH-1:0] s_axis_tdata_i,
-    input  logic                  s_axis_tvalid_i,
-    output logic                  s_axis_tready_o,
-    input  logic                  s_axis_tlast_i,
-    input  logic                  s_axis_tuser_i,
+    axis_if.rx s_axis,
 
     // ---- AXI4-Stream output A ----------------------------------------
-    output logic [DATA_WIDTH-1:0] m_a_axis_tdata_o,
-    output logic                  m_a_axis_tvalid_o,
-    input  logic                  m_a_axis_tready_i,
-    output logic                  m_a_axis_tlast_o,
-    output logic                  m_a_axis_tuser_o,
+    axis_if.tx m_a_axis,
 
     // ---- AXI4-Stream output B ----------------------------------------
-    output logic [DATA_WIDTH-1:0] m_b_axis_tdata_o,
-    output logic                  m_b_axis_tvalid_o,
-    input  logic                  m_b_axis_tready_i,
-    output logic                  m_b_axis_tlast_o,
-    output logic                  m_b_axis_tuser_o
+    axis_if.tx m_b_axis
 );
 
     // ---- Per-output acceptance tracking ----
     logic a_accepted, b_accepted;
     logic both_done;
 
-    assign both_done = (a_accepted || m_a_axis_tready_i)
-                    && (b_accepted || m_b_axis_tready_i);
+    assign both_done = (a_accepted || m_a_axis.tready)
+                    && (b_accepted || m_b_axis.tready);
 
-    assign s_axis_tready_o = both_done;
+    assign s_axis.tready = both_done;
 
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
             a_accepted <= 1'b0;
             b_accepted <= 1'b0;
-        end else if (s_axis_tvalid_i && both_done) begin
+        end else if (s_axis.tvalid && both_done) begin
             a_accepted <= 1'b0;
             b_accepted <= 1'b0;
         end else begin
-            if (m_a_axis_tvalid_o && m_a_axis_tready_i)
+            if (m_a_axis.tvalid && m_a_axis.tready)
                 a_accepted <= 1'b1;
-            if (m_b_axis_tvalid_o && m_b_axis_tready_i)
+            if (m_b_axis.tvalid && m_b_axis.tready)
                 b_accepted <= 1'b1;
         end
     end
 
     // ---- Combinational data pass-through ----
-    assign m_a_axis_tdata_o  = s_axis_tdata_i;
-    assign m_a_axis_tlast_o  = s_axis_tlast_i;
-    assign m_a_axis_tuser_o  = s_axis_tuser_i;
-    assign m_a_axis_tvalid_o = s_axis_tvalid_i && !a_accepted;
+    assign m_a_axis.tdata  = s_axis.tdata;
+    assign m_a_axis.tlast  = s_axis.tlast;
+    assign m_a_axis.tuser  = s_axis.tuser;
+    assign m_a_axis.tvalid = s_axis.tvalid && !a_accepted;
 
-    assign m_b_axis_tdata_o  = s_axis_tdata_i;
-    assign m_b_axis_tlast_o  = s_axis_tlast_i;
-    assign m_b_axis_tuser_o  = s_axis_tuser_i;
-    assign m_b_axis_tvalid_o = s_axis_tvalid_i && !b_accepted;
+    assign m_b_axis.tdata  = s_axis.tdata;
+    assign m_b_axis.tlast  = s_axis.tlast;
+    assign m_b_axis.tuser  = s_axis.tuser;
+    assign m_b_axis.tvalid = s_axis.tvalid && !b_accepted;
 
 endmodule

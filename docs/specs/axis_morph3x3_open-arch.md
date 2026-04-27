@@ -80,47 +80,26 @@ All three modules share the same two parameters:
 
 Both modules expose identical ports. The table below applies to each of them individually.
 
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
-| **Clock and reset** | | | |
-| `clk_i` | input | 1 | DSP clock (`clk_dsp`), rising edge active |
-| `rst_n_i` | input | 1 | Active-low synchronous reset |
-| **Sideband** | | | |
-| `enable_i` | input | 1 | When 1: window-based filtering is active. When 0: `s_axis_*` is forwarded directly to `m_axis_*` with no line-buffer latency. Must be held stable across an entire frame; toggling mid-frame is undefined. |
-| **AXI4-Stream input (1-bit mask)** | | | |
-| `s_axis_tdata_i` | input | 1 | Mask pixel: 1 = foreground, 0 = background |
-| `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
-| `s_axis_tready_o` | output | 1 | AXI4-Stream ready. When `enable_i=1` and the window primitive is executing a phantom cycle (`busy_o` asserted), this deasserts. When `enable_i=0`, combinatorially mirrors `m_axis_tready_i`. |
-| `s_axis_tlast_i` | input | 1 | End-of-line (asserted on the last pixel of each active row) |
-| `s_axis_tuser_i` | input | 1 | Start-of-frame (asserted on the first pixel of each active frame) |
-| **AXI4-Stream output (1-bit mask)** | | | |
-| `m_axis_tdata_o` | output | 1 | Filtered mask pixel |
-| `m_axis_tvalid_o` | output | 1 | AXI4-Stream valid |
-| `m_axis_tready_i` | input | 1 | Downstream ready |
-| `m_axis_tlast_o` | output | 1 | End-of-line, regenerated from internal column counter (enable_i=1) or forwarded from `s_axis_tlast_i` (enable_i=0) |
-| `m_axis_tuser_o` | output | 1 | Start-of-frame, regenerated or forwarded (same rule as `tlast`) |
-| **Status** | | | |
-| `busy_o` | output | 1 | Asserts when the internal `axis_window3x3` is executing a phantom cycle while the upstream presents valid data. The parent should deassert upstream `tready` for as many cycles as `busy_o` remains asserted. Stays low in standard VGA-timed integration. Driven low when `enable_i=0`. |
+| Signal | Direction | Type | Description |
+|--------|-----------|------|-------------|
+| `clk_i`    | input  | `logic`      | DSP clock (`clk_dsp`), rising edge active |
+| `rst_n_i`  | input  | `logic`      | Active-low synchronous reset |
+| `enable_i` | input  | `logic`      | When 1: window-based filtering is active. When 0: `s_axis` is forwarded directly to `m_axis` with no line-buffer latency. Must be held stable across an entire frame; toggling mid-frame is undefined. |
+| `s_axis`   | input  | `axis_if.rx` | 1-bit mask input stream (DATA_W=1, USER_W=1; tdata[0]=mask pixel, tuser=SOF, tlast=EOL). tready deasserts during phantom cycles when `enable_i=1`; combinationally mirrors `m_axis.tready` when `enable_i=0`. |
+| `m_axis`   | output | `axis_if.tx` | 1-bit filtered mask output stream (DATA_W=1, USER_W=1). tlast/tuser regenerated from internal column counter when `enable_i=1`, forwarded when `enable_i=0`. |
+| `busy_o`   | output | `logic`      | Asserts when the internal `axis_window3x3` is executing a phantom cycle while upstream presents valid data. Parent should deassert upstream tready for as many cycles as `busy_o` asserts. Stays low in standard VGA-timed integration. Driven low when `enable_i=0`. |
 
 ### 3.3 Ports — `axis_morph3x3_open`
 
 `axis_morph3x3_open` exposes the same AXI4-Stream and sideband ports as the sub-modules, minus `busy_o` (the composite does not expose internal phantom-cycle status; standard VGA-timed integration guarantees `busy_o` of both sub-modules stays low).
 
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
-| `clk_i` | input | 1 | DSP clock |
-| `rst_n_i` | input | 1 | Active-low synchronous reset |
-| `enable_i` | input | 1 | Forwarded to both `u_erode` and `u_dilate`. When 0, both sub-modules bypass and the composite has zero additional latency. |
-| `s_axis_tdata_i` | input | 1 | Input mask pixel |
-| `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
-| `s_axis_tready_o` | output | 1 | AXI4-Stream ready (driven by `u_erode`) |
-| `s_axis_tlast_i` | input | 1 | End-of-line |
-| `s_axis_tuser_i` | input | 1 | Start-of-frame |
-| `m_axis_tdata_o` | output | 1 | Filtered mask pixel |
-| `m_axis_tvalid_o` | output | 1 | AXI4-Stream valid |
-| `m_axis_tready_i` | input | 1 | Downstream ready |
-| `m_axis_tlast_o` | output | 1 | End-of-line |
-| `m_axis_tuser_o` | output | 1 | Start-of-frame |
+| Signal | Direction | Type | Description |
+|--------|-----------|------|-------------|
+| `clk_i`    | input  | `logic`      | DSP clock |
+| `rst_n_i`  | input  | `logic`      | Active-low synchronous reset |
+| `enable_i` | input  | `logic`      | Forwarded to both `u_erode` and `u_dilate`. When 0, both sub-modules bypass and the composite has zero additional latency. |
+| `s_axis`   | input  | `axis_if.rx` | 1-bit mask input stream (DATA_W=1, USER_W=1). tready driven by `u_erode`. |
+| `m_axis`   | output | `axis_if.tx` | 1-bit filtered mask output stream (DATA_W=1, USER_W=1). Driven by `u_dilate`. |
 
 ---
 

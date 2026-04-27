@@ -78,17 +78,13 @@ module tb_sparevideo #(
     // AXI-stream DUT inputs — driven ONLY by this always_ff (no initial-block
     // NBAs on these signals).  Registering on negedge means the DUT's posedge
     // always_ff sees a stable, settled value with no scheduling ambiguity.
-    logic [23:0] s_axis_tdata;
-    logic        s_axis_tvalid;
-    logic        s_axis_tready;
-    logic        s_axis_tlast;
-    logic        s_axis_tuser;
+    axis_if #(.DATA_W(24), .USER_W(1)) s_axis ();
 
     always_ff @(negedge clk_pix) begin
-        s_axis_tdata  <= drv_tdata;
-        s_axis_tvalid <= drv_tvalid;
-        s_axis_tlast  <= drv_tlast;
-        s_axis_tuser  <= drv_tuser;
+        s_axis.tdata  <= drv_tdata;
+        s_axis.tvalid <= drv_tvalid;
+        s_axis.tlast  <= drv_tlast;
+        s_axis.tuser  <= drv_tuser;
     end
 
     logic       vga_hsync;
@@ -129,21 +125,17 @@ module tb_sparevideo #(
         .V_BACK_PORCH  (V_BACK_PORCH),
         .CFG           (CFG)
     ) u_dut (
-        .clk_pix_i       (clk_pix),
-        .clk_dsp_i       (clk_dsp),
-        .rst_pix_n_i     (rst_pix_n),
-        .rst_dsp_n_i     (rst_dsp_n),
-        .s_axis_tdata_i  (s_axis_tdata),
-        .s_axis_tvalid_i (s_axis_tvalid),
-        .s_axis_tready_o (s_axis_tready),
-        .s_axis_tlast_i  (s_axis_tlast),
-        .s_axis_tuser_i  (s_axis_tuser),
-        .ctrl_flow_i     (ctrl_flow),
-        .vga_hsync_o     (vga_hsync),
-        .vga_vsync_o     (vga_vsync),
-        .vga_r_o         (vga_r),
-        .vga_g_o         (vga_g),
-        .vga_b_o         (vga_b)
+        .clk_pix_i   (clk_pix),
+        .clk_dsp_i   (clk_dsp),
+        .rst_pix_n_i (rst_pix_n),
+        .rst_dsp_n_i (rst_dsp_n),
+        .s_axis      (s_axis),
+        .ctrl_flow_i (ctrl_flow),
+        .vga_hsync_o (vga_hsync),
+        .vga_vsync_o (vga_vsync),
+        .vga_r_o     (vga_r),
+        .vga_g_o     (vga_g),
+        .vga_b_o     (vga_b)
     );
 
     initial clk_pix = 0;
@@ -334,7 +326,7 @@ module tb_sparevideo #(
 
                         // Hold until accepted (backpressure)
                         @(posedge clk_pix);
-                        while (!s_axis_tready) @(posedge clk_pix);
+                        while (!s_axis.tready) @(posedge clk_pix);
 
                         drv_tvalid = 0;
                         drv_tuser  = 0;
@@ -376,10 +368,10 @@ module tb_sparevideo #(
                          (t_frame_end_ms - t_frame_start_ms) / 1000.0);
 `else
             if (sw_dry_run)
-                $display("Frame %0d: %0d pixels OK (wall-clock N/A on Icarus)",
+                $display("Frame %0d: %0d pixels OK",
                          frame_idx, frame_pixels);
             else
-                $display("Frame %0d: input complete (wall-clock N/A on Icarus)",
+                $display("Frame %0d: input complete",
                          frame_idx);
 `endif
         end // frame

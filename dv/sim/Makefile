@@ -1,7 +1,9 @@
 RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
+           ../../hw/top/sparevideo_if.sv \
            ../../hw/top/ram.sv \
            ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
            ../../hw/ip/axis/rtl/axis_fork.sv \
+           ../../hw/ip/axis/rtl/axis_async_fifo_ifc.sv \
            ../../hw/ip/hflip/rtl/axis_hflip.sv \
            ../../hw/ip/window/rtl/axis_window3x3.sv \
            ../../hw/ip/filters/rtl/axis_gauss3x3.sv \
@@ -45,35 +47,9 @@ SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
        test-ip-hflip
 
 # ---------------------------------------------------------------------------
-# Icarus Verilog — NOT MAINTAINED. Kept for reference only; will likely fail.
-# Icarus has been removed from CI and required checks. Use SIMULATOR=verilator.
-# ---------------------------------------------------------------------------
-ifeq ($(SIMULATOR),icarus)
-
-DPI_LIB = tb_utils.vpi
-
-compile: tb_sparevideo.vvp $(DPI_LIB)
-
-sim: compile
-	vvp -m./$(DPI_LIB) tb_sparevideo.vvp $(SIM_ARGS)
-
-sim-waves: compile
-	vvp -m./$(DPI_LIB) tb_sparevideo.vvp $(SIM_ARGS) +DUMP_VCD
-	gtkwave tb_sparevideo.vcd &
-
-sw-dry-run: compile
-	vvp -m./$(DPI_LIB) tb_sparevideo.vvp $(SIM_ARGS) +sw_dry_run=1
-
-tb_sparevideo.vvp: $(RTL_SRCS) $(TB_SRC)
-	iverilog -g2012 -o $@ $^
-
-$(DPI_LIB): $(DPI_SRC)
-	gcc -shared -fPIC -o $@ $<
-
-# ---------------------------------------------------------------------------
 # Verilator
 # ---------------------------------------------------------------------------
-else ifeq ($(SIMULATOR),verilator)
+ifeq ($(SIMULATOR),verilator)
 
 VLT_FLAGS = --binary -sv --timing \
             --top-module tb_sparevideo \
@@ -113,7 +89,7 @@ sw-dry-run: compile
 	$(VOBJ_DIR)/Vtb_sparevideo $(SIM_ARGS) +sw_dry_run=1
 
 else
-$(error Unknown SIMULATOR='$(SIMULATOR)'. Use SIMULATOR=verilator (default) or SIMULATOR=icarus (not maintained))
+$(error Unknown SIMULATOR='$(SIMULATOR)'. Use SIMULATOR=verilator (the only supported simulator))
 endif
 
 # ---------------------------------------------------------------------------
@@ -145,7 +121,9 @@ test-ip-rgb2ycrcb:
 	obj_tb_rgb2ycrcb/Vtb_rgb2ycrcb
 
 # Sources shared by both motion detect TB targets
-IP_MOTION_DETECT_SRCS = $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv \
+IP_MOTION_DETECT_SRCS = ../../hw/top/sparevideo_pkg.sv \
+	  ../../hw/top/sparevideo_if.sv \
+	  $(IP_RGB2YCRCB_RTL) ../../hw/top/ram.sv \
 	  ../../hw/ip/motion/rtl/motion_core.sv \
 	  ../../hw/ip/motion/rtl/axis_motion_detect.sv \
 	  ../../hw/ip/motion/tb/tb_axis_motion_detect.sv
@@ -179,18 +157,21 @@ test-ip-gauss3x3:
 # --- axis_morph3x3_erode ---
 test-ip-morph3x3-erode:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_morph3x3_erode --Mdir obj_tb_axis_morph3x3_erode \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  $(IP_WINDOW3X3_RTL) $(IP_MORPH3X3_ERODE_RTL) ../../hw/ip/filters/tb/tb_axis_morph3x3_erode.sv
 	obj_tb_axis_morph3x3_erode/Vtb_axis_morph3x3_erode
 
 # --- axis_morph3x3_dilate ---
 test-ip-morph3x3-dilate:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_morph3x3_dilate --Mdir obj_tb_axis_morph3x3_dilate \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  $(IP_WINDOW3X3_RTL) $(IP_MORPH3X3_DILATE_RTL) ../../hw/ip/filters/tb/tb_axis_morph3x3_dilate.sv
 	obj_tb_axis_morph3x3_dilate/Vtb_axis_morph3x3_dilate
 
 # --- axis_morph3x3_open ---
 test-ip-morph3x3-open:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_morph3x3_open --Mdir obj_tb_axis_morph3x3_open \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  $(IP_WINDOW3X3_RTL) $(IP_MORPH3X3_ERODE_RTL) $(IP_MORPH3X3_DILATE_RTL) $(IP_MORPH3X3_OPEN_RTL) \
 	  ../../hw/ip/filters/tb/tb_axis_morph3x3_open.sv
 	obj_tb_axis_morph3x3_open/Vtb_axis_morph3x3_open
@@ -198,20 +179,21 @@ test-ip-morph3x3-open:
 # --- axis_hflip ---
 test-ip-hflip:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_hflip --Mdir obj_tb_axis_hflip \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  $(IP_HFLIP_RTL) ../../hw/ip/hflip/tb/tb_axis_hflip.sv
 	obj_tb_axis_hflip/Vtb_axis_hflip
 
 # --- axis_overlay_bbox ---
 test-ip-overlay-bbox:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_overlay_bbox --Mdir obj_tb_axis_overlay_bbox \
-	  ../../hw/top/sparevideo_pkg.sv \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  ../../hw/ip/overlay/rtl/axis_overlay_bbox.sv ../../hw/ip/overlay/tb/tb_axis_overlay_bbox.sv
 	obj_tb_axis_overlay_bbox/Vtb_axis_overlay_bbox
 
 # --- axis_ccl ---
 test-ip-ccl:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_ccl --Mdir obj_tb_axis_ccl \
-	  ../../hw/top/sparevideo_pkg.sv \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  ../../hw/ip/ccl/rtl/axis_ccl.sv ../../hw/ip/ccl/tb/tb_axis_ccl.sv
 	obj_tb_axis_ccl/Vtb_axis_ccl
 

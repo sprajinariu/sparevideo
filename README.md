@@ -246,7 +246,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `SIMULATOR` | `verilator` | Simulator to use (`verilator` only; Icarus not maintained) |
+| `SIMULATOR` | `verilator` | Simulator to use (`verilator`) |
 | `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), `mask` (raw motion mask as B/W image), or `ccl_bbox` (mask-as-grey + CCL bboxes) |
 | `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed). |
 | `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |

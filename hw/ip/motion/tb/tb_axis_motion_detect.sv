@@ -49,24 +49,19 @@ module tb_axis_motion_detect #(
     logic        drv_tlast  = 1'b0;
     logic        drv_tuser  = 1'b0;
 
-    logic [23:0] s_tdata;
-    logic        s_tvalid, s_tready, s_tlast, s_tuser;
+    axis_if #(.DATA_W(24), .USER_W(1)) s_axis_rgb ();
+    axis_if #(.DATA_W(1),  .USER_W(1)) m_axis_msk ();
 
     always_ff @(posedge clk) begin
-        s_tdata  <= drv_tdata;
-        s_tvalid <= drv_tvalid;
-        s_tlast  <= drv_tlast;
-        s_tuser  <= drv_tuser;
+        s_axis_rgb.tdata  <= drv_tdata;
+        s_axis_rgb.tvalid <= drv_tvalid;
+        s_axis_rgb.tlast  <= drv_tlast;
+        s_axis_rgb.tuser  <= drv_tuser;
     end
-
-    // ---- DUT outputs ----
-    logic        msk_tdata;
-    logic        msk_tvalid, msk_tlast, msk_tuser;
 
     // Consumer ready — driven from test
     logic drv_msk_rdy = 1'b1;
-    logic msk_tready;
-    assign msk_tready = drv_msk_rdy;
+    assign m_axis_msk.tready = drv_msk_rdy;
 
     // ---- Stall-pattern generator (symmetric: both directions stall together) ----
     localparam int STALL_LEN = 10;
@@ -131,23 +126,15 @@ module tb_axis_motion_detect #(
         .RGN_BASE          (0),
         .RGN_SIZE          (NUM_PIX)
     ) u_dut (
-        .clk_i               (clk),
-        .rst_n_i             (rst_n),
-        .s_axis_tdata_i      (s_tdata),
-        .s_axis_tvalid_i     (s_tvalid),
-        .s_axis_tready_o     (s_tready),
-        .s_axis_tlast_i      (s_tlast),
-        .s_axis_tuser_i      (s_tuser),
-        .m_axis_msk_tdata_o  (msk_tdata),
-        .m_axis_msk_tvalid_o (msk_tvalid),
-        .m_axis_msk_tready_i (msk_tready),
-        .m_axis_msk_tlast_o  (msk_tlast),
-        .m_axis_msk_tuser_o  (msk_tuser),
-        .mem_rd_addr_o       (a_rd_addr),
-        .mem_rd_data_i       (a_rd_data),
-        .mem_wr_addr_o       (a_wr_addr),
-        .mem_wr_data_o       (a_wr_data),
-        .mem_wr_en_o         (a_wr_en)
+        .clk_i         (clk),
+        .rst_n_i       (rst_n),
+        .s_axis        (s_axis_rgb),
+        .m_axis_msk    (m_axis_msk),
+        .mem_rd_addr_o (a_rd_addr),
+        .mem_rd_data_i (a_rd_data),
+        .mem_wr_addr_o (a_wr_addr),
+        .mem_wr_data_o (a_wr_data),
+        .mem_wr_en_o   (a_wr_en)
     );
 
     // ---- Golden Y8 model ----
@@ -239,7 +226,7 @@ module tb_axis_motion_detect #(
             drv_tlast  = ((px % H) == H - 1) ? 1'b1 : 1'b0;
             drv_tuser  = (px == 0) ? 1'b1 : 1'b0;
             @(posedge clk);
-            while (!s_tready) @(posedge clk);
+            while (!s_axis_rgb.tready) @(posedge clk);
         end
         drv_tvalid = 1'b0;
         drv_tlast  = 1'b0;
@@ -379,8 +366,8 @@ module tb_axis_motion_detect #(
     integer msk_cap_cnt = 0;
 
     always @(posedge clk) begin
-        if (msk_tvalid && msk_tready && msk_cap_cnt < NUM_PIX) begin
-            cap_msk[msk_cap_cnt] = msk_tdata;
+        if (m_axis_msk.tvalid && m_axis_msk.tready && msk_cap_cnt < NUM_PIX) begin
+            cap_msk[msk_cap_cnt] = m_axis_msk.tdata;
             msk_cap_cnt = msk_cap_cnt + 1;
         end
     end

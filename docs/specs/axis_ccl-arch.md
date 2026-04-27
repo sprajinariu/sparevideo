@@ -72,27 +72,17 @@ It is nearly a pure sink on its AXIS port: `tready` is asserted during streaming
 
 ### 3.2 Ports
 
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
+| Signal | Direction | Type | Description |
+|--------|-----------|------|-------------|
 | **Clock and reset** | | | |
-| `clk_i` | input | 1 | DSP clock (`clk_dsp`), rising edge. |
-| `rst_n_i` | input | 1 | Active-low synchronous reset. |
-| **AXI4-Stream mask input** | | | |
-| `s_axis_tdata_i` | input | 1 | Mask bit (1 = foreground). |
-| `s_axis_tvalid_i` | input | 1 | Beat valid. |
-| `s_axis_tready_o` | output | 1 | `(phase == PHASE_IDLE)` — low during the EOF resolution FSM so upstream stalls instead of feeding pixels that would bypass the PHASE_IDLE write gate. |
-| `s_axis_tlast_i` | input | 1 | End-of-line. |
-| `s_axis_tuser_i` | input | 1 | Start-of-frame marker on the first pixel of each frame. |
-| **Sideband output (packed arrays, `N_OUT` slots)** | | | |
-| `bbox_valid_o` | output | `N_OUT` | Per-slot valid bit. |
-| `bbox_min_x_o` | output | `N_OUT × COL_W` | Per-slot min x. |
-| `bbox_max_x_o` | output | `N_OUT × COL_W` | Per-slot max x. |
-| `bbox_min_y_o` | output | `N_OUT × ROW_W` | Per-slot min y. |
-| `bbox_max_y_o` | output | `N_OUT × ROW_W` | Per-slot max y. |
-| `bbox_swap_o` | output | 1 | 1-cycle strobe pulsed at PHASE_SWAP — indicates a new frame's bboxes are now visible on the front buffer. |
-| `bbox_empty_o` | output | 1 | Asserted when no slot is valid (i.e. `bbox_valid_o == '0`) — convenience signal for downstream. |
+| `clk_i`   | input  | `logic`      | DSP clock (`clk_dsp`), rising edge. |
+| `rst_n_i` | input  | `logic`      | Active-low synchronous reset. |
+| `s_axis`  | input  | `axis_if.rx` | 1-bit mask input stream (DATA_W=1, USER_W=1; tdata[0]=mask bit; 1=foreground). tready = `(phase == PHASE_IDLE)` — deasserted during the EOF resolution FSM so upstream stalls rather than feeding pixels while the PHASE_IDLE write gate is inactive. |
+| `bboxes`  | output | `bbox_if.tx` | N_OUT bounding-box sideband output (N_OUT=CCL_N_OUT). Per-slot `{min_x, max_x, min_y, max_y, valid}` arrays, stable for the full next frame after PHASE_SWAP commits them. |
+| `bbox_swap_o`  | output | `logic` | 1-cycle strobe pulsed at PHASE_SWAP — indicates a new frame's bboxes are now visible on the front buffer. |
+| `bbox_empty_o` | output | `logic` | Asserted when no slot is valid (i.e. `bbox_valid_o == '0`) — convenience signal for downstream. |
 
-`s_axis_tready_o` is high during streaming and low during the EOF resolution FSM (§6.7). For how the parent wires this module into a multi-consumer broadcast in mask-display and ccl_bbox modes, see [sparevideo-top-arch.md](sparevideo-top-arch.md) §5.1.
+`s_axis.tready` is high during streaming and low during the EOF resolution FSM (§6.7). For how the parent wires this module into a multi-consumer broadcast in mask-display and ccl_bbox modes, see [sparevideo-top-arch.md](sparevideo-top-arch.md) §5.1.
 
 ---
 
@@ -182,7 +172,7 @@ A raster-order invariant guarantees `{NW, N, NE, W}` can hold at most *two* dist
 3. **Phase C — top-N selection.** Scan every label's pixel count, reject anything below `MIN_COMPONENT_PIXELS`, pick the top `N_OUT` by count, write survivors into the back buffer.
 4. **Phase D — reset.** Restore `equiv[L] ← L` and all accumulators to their sentinels, ready for the next frame. `PHASE_SWAP` then copies back → front (except during prime frames) and pulses `bbox_swap_o`.
 
-While this FSM runs, `s_axis_tready_o` is deasserted: upstream pixels wait until the module is back in `PHASE_IDLE`.
+While this FSM runs, `s_axis.tready` is deasserted: upstream pixels wait until the module is back in `PHASE_IDLE`.
 
 #### Frame lifecycle at a glance
 
@@ -252,7 +242,7 @@ For each accepted mask beat, the datapath does three things:
 
 **How the three neighbours arrive together.** `line_buf` has a registered read (1-cycle latency) and only one read port, but the label decision needs `NW`, `N`, and `NE` on the same cycle. The read address is issued one column ahead of the current scan position, and the registered result feeds a 2-deep shift register. On each cycle: `line_rd_data_r = NE`, `shift_n = N`, `shift_nw = NW` — all three available at once. The `W` neighbour is the label just written for the previous pixel, held in `w_label`.
 
-**Active only during `PHASE_IDLE`.** During the EOF FSM, `s_axis_tready_o = 0` blocks new beats from arriving, and per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are additionally gated on `phase == PHASE_IDLE`. The FSM has exclusive access to that state during vblank.
+**Active only during `PHASE_IDLE`.** During the EOF FSM, `s_axis.tready = 0` blocks new beats from arriving, and per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are additionally gated on `phase == PHASE_IDLE`. The FSM has exclusive access to that state during vblank.
 
 **Dataflow.**
 
@@ -404,7 +394,7 @@ Each bank is a family of 5 `N_OUT`-entry arrays — one entry per bbox slot:
 | `*_min_y` | `ROW_W` | top edge |
 | `*_max_y` | `ROW_W` | bottom edge |
 
-`front_*` is driven onto the output ports (`bbox_valid_o`, `bbox_min_x_o`, `bbox_max_x_o`, `bbox_min_y_o`, `bbox_max_y_o`). 
+`front_*` is driven onto the `bboxes` interface output (per-slot `{valid, min_x, max_x, min_y, max_y}` arrays). 
 `back_*` is Phase C's scratch space.
 
 `back_valid` is cleared at the end of PHASE_SWAP so PHASE_C of the *next* frame starts from an empty slate (slots it does not fill stay de-asserted).
@@ -544,7 +534,7 @@ During the priming window, back-buffer data is computed and then *discarded* —
 
 Vblank at real VGA 640×480 @ 60 Hz on a 100 MHz DSP clock is ~144 kcycles — ~100× headroom.
 
-This headroom is a **correctness** constraint, not just a throughput one: the per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are gated on `phase == PHASE_IDLE`. If a pixel is accepted while the FSM is still in any of `PHASE_A..PHASE_SWAP`, its label/accumulator update is silently dropped, while `line_buf`, `w_label`, and `col`/`row` still advance — corrupting the labeling state when streaming resumes. The RTL defends against this two ways: (a) `s_axis_tready_o = (phase == PHASE_IDLE)` structurally back-pressures the upstream for the FSM duration; (b) an SVA `assert_no_accept_during_eof_fsm` traps any handshake during the FSM. Integrating designs must still size the inter-frame idle window to exceed the cycle budget above, since the FIFOs in front of `axis_ccl` have finite depth.
+This headroom is a **correctness** constraint, not just a throughput one: the per-pixel writes to `equiv[]`, `acc_*[]`, and `next_free` are gated on `phase == PHASE_IDLE`. If a pixel is accepted while the FSM is still in any of `PHASE_A..PHASE_SWAP`, its label/accumulator update is silently dropped, while `line_buf`, `w_label`, and `col`/`row` still advance — corrupting the labeling state when streaming resumes. The RTL defends against this two ways: (a) `s_axis.tready = (phase == PHASE_IDLE)` structurally back-pressures the upstream for the FSM duration; (b) an SVA `assert_no_accept_during_eof_fsm` traps any handshake during the FSM. Integrating designs must still size the inter-frame idle window to exceed the cycle budget above, since the FIFOs in front of `axis_ccl` have finite depth.
 
 ---
 
@@ -556,7 +546,7 @@ This headroom is a **correctness** constraint, not just a throughput one: the pe
 |-----------|---------|
 | `s_axis_tvalid_i` → accumulator RMW (first foreground pixel of frame) | 2 cycles (stage 0 → stage 1) |
 | Last mask pixel of frame → `bbox_swap_o` pulse | ~1,280 cycles worst case (see §6.7) |
-| `bbox_swap_o` pulse → `bbox_*_o` updated | 0 cycles (`bbox_swap_o` fires on the same cycle the front buffer updates) |
+| `bbox_swap_o` pulse → `bboxes` updated | 0 cycles (`bbox_swap_o` fires on the same cycle the front buffer updates) |
 | Steady-state mask throughput | 1 pixel / cycle |
 
 `tready` is asserted whenever `phase == PHASE_IDLE` (the streaming phase). During `PHASE_A..PHASE_SWAP` (the EOF resolution FSM) `tready` is deasserted so in-flight pixels stall upstream rather than being silently misprocessed. See §6.7 for the cycle budget that determines the worst-case stall length.

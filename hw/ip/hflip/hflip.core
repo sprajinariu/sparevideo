@@ -7,6 +7,8 @@ filesets:
     files:
       - rtl/axis_hflip.sv
     file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
 
 targets:
   default:

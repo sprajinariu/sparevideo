@@ -23,7 +23,7 @@
 
 ## 1. Purpose and Scope
 
-`axis_overlay_bbox` draws up to `N_OUT` 1-pixel-thick rectangles on an RGB888 AXI4-Stream video pipeline using per-slot bounding-box coordinates provided as a stable sideband input from `axis_ccl`. A pixel is replaced with `BBOX_COLOR` whenever any valid slot's rectangle hits it; otherwise it passes through unchanged. When every `bbox_valid_i[k]` bit is 0 the module is a pure pass-through with zero modification. It does **not** buffer frames, track objects, or generate any sideband output.
+`axis_overlay_bbox` draws up to `N_OUT` 1-pixel-thick rectangles on an RGB888 AXI4-Stream video pipeline using per-slot bounding-box coordinates provided as a stable sideband input from `axis_ccl`. A pixel is replaced with `BBOX_COLOR` whenever any valid slot's rectangle hits it; otherwise it passes through unchanged. When every `bboxes.valid[k]` bit is 0 the module is a pure pass-through with zero modification. It does **not** buffer frames, track objects, or generate any sideband output.
 
 ---
 
@@ -45,28 +45,13 @@
 
 ### 3.2 Ports
 
-| Signal | Direction | Width | Description |
-|--------|-----------|-------|-------------|
-| `clk_i` | input | 1 | DSP clock |
-| `rst_n_i` | input | 1 | Active-low synchronous reset |
-| **AXI4-Stream input — video (RGB888)** | | | |
-| `s_axis_tdata_i` | input | 24 | RGB888 input pixel |
-| `s_axis_tvalid_i` | input | 1 | AXI4-Stream valid |
-| `s_axis_tready_o` | output | 1 | AXI4-Stream ready (tied to `m_axis_tready_i`) |
-| `s_axis_tlast_i` | input | 1 | End-of-line |
-| `s_axis_tuser_i` | input | 1 | Start-of-frame |
-| **AXI4-Stream output — video (RGB888)** | | | |
-| `m_axis_tdata_o` | output | 24 | RGB888 output pixel (overlaid or pass-through) |
-| `m_axis_tvalid_o` | output | 1 | AXI4-Stream valid |
-| `m_axis_tready_i` | input | 1 | AXI4-Stream ready |
-| `m_axis_tlast_o` | output | 1 | End-of-line |
-| `m_axis_tuser_o` | output | 1 | Start-of-frame |
-| **Sideband input — `N_OUT` bbox slots from axis_ccl** | | | |
-| `bbox_valid_i` | input | `N_OUT` | Per-slot valid bit — slot contributes to the overlay when 1. |
-| `bbox_min_x_i` | input | `N_OUT × $clog2(H_ACTIVE)` | Per-slot left edge |
-| `bbox_max_x_i` | input | `N_OUT × $clog2(H_ACTIVE)` | Per-slot right edge |
-| `bbox_min_y_i` | input | `N_OUT × $clog2(V_ACTIVE)` | Per-slot top edge |
-| `bbox_max_y_i` | input | `N_OUT × $clog2(V_ACTIVE)` | Per-slot bottom edge |
+| Signal | Direction | Type | Description |
+|--------|-----------|------|-------------|
+| `clk_i`   | input  | `logic`      | DSP clock |
+| `rst_n_i` | input  | `logic`      | Active-low synchronous reset |
+| `s_axis`  | input  | `axis_if.rx` | RGB888 input stream (DATA_W=24, USER_W=1; tuser=SOF, tlast=EOL). tready tied to `m_axis.tready`. |
+| `m_axis`  | output | `axis_if.tx` | RGB888 output stream (DATA_W=24, USER_W=1). Overlaid pixels when on a bbox edge, pass-through otherwise. |
+| `bboxes`  | input  | `bbox_if.rx` | N_OUT bounding-box sideband input from `axis_ccl` (N_OUT=CCL_N_OUT). Per-slot `{valid, min_x, max_x, min_y, max_y}`; stable for the full frame duration after `bbox_swap_o`. |
 
 ---
 
@@ -93,11 +78,11 @@ On `tuser` (SOF), `col` is set to **1** — not 0. The SOF pixel is always at im
 A pixel at `(col, row)` hits slot `k`'s rectangle edge (`bbox_hit[k]`) iff:
 
 ```
-bbox_hit[k] = bbox_valid_i[k] && (
-    (col == bbox_min_x_i[k] || col == bbox_max_x_i[k])
-        && row >= bbox_min_y_i[k] && row <= bbox_max_y_i[k]
+bbox_hit[k] = bboxes.valid[k] && (
+    (col == bboxes.min_x[k] || col == bboxes.max_x[k])
+        && row >= bboxes.min_y[k] && row <= bboxes.max_y[k]
     ||
-    (row == bbox_min_y_i[k] || row == bbox_max_y_i[k])
+    (row == bboxes.min_y[k] || row == bboxes.max_y[k])
         && col >= bbox_min_x_i[k] && col <= bbox_max_x_i[k]
 )
 
@@ -109,10 +94,10 @@ Implemented with a `generate for` loop that fans out one hit-test per slot; the 
 ### 5.3 Output pixel selection
 
 ```
-m_axis_tdata_o = on_rect ? BBOX_COLOR : s_axis_tdata_i
+m_axis.tdata = on_rect ? BBOX_COLOR : s_axis.tdata
 ```
 
-All sideband signals (`tvalid`, `tlast`, `tuser`) pass through unchanged. `s_axis_tready_o = m_axis_tready_i` — backpressure propagates directly.
+All sideband signals (`tvalid`, `tlast`, `tuser`) pass through unchanged. `s_axis.tready = m_axis.tready` — backpressure propagates directly.
 
 ### 5.4 Resource cost
 

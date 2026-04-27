@@ -26,7 +26,7 @@ All design specs, architecture docs, and implementation plans live under `docs/p
 
 sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with CCL-driven N-way bounding-box overlay, mask display, or a `ccl_bbox` debug mode that shows the mask as a grey canvas under the CCL bboxes), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
 
-All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no interfaces/modports, no classes) for Icarus Verilog 12 compatibility.
+All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no classes) — the project targets Verilator and uses SV interfaces (`axis_if`, `bbox_if`) for AXI-Stream and bbox sideband bundles.
 
 ## Environment
 
@@ -77,8 +77,9 @@ make setup                   # One-time setup (install deps)
 ## Project Structure
 
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
+- `hw/top/sparevideo_if.sv` — Project-wide SV interfaces: `axis_if` (AXI4-Stream) and `bbox_if` (bbox sideband). Modports: `tx`/`rx`/`mon`.
 - `hw/top/sparevideo_top.sv` — Top-level (AXI4-Stream → CDC → control-flow mux → CDC → vga_controller)
-- `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking)
+- `hw/ip/axis/rtl/` — Reusable AXI4-Stream utilities (axis_fork: zero-latency 1-to-2 broadcast fork with per-output acceptance tracking; axis_async_fifo_ifc: interface-port wrapper around the vendored axis_async_fifo, adapts active-high reset to project rst_n_i convention)
 - `hw/ip/hflip/rtl/` — Horizontal mirror (axis_hflip: single line buffer + RECV/XMIT FSM + enable_i bypass; enabled via `hflip_en` field of `cfg_t`)
 - `hw/ip/window/rtl/` — Reusable 3x3 sliding-window primitive (axis_window3x3: line buffers + window regs + edge handling; `EDGE_POLICY` parameter, today only `EDGE_REPLICATE=0`). Wrapped by every filter module.
 - `hw/ip/filters/rtl/` — Spatial filters over axis_window3x3 (axis_gauss3x3, axis_morph3x3_erode, axis_morph3x3_dilate, axis_morph3x3_open; future: axis_sobel — all land here as peer `.sv` files under one `filters.core`)
@@ -117,6 +118,8 @@ make setup                   # One-time setup (install deps)
 - Active-low reset (`rst_n`), active-low sync signals (`hsync`, `vsync`)
 - 8-bit per channel RGB (24-bit color)
 - **All configuration parameters and shared types go in `hw/top/sparevideo_pkg.sv`.** Module parameter defaults reference the package. Do not hardcode constants that belong in the package elsewhere.
+- AXI-Stream ports use the `axis_if` interface with modports `tx`/`rx`/`mon`. The bbox sideband from `axis_ccl` to `axis_overlay_bbox` uses `bbox_if`. `clk_i`/`rst_n_i` stay as separate scalar ports on every module — the interface bundle does NOT carry them.
+- `axis_window3x3` and `axis_gauss3x3` keep an internal window-style protocol (`valid_i`/`stall_i`/`sof_i`/`busy_o`) — the `axis_` prefix is historical and does NOT mean AXI-Stream. Wrappers (e.g. `axis_morph3x3_*`) use real AXI-Stream and translate at the boundary.
 
 ## Testbench
 
@@ -179,7 +182,7 @@ Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant 
 ### Testbench / verification
 
 - The SV testbench uses `$display`/`if` checks — no SVA. `assert` is fine for Verilator but is not used by convention in this repo.
-- Simulator: **Verilator only** for all required checks. Icarus commands exist in the Makefile but are not maintained and will likely fail.
+- Simulator: **Verilator only**.
 
 ### Debugging a failing simulation
 

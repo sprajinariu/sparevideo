@@ -31,29 +31,32 @@ module tb_axis_overlay_bbox;
     logic        drv_tlast  = 1'b0;
     logic        drv_tuser  = 1'b0;
 
-    logic [23:0] s_tdata;
-    logic        s_tvalid, s_tready, s_tlast, s_tuser;
+    // ---- AXI4-Stream interfaces ----
+    axis_if #(.DATA_W(24), .USER_W(1)) s_axis ();
+    axis_if #(.DATA_W(24), .USER_W(1)) m_axis ();
 
-    always_ff @(posedge clk) begin
-        s_tdata  <= drv_tdata;
-        s_tvalid <= drv_tvalid;
-        s_tlast  <= drv_tlast;
-        s_tuser  <= drv_tuser;
+    always_ff @(negedge clk) begin
+        s_axis.tdata  <= drv_tdata;
+        s_axis.tvalid <= drv_tvalid;
+        s_axis.tlast  <= drv_tlast;
+        s_axis.tuser  <= drv_tuser;
     end
-
-    // ---- DUT outputs ----
-    logic [23:0] m_tdata;
-    logic        m_tvalid, m_tlast, m_tuser;
-    logic        m_tready;
 
     // Consumer ready — controlled per test
     logic drv_rdy = 1'b1;
-    assign m_tready = drv_rdy;
+    assign m_axis.tready = drv_rdy;
 
-    // ---- Bbox sideband — driven from test ----
+    // ---- Bbox sideband — driven from test via assign ----
     logic [N_OUT_TB-1:0]                drv_valid = '0;
     logic [N_OUT_TB-1:0][$clog2(H)-1:0] drv_min_x = '0, drv_max_x = '0;
     logic [N_OUT_TB-1:0][$clog2(V)-1:0] drv_min_y = '0, drv_max_y = '0;
+
+    bbox_if #(.N_OUT(N_OUT_TB), .H_W($clog2(H)), .V_W($clog2(V))) bboxes ();
+    assign bboxes.valid = drv_valid;
+    assign bboxes.min_x = drv_min_x;
+    assign bboxes.max_x = drv_max_x;
+    assign bboxes.min_y = drv_min_y;
+    assign bboxes.max_y = drv_max_y;
 
     axis_overlay_bbox #(
         .H_ACTIVE   (H),
@@ -61,23 +64,11 @@ module tb_axis_overlay_bbox;
         .N_OUT      (N_OUT_TB),
         .BBOX_COLOR (BBOX_COLOR)
     ) u_dut (
-        .clk_i           (clk),
-        .rst_n_i         (rst_n),
-        .s_axis_tdata_i  (s_tdata),
-        .s_axis_tvalid_i (s_tvalid),
-        .s_axis_tready_o (s_tready),
-        .s_axis_tlast_i  (s_tlast),
-        .s_axis_tuser_i  (s_tuser),
-        .m_axis_tdata_o  (m_tdata),
-        .m_axis_tvalid_o (m_tvalid),
-        .m_axis_tready_i (m_tready),
-        .m_axis_tlast_o  (m_tlast),
-        .m_axis_tuser_o  (m_tuser),
-        .bbox_valid_i    (drv_valid),
-        .bbox_min_x_i    (drv_min_x),
-        .bbox_max_x_i    (drv_max_x),
-        .bbox_min_y_i    (drv_min_y),
-        .bbox_max_y_i    (drv_max_y)
+        .clk_i   (clk),
+        .rst_n_i (rst_n),
+        .s_axis  (s_axis),
+        .m_axis  (m_axis),
+        .bboxes  (bboxes)
     );
 
     integer num_errors = 0;
@@ -114,9 +105,9 @@ module tb_axis_overlay_bbox;
     integer cap_idx = 0;
 
     always @(posedge clk) begin
-        if (m_tvalid && m_tready) begin
+        if (m_axis.tvalid && m_axis.tready) begin
             if (cap_idx < NUM_PIX) begin
-                captured[cap_idx] = m_tdata;
+                captured[cap_idx] = m_axis.tdata;
                 cap_idx = cap_idx + 1;
             end
         end
@@ -169,7 +160,7 @@ module tb_axis_overlay_bbox;
             drv_tlast  = ((px % H) == H - 1) ? 1'b1 : 1'b0;
             drv_tuser  = (px == 0) ? 1'b1 : 1'b0;
             @(posedge clk);
-            while (!s_tready) @(posedge clk);
+            while (!s_axis.tready) @(posedge clk);
         end
         drv_tvalid = 1'b0;
         drv_tlast  = 1'b0;

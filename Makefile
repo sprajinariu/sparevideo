@@ -71,7 +71,7 @@ help:
 	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
-	@echo "    SIMULATOR=verilator              Simulator: verilator (default) or icarus"
+	@echo "    SIMULATOR=verilator              Simulator: verilator"
 	@echo "    SOURCE=synthetic:moving_box      Input source (prepare only). See sources below."
 	@echo "    WIDTH=320                        Frame width"
 	@echo "    HEIGHT=240                       Frame height"
@@ -168,7 +168,7 @@ test-ip-hflip:
 	$(MAKE) -C dv/sim test-ip-hflip SIMULATOR=$(SIMULATOR)
 
 setup:
-	sudo apt install -y iverilog verilator
+	sudo apt install -y verilator
 	python3 -m venv .venv
 	.venv/bin/pip install -r requirements.txt
 

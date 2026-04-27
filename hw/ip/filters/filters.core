@@ -11,6 +11,7 @@ filesets:
       - rtl/axis_morph3x3_open.sv
     file_type: systemVerilogSource
     depend:
+      - sparevideo:pkg:common
       - sparevideo:ip:window
 
 targets:

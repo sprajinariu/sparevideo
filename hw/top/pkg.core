@@ -6,6 +6,7 @@ filesets:
   files_rtl:
     files:
       - sparevideo_pkg.sv
+      - sparevideo_if.sv
     file_type: systemVerilogSource
 
 targets:

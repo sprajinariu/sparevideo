@@ -13,27 +13,14 @@ module axis_overlay_bbox #(
     input  logic        clk_i,
     input  logic        rst_n_i,
 
-    input  logic [23:0] s_axis_tdata_i,
-    input  logic        s_axis_tvalid_i,
-    output logic        s_axis_tready_o,
-    input  logic        s_axis_tlast_i,
-    input  logic        s_axis_tuser_i,
-
-    output logic [23:0] m_axis_tdata_o,
-    output logic        m_axis_tvalid_o,
-    input  logic        m_axis_tready_i,
-    output logic        m_axis_tlast_o,
-    output logic        m_axis_tuser_o,
+    axis_if.rx  s_axis,
+    axis_if.tx  m_axis,
 
     // Sideband bbox array from axis_ccl.
-    input  logic [N_OUT-1:0]                       bbox_valid_i,
-    input  logic [N_OUT-1:0][$clog2(H_ACTIVE)-1:0] bbox_min_x_i,
-    input  logic [N_OUT-1:0][$clog2(H_ACTIVE)-1:0] bbox_max_x_i,
-    input  logic [N_OUT-1:0][$clog2(V_ACTIVE)-1:0] bbox_min_y_i,
-    input  logic [N_OUT-1:0][$clog2(V_ACTIVE)-1:0] bbox_max_y_i
+    bbox_if.rx  bboxes
 );
 
-    assign s_axis_tready_o = m_axis_tready_i;
+    assign s_axis.tready = m_axis.tready;
 
     logic [$clog2(H_ACTIVE)-1:0] col;
     logic [$clog2(V_ACTIVE)-1:0] row;
@@ -42,11 +29,11 @@ module axis_overlay_bbox #(
         if (!rst_n_i) begin
             col <= '0;
             row <= '0;
-        end else if (s_axis_tvalid_i && s_axis_tready_o) begin
-            if (s_axis_tuser_i) begin
+        end else if (s_axis.tvalid && s_axis.tready) begin
+            if (s_axis.tuser) begin
                 col <= ($bits(col))'(1);
                 row <= '0;
-            end else if (s_axis_tlast_i) begin
+            end else if (s_axis.tlast) begin
                 col <= '0;
                 row <= row + 1;
             end else begin
@@ -56,7 +43,7 @@ module axis_overlay_bbox #(
     end
 
     logic [$clog2(V_ACTIVE)-1:0] row_eff;
-    assign row_eff = (s_axis_tvalid_i && s_axis_tuser_i) ? '0 : row;
+    assign row_eff = (s_axis.tvalid && s_axis.tuser) ? '0 : row;
 
     // N-wide hit test: per-slot on_rect, ORed.
     logic [N_OUT-1:0] hit;
@@ -64,20 +51,20 @@ module axis_overlay_bbox #(
     generate
         for (k = 0; k < N_OUT; k = k + 1) begin : g_hit
             logic on_lr, in_yr, on_tb, in_xr;
-            assign on_lr = (col == bbox_min_x_i[k]) || (col == bbox_max_x_i[k]);
-            assign in_yr = (row_eff >= bbox_min_y_i[k]) && (row_eff <= bbox_max_y_i[k]);
-            assign on_tb = (row_eff == bbox_min_y_i[k]) || (row_eff == bbox_max_y_i[k]);
-            assign in_xr = (col >= bbox_min_x_i[k]) && (col <= bbox_max_x_i[k]);
-            assign hit[k] = bbox_valid_i[k] && ((on_lr && in_yr) || (on_tb && in_xr));
+            assign on_lr = (col == bboxes.min_x[k]) || (col == bboxes.max_x[k]);
+            assign in_yr = (row_eff >= bboxes.min_y[k]) && (row_eff <= bboxes.max_y[k]);
+            assign on_tb = (row_eff == bboxes.min_y[k]) || (row_eff == bboxes.max_y[k]);
+            assign in_xr = (col >= bboxes.min_x[k]) && (col <= bboxes.max_x[k]);
+            assign hit[k] = bboxes.valid[k] && ((on_lr && in_yr) || (on_tb && in_xr));
         end
     endgenerate
 
     logic on_rect;
     assign on_rect = |hit;
 
-    assign m_axis_tdata_o  = on_rect ? BBOX_COLOR : s_axis_tdata_i;
-    assign m_axis_tvalid_o = s_axis_tvalid_i;
-    assign m_axis_tlast_o  = s_axis_tlast_i;
-    assign m_axis_tuser_o  = s_axis_tuser_i;
+    assign m_axis.tdata  = on_rect ? BBOX_COLOR : s_axis.tdata;
+    assign m_axis.tvalid = s_axis.tvalid;
+    assign m_axis.tlast  = s_axis.tlast;
+    assign m_axis.tuser  = s_axis.tuser;
 
 endmodule

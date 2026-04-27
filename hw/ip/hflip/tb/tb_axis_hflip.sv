@@ -34,44 +34,31 @@ module tb_axis_hflip;
     logic        drv_tvalid = 1'b0;
     logic        drv_tlast  = 1'b0;
     logic        drv_tuser  = 1'b0;
+    logic        drv_m_tready = 1'b1;
 
-    // DUT inputs (driven on negedge)
-    logic [23:0] s_tdata;
-    logic        s_tvalid;
-    logic        s_tready;
-    logic        s_tlast;
-    logic        s_tuser;
+    // AXI4-Stream interfaces for DUT
+    axis_if #(.DATA_W(24), .USER_W(1)) s_axis ();
+    axis_if #(.DATA_W(24), .USER_W(1)) m_axis ();
 
+    // Drive DUT inputs on negedge (preserves drv_* pattern from CLAUDE.md)
     always_ff @(negedge clk) begin
-        s_tdata  <= drv_tdata;
-        s_tvalid <= drv_tvalid;
-        s_tlast  <= drv_tlast;
-        s_tuser  <= drv_tuser;
+        s_axis.tdata  <= drv_tdata;
+        s_axis.tvalid <= drv_tvalid;
+        s_axis.tlast  <= drv_tlast;
+        s_axis.tuser  <= drv_tuser;
     end
 
-    logic [23:0] m_tdata;
-    logic        m_tvalid;
-    logic        m_tready = 1'b1;
-    logic        m_tlast;
-    logic        m_tuser;
+    assign m_axis.tready = drv_m_tready;
 
     axis_hflip #(
         .H_ACTIVE (H),
         .V_ACTIVE (V)
     ) dut (
-        .clk_i           (clk),
-        .rst_n_i         (rst_n),
-        .enable_i        (enable),
-        .s_axis_tdata_i  (s_tdata),
-        .s_axis_tvalid_i (s_tvalid),
-        .s_axis_tready_o (s_tready),
-        .s_axis_tlast_i  (s_tlast),
-        .s_axis_tuser_i  (s_tuser),
-        .m_axis_tdata_o  (m_tdata),
-        .m_axis_tvalid_o (m_tvalid),
-        .m_axis_tready_i (m_tready),
-        .m_axis_tlast_o  (m_tlast),
-        .m_axis_tuser_o  (m_tuser)
+        .clk_i    (clk),
+        .rst_n_i  (rst_n),
+        .enable_i (enable),
+        .s_axis   (s_axis),
+        .m_axis   (m_axis)
     );
 
     always #(CLK_PERIOD/2) clk = ~clk;
@@ -96,10 +83,10 @@ module tb_axis_hflip;
     endtask
 
     always_ff @(posedge clk) begin
-        if (rst_n && m_tvalid && m_tready) begin
-            cap_tdata[cap_row][cap_col] <= m_tdata;
-            cap_tlast[cap_row][cap_col] <= m_tlast;
-            cap_tuser[cap_row][cap_col] <= m_tuser;
+        if (rst_n && m_axis.tvalid && m_axis.tready) begin
+            cap_tdata[cap_row][cap_col] <= m_axis.tdata;
+            cap_tlast[cap_row][cap_col] <= m_axis.tlast;
+            cap_tuser[cap_row][cap_col] <= m_axis.tuser;
             if (cap_col == H - 1) begin
                 cap_col <= 0;
                 if (cap_row == V - 1)
@@ -122,7 +109,7 @@ module tb_axis_hflip;
                     drv_tlast  = (c == H - 1);
                     drv_tuser  = (r == 0) && (c == 0);
                     @(posedge clk);
-                    while (!s_tready) @(posedge clk);
+                    while (!s_axis.tready) @(posedge clk);
                 end
                 drv_tvalid = 1'b0;
                 drv_tlast  = 1'b0;
@@ -160,8 +147,8 @@ module tb_axis_hflip;
         logic [23:0] frame_a [V][H];
         logic [23:0] frame_b [V][H];
 
-        m_tready = 1'b1;
-        enable   = 1'b1;
+        drv_m_tready = 1'b1;
+        enable       = 1'b1;
         #(CLK_PERIOD*3);
         rst_n = 1'b1;
         #(CLK_PERIOD*2);
@@ -193,12 +180,12 @@ module tb_axis_hflip;
         fork
             drive_frame(frame_a);
             begin
-                // Hold m_tready low for a brief window in the middle of the
+                // Hold m_axis.tready low for a brief window in the middle of the
                 // first TX phase, then release. Output count must remain V*H.
                 for (int b = 0; b < H * 3; b++) @(posedge clk);
-                m_tready = 1'b0;
+                drv_m_tready = 1'b0;
                 for (int b = 0; b < 5; b++)         @(posedge clk);
-                m_tready = 1'b1;
+                drv_m_tready = 1'b1;
             end
         join
         check_mirror(frame_a, "T3");
@@ -216,7 +203,7 @@ module tb_axis_hflip;
                     drv_tlast  = (c == H - 1);
                     drv_tuser  = (r == 0) && (c == 0);
                     @(posedge clk);
-                    while (!s_tready) @(posedge clk);
+                    while (!s_axis.tready) @(posedge clk);
                     // Insert a 1-cycle bubble after each accepted mid-row pixel
                     if (c == H/2) begin
                         drv_tvalid = 1'b0;
@@ -252,7 +239,7 @@ module tb_axis_hflip;
         $finish;
     end
 
-    // Timeout watchdog: catches skeleton tie-off (s_tready=0 → drive_frame hangs)
+    // Timeout watchdog: catches skeleton tie-off (s_axis.tready=0 → drive_frame hangs)
     initial begin
         #2000000;
         $fatal(1, "FAIL tb_axis_hflip TIMEOUT");
