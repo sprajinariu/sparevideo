@@ -417,10 +417,23 @@ module sparevideo_top
 
     logic [$clog2(OUT_FIFO_DEPTH):0] fifo_out_depth;  // write-side (clk_dsp)
 
-    // proc_axis: driven directly by the ctrl-flow mux below; feeds u_fifo_out.s_axis.
-    // proc_axis.tready (output FIFO write-side ready) is read back by the mux
-    // and by morph_to_ccl.tready.
+    // proc_axis: driven directly by the ctrl-flow mux below; feeds u_gamma_cor.s_axis.
+    // proc_axis.tready (gamma stage's input ready, ultimately the output FIFO
+    // write-side ready) is read back by the mux and by morph_to_ccl.tready.
     axis_if #(.DATA_W(24), .USER_W(1)) proc_axis ();
+
+    // gamma_to_pix_out: u_gamma_cor.m_axis -> u_fifo_out.s_axis (direct pass-through).
+    axis_if #(.DATA_W(24), .USER_W(1)) gamma_to_pix_out ();
+
+    // sRGB display gamma correction at the post-mux tail. enable_i=0 is a
+    // zero-latency combinational passthrough.
+    axis_gamma_cor u_gamma_cor (
+        .clk_i    (clk_dsp_i),
+        .rst_n_i  (rst_dsp_n_i),
+        .enable_i (CFG.gamma_en),
+        .s_axis   (proc_axis),
+        .m_axis   (gamma_to_pix_out)
+    );
 
     // pix_out_axis: permanent bridge from output FIFO m_axis to VGA flat ports.
     // VGA controller is outside the AXI-Stream conversion scope and stays flat.
@@ -444,7 +457,7 @@ module sparevideo_top
         .s_rst_n          (rst_dsp_n_i),
         .m_clk            (clk_pix_i),
         .m_rst_n          (rst_pix_n_i),
-        .s_axis           (proc_axis),
+        .s_axis           (gamma_to_pix_out),
         .m_axis           (pix_out_axis),
         .s_status_depth   (fifo_out_depth),
         .s_status_overflow(fifo_out_overflow),

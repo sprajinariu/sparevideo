@@ -14,6 +14,7 @@ filesets:
       - sparevideo:third_party:verilog-axis
       - sparevideo:ip:axis
       - sparevideo:ip:hflip
+      - sparevideo:ip:gamma
       - sparevideo:ip:motion
       - sparevideo:ip:ccl
       - sparevideo:ip:overlay

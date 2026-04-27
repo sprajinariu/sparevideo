@@ -56,6 +56,7 @@ make run-pipeline CFG=default_hflip          # selfie-cam mirror enabled
 make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencing
 make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
+make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
 
 # 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/CFG to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
@@ -86,6 +87,7 @@ make setup                   # One-time setup (install deps)
 - `hw/ip/motion/rtl/` — Motion detection (axis_motion_detect, motion_core)
 - `hw/ip/ccl/rtl/` — Streaming connected-components labeling (axis_ccl)
 - `hw/ip/overlay/rtl/` — Generic rectangle overlay on RGB video (axis_overlay_bbox)
+- `hw/ip/gamma/rtl/` — Per-channel sRGB gamma correction at output tail (axis_gamma_cor: 33-entry LUT + linear interp, 1-cycle skid, enable_i bypass; enabled via `gamma_en` field of `cfg_t`)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library
