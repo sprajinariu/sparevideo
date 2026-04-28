@@ -33,10 +33,10 @@ Add five self-contained AXIS pipeline stages to `sparevideo`, plus one reusable 
 ## 2. Top-level architecture
 
 ```
-AXIS in  (pix_clk, 25.175 MHz when SCALER=1, ~6.3 MHz when SCALER=0)
+AXIS in  (clk_pix_in: input-rate, ≈6.3 MHz native for 320×240; matches the upstream sensor/source clock)
   │
   ▼
-CDC FIFO  (pix_clk → proc_clk 100 MHz)
+CDC FIFO  (clk_pix_in → clk_dsp 100 MHz)
   │
   ▼
 axis_hflip               (enable_i ← HFLIP)
@@ -58,41 +58,59 @@ axis_gamma_cor           (enable_i ← GAMMA_COR; LUT sidebands from TB / board 
 axis_hud                 (enable_i ← HUD; draws at 640×480 when SCALER=1, else 320×240)
   │
   ▼
-CDC FIFO  (proc_clk → pix_clk)
+CDC FIFO  (clk_dsp → clk_pix_out)
   │
   ▼
 vga_controller           (H_ACTIVE_OUT/V_ACTIVE_OUT from sparevideo_pkg)
   │
   ▼
-VGA out
+VGA out  (clk_pix_out: output-rate, 25.175 MHz for standard 640×480@60)
 ```
 
 **Key properties:**
 
-- All new stages live in proc_clk. The pix_clk side remains: AXIS-in, CDC, VGA controller — nothing else.
+- All new stages live in `clk_dsp`. Clock domains: `clk_pix_in` (input AXIS only), `clk_dsp` (the entire pipeline), `clk_pix_out` (VGA controller only).
 - `axis_hflip` before the ctrl_flow mux so motion masks and bbox coords agree with what the user sees.
 - `axis_morph3x3_open` inside each mask-producing branch; elided for `passthrough`.
 - Gamma → (scaler) → HUD is the post-mux tail. HUD is **after** the scaler so HUD text is rendered at native output resolution and never softened by bilinear.
-- Four blocks use runtime `enable_i`; only `SCALER` / `SCALE_FILTER` are compile-time (they change clocking and timing, which can't be runtime-reconfigured without a display resync).
+- Four blocks use runtime `enable_i`; only `SCALER` / `SCALE_FILTER` are compile-time (they change resolution and the in:out clock ratio, which can't be runtime-reconfigured without a display resync).
 
-**VGA output resolution & `pix_clk`** — selected by `SCALER`, encoded in `sparevideo_pkg.sv`:
+**Two pix_clk ports** — the input and output sides of the pipeline run on independent pixel clocks, so the rate ratio is established by clock frequencies rather than by software pacing:
 
 ```systemverilog
-localparam int H_ACTIVE_OUT = SCALER ? 640 : 320;
-localparam int V_ACTIVE_OUT = SCALER ? 480 : 240;
-// + matching H_FP / H_SY / H_BP / V_FP / V_SY / V_BP per mode
+// sparevideo_pkg.sv
+localparam int H_ACTIVE_OUT_2X = 2 * H_ACTIVE;     // 640 when H_ACTIVE=320
+localparam int V_ACTIVE_OUT_2X = 2 * V_ACTIVE;     // 480 when V_ACTIVE=240
+// + matching H_FP / H_SY / H_BP per mode (vertical porches stay — they count
+//   lines, not pixels, so they are the same in both modes)
 
-// pix_clk_i expected frequency:
-//   SCALER=1 → 25.175 MHz  (standard VGA 640×480@60)
-//   SCALER=0 → ~6.3 MHz    (320×240@60, non-standard — see Risk A3)
+// sparevideo_top expected port wiring:
+//   clk_pix_in_i  : input-rate pixel clock (sensor/source clock)
+//   clk_pix_out_i : output-rate pixel clock (display clock)
+//   clk_dsp_i     : 100 MHz processing clock (existing)
+//
+// SCALER=1 typical wiring:
+//   clk_pix_out_i = 25.175 MHz (standard VGA 640×480@60)
+//   clk_pix_in_i  ≈ 6.3 MHz  (output / 4, since axis_scale2x emits 4 px/in_px)
+//
+// SCALER=0 typical wiring:
+//   clk_pix_in_i = clk_pix_out_i (caller ties them together — any rate)
+//   The two-port signature is preserved so the same RTL covers both modes,
+//   and SCALER=0 stays byte-identical to the pre-scaler design.
 ```
 
-The DUT still has exactly one `pix_clk_i` port; the caller (TB or board wrapper) feeds the correct frequency for the build.
+Both async FIFOs (`axis_async_fifo_ifc`) cross between `clk_pix_*` and `clk_dsp` domains; they are agnostic to the actual frequency, so the same RTL handles `SCALER=0` (single rate) and `SCALER=1` (4:1 ratio) without changes.
+
+**Clock-stability assumptions** — see also §3.5:
+- Long-term rate balance: `clk_pix_in_i × N² = clk_pix_out_i` for an N× scaler (N=2 here ⇒ 4:1).
+- Phase between input SOF and output VGA frame boundary is **not constrained** by the design. The `vga_started` one-shot in `sparevideo_top` aligns frame 0 to the first SOF; subsequent frames rely on the rate balance plus output `V_BLANK` real-time slack to absorb the per-frame `S_FILL_FIRST_ROW` startup of the scaler.
+- Sustained drift between the two clocks (real silicon with independent crystals) eventually drifts the output FIFO and trips `assert_fifo_out_no_overflow` or `assert_no_output_underrun`. Real-silicon deployments need one of: (a) genlock — derive `clk_pix_out_i` from `clk_pix_in_i` via a PLL; (b) a frame buffer between the pipeline and VGA, with explicit drop/duplicate-frame logic; (c) accept that the system is timing-tight and audit headroom for the worst-case crystal tolerance.
+- Sim is exempt because clock periods are exact.
 
 **Risks:**
 - **A1 (medium).** Bilinear output produces 4× pixel rate in bursts. Output-side CDC FIFO must absorb ≥ one output line (640 entries) without underflow. Verify in the FIFO-depth audit (§5).
 - **A2 (medium).** `axis_hflip` uses a single-line buffer → write-phase stalls downstream, read-phase stalls upstream. Long-term rates match; verify the input-side CDC FIFO is deep enough (≥ one line). A ping-pong variant is available as a future optimization.
-- **A3 (lower).** In `SCALER=0` native 320×240 mode, a real monitor may not sync cleanly; the mode is primarily a regression/debug config. This is an accepted trade-off.
+- **A3 (real-silicon only).** Two-clk model assumes correct long-term rate balance. Sustained mismatch between independent crystals drifts the output FIFO; mitigations listed in "Clock-stability assumptions" above. Sim is unaffected.
 - **A4 (lower).** Gamma is applied before the scaler → bilinear averages happen in non-linear space, producing slightly darker midpoints than ground truth. Visually invisible at 2× on typical content; noted for completeness.
 - **A5 (lower).** `axis_ccl` EOF FSM cycle budget remains comfortable at both VGA timings (V_BLANK ≥ 16 in either config); no action required now.
 
@@ -143,11 +161,13 @@ The DUT still has exactly one `pix_clk_i` port; the caller (TB or board wrapper)
 
 ### 3.5 `axis_scale2x`
 
-- **Domain:** proc_clk. **Data:** 24-bit RGB. **Instantiated only when `SCALER=1`.**
+- **Domain:** clk_dsp. **Data:** 24-bit RGB. **Instantiated only when `SCALER=1`.**
 - **Params:** `SCALE_FILTER = "nn" | "bilinear"` (compile-time).
 - **NN mode:** each source pixel emitted twice; each source line emitted twice. Needs one line buffer (so the second emitted line can be replayed under backpressure).
 - **Bilinear mode:** one line buffer. Output row cadence is `(source_row, interp_row, source_row, interp_row, …)`. Within each source row: `(A, (A+B)>>1, B, (B+C)>>1, …)`. Within each interp row: `((A+C)>>1, (A+B+C+D)>>2, (B+D)>>1, …)`. Top edge replicates the first source row. No multipliers — all weights are powers of two.
 - **Output rate:** 4× input rate in bursts. Output-side CDC FIFO depth ≥ 1 output line (see Risk A1).
+- **Per-frame startup:** on every input SOF the scaler enters `S_FILL_FIRST_ROW` and emits no output until row 0 is buffered (≈1 input row of `clk_dsp` time). The output VGA controller is in `V_BLANK` for the matching real-time interval, so under nominal rate balance no underflow occurs at the seam between frames. Bench numbers (TB porches): `S_FILL_FIRST_ROW` ≈50 µs vs output `V_BLANK` ≈430 µs ⇒ ~8× headroom. Real-silicon deployments must verify this margin against worst-case PLL/crystal tolerances or use one of the mitigations listed in §2 ("Clock-stability assumptions").
+- **Rate-balance precondition:** correctness assumes `clk_pix_in_i × 4 = clk_pix_out_i` on average over a frame. The TB sets period ratios exactly; real silicon needs genlock or a frame buffer (see §2).
 
 ### 3.6 `axis_hud`
 

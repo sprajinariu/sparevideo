@@ -44,6 +44,29 @@ package sparevideo_pkg;
     localparam int V_BACK_PORCH  = 2;
 
     // ---------------------------------------------------------------
+    // Output VGA timing — selected by the top-level SCALER parameter.
+    //
+    // SCALER=0 (default): output dims == input dims (the existing
+    // path). SCALER=1: 2x upscale → 640x480, with a wider front/back
+    // porch envelope to keep blanking comfortable for the axis_ccl
+    // EOF FSM and the verilog-axis FIFO output pipeline.
+    //
+    // The 2x of every porch is intentional: the design aims for a
+    // ~25 MHz pix_clk in both modes, so doubling H_ACTIVE alone would
+    // halve the per-line wall-clock time. Doubling the porches keeps
+    // the per-line wall-clock identical and the FSM budgets unchanged.
+    // ---------------------------------------------------------------
+    localparam int H_ACTIVE_OUT_2X      = 2 * H_ACTIVE;
+    localparam int H_FRONT_PORCH_OUT_2X = 2 * H_FRONT_PORCH;
+    localparam int H_SYNC_PULSE_OUT_2X  = 2 * H_SYNC_PULSE;
+    localparam int H_BACK_PORCH_OUT_2X  = 2 * H_BACK_PORCH;
+
+    localparam int V_ACTIVE_OUT_2X      = 2 * V_ACTIVE;
+    localparam int V_FRONT_PORCH_OUT_2X = V_FRONT_PORCH;   // vertical porches stay
+    localparam int V_SYNC_PULSE_OUT_2X  = V_SYNC_PULSE;    // unchanged: lines, not
+    localparam int V_BACK_PORCH_OUT_2X  = V_BACK_PORCH;    // pixels.
+
+    // ---------------------------------------------------------------
     // Algorithm tuning bundle — one struct, named profiles.
     //
     // Resolution (H_ACTIVE/V_ACTIVE/porches) and sim-only knobs (FRAMES)

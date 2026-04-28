@@ -19,6 +19,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 | [`axis_gamma_cor-arch.md`](docs/specs/axis_gamma_cor-arch.md) | Per-channel sRGB gamma correction at output tail (33-entry LUT + linear interp, `enable_i` bypass) |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
+| [`axis_scale2x-arch.md`](docs/specs/axis_scale2x-arch.md) | 2x spatial upscaler (NN or bilinear); compile-time `SCALER`/`SCALE_FILTER` |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
 | [`ram-arch.md`](docs/specs/ram-arch.md) | Dual-port byte RAM, region descriptor model |
 | [`vga_controller-arch.md`](docs/specs/vga_controller-arch.md) | VGA timing generator |
@@ -53,6 +54,9 @@ hw/ip/filters/rtl/
 
 hw/ip/gamma/rtl/
 └── axis_gamma_cor.sv          Per-channel sRGB gamma correction (33-entry LUT, linear interp, 1-cycle skid, enable_i bypass)
+
+hw/ip/scaler/rtl/
+└── axis_scale2x.sv            2x spatial upscaler (NN or bilinear); instantiated under SCALER=1 generate gate
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
@@ -191,6 +195,11 @@ make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
 
+# 2x output upscaler (compile-time)
+make run-pipeline SCALER=0                          # input dims at output (default)
+make run-pipeline SCALER=1 SCALE_FILTER=nn          # 2x output, nearest-neighbour
+make run-pipeline SCALER=1 SCALE_FILTER=bilinear    # 2x output, bilinear (default filter)
+
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
 
@@ -264,6 +273,8 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
+| `SCALER` | `0` | Compile-time gate for the 2x output upscaler. `0` = output equals input dims (byte-identical to pre-scaler runs). `1` = `axis_scale2x` is instantiated and the VGA output uses the 2x dims (`H_ACTIVE_OUT_2X` / `V_ACTIVE_OUT_2X` from `sparevideo_pkg`). |
+| `SCALE_FILTER` | `bilinear` | Filter mode for `axis_scale2x` when `SCALER=1`: `nn` (nearest-neighbour pixel-doubling) or `bilinear`. Ignored when `SCALER=0`. |
 
 ### Synthetic Sources
 

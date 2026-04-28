@@ -70,13 +70,16 @@ def _load_input_output(args):
     width, height, frames = _resolve_dims(args)
 
     if args.mode == "text":
+        in_w, in_h, n = width, height, frames
+        out_w = 2 * in_w if getattr(args, "scaler", 0) else in_w
+        out_h = 2 * in_h if getattr(args, "scaler", 0) else in_h
         input_frames = read_frames(
             args.input, mode="text",
-            width=width, height=height, num_frames=frames,
+            width=in_w, height=in_h, num_frames=n,
         )
         output_frames = read_frames(
             args.output, mode="text",
-            width=width, height=height, num_frames=frames,
+            width=out_w, height=out_h, num_frames=n,
         )
     else:
         input_frames = read_frames(args.input, mode="binary")
@@ -110,7 +113,11 @@ def cmd_verify(args):
     tolerance = args.tolerance
 
     cfg = resolve_cfg(getattr(args, "cfg", "default"))
-    expected_frames = run_model(ctrl_flow, input_frames, **cfg)
+    expected_frames = run_model(
+        ctrl_flow, input_frames,
+        scaler=bool(args.scaler), scale_filter=args.scale_filter,
+        **cfg,
+    )
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
@@ -144,7 +151,11 @@ def cmd_render(args):
     cfg = resolve_cfg(getattr(args, "cfg", "default"))
     reference_frames = None
     if ctrl_flow:
-        reference_frames = run_model(ctrl_flow, input_frames, **cfg)
+        reference_frames = run_model(
+            ctrl_flow, input_frames,
+            scaler=bool(args.scaler), scale_filter=args.scale_filter,
+            **cfg,
+        )
     out_path = render_grid(input_frames, output_frames, args.render_output,
                            reference_frames=reference_frames)
     print(f"Rendered comparison grid to {out_path}")
@@ -161,6 +172,8 @@ def main():
     common.add_argument("--height", type=int, default=None)
     common.add_argument("--frames", type=int, default=None)
     common.add_argument("--mode", choices=["text", "binary"], default="text")
+    common.add_argument("--scaler", type=int, default=0, choices=[0, 1])
+    common.add_argument("--scale-filter", default="bilinear", choices=["nn", "bilinear"])
 
     # prepare
     p_prep = sub.add_parser("prepare", parents=[common],

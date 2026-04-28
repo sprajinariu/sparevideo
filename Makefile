@@ -18,6 +18,10 @@ TOLERANCE ?= 0
 # and py/profiles.py for the Python mirror. To add a new profile, add
 # entries in BOTH files (parity test catches drift).
 CFG ?= default
+# 2x spatial upscaler (axis_scale2x). 0 = disabled (passthrough); 1 = enabled.
+# SCALE_FILTER selects "nn" (nearest-neighbour) or "bilinear" when SCALER=1.
+SCALER ?= 0
+SCALE_FILTER ?= bilinear
 
 # Load options saved by the last 'make prepare'.
 # Overrides the ?= defaults above; command-line variables still win over this.
@@ -35,11 +39,12 @@ endif
 SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
            MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) CFG=$(CFG) \
+           SCALER=$(SCALER) SCALE_FILTER=$(SCALE_FILTER) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor setup clean
+        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -70,6 +75,7 @@ help:
 	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
 	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
 	@echo "    test-ip-gamma-cor          axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough"
+	@echo "    test-ip-scale2x            axis_scale2x: 2x upscaler (nn|bilinear) - skeleton only until Tasks 7-8"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator              Simulator: verilator"
@@ -81,6 +87,8 @@ help:
 	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default ccl_bbox)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
 	@echo "    CFG=default                      Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor)"
+	@echo "    SCALER=0|1                       2x spatial upscaler (axis_scale2x); 0 = bypass"
+	@echo "    SCALE_FILTER=nn|bilinear         Upscaler kernel when SCALER=1 (default bilinear)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
 	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
@@ -107,8 +115,8 @@ prepare:
 	@echo ""
 	@echo "==== [1/5] PREPARE (Python) ===="
 	@mkdir -p $(DATA_DIR) renders
-	@printf 'WIDTH=%s\nHEIGHT=%s\nFRAMES=%s\nMODE=%s\nCTRL_FLOW=%s\nCFG=%s\n' \
-	  '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(CFG)' \
+	@printf 'WIDTH=%s\nHEIGHT=%s\nFRAMES=%s\nMODE=%s\nCTRL_FLOW=%s\nCFG=%s\nSCALER=%s\nSCALE_FILTER=%s\n' \
+	  '$(WIDTH)' '$(HEIGHT)' '$(FRAMES)' '$(MODE)' '$(CTRL_FLOW)' '$(CFG)' '$(SCALER)' '$(SCALE_FILTER)' \
 	  > $(DATA_DIR)/config.mk
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
@@ -136,7 +144,7 @@ verify:
 	cd py && $(HARNESS) verify \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --tolerance $(TOLERANCE) \
-		--cfg $(CFG)
+		--cfg $(CFG) --scaler $(SCALER) --scale-filter $(SCALE_FILTER)
 
 RENDER_SOURCE_SAFE = $(subst _,-,$(subst :,-,$(SOURCE)))
 RENDER_OUT = $(CURDIR)/renders/$(RENDER_SOURCE_SAFE)__width=$(WIDTH)__height=$(HEIGHT)__frames=$(FRAMES)__ctrl-flow=$(CTRL_FLOW)__cfg=$(CFG).png
@@ -148,6 +156,7 @@ render:
 	cd py && $(HARNESS) render \
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --cfg $(CFG) \
+		--scaler $(SCALER) --scale-filter $(SCALE_FILTER) \
 		--render-output $(RENDER_OUT)
 
 # ---- Other targets ----
@@ -170,6 +179,9 @@ test-ip-hflip:
 
 test-ip-gamma-cor:
 	$(MAKE) -C dv/sim test-ip-gamma-cor SIMULATOR=$(SIMULATOR)
+
+test-ip-scale2x:
+	$(MAKE) -C dv/sim test-ip-scale2x SIMULATOR=$(SIMULATOR) SCALE_FILTER=$(SCALE_FILTER)
 
 setup:
 	sudo apt install -y verilator

@@ -18,6 +18,7 @@ filesets:
       - sparevideo:ip:motion
       - sparevideo:ip:ccl
       - sparevideo:ip:overlay
+      - sparevideo:ip:scaler
 
   files_lint:
     files:
