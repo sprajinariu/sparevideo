@@ -79,7 +79,7 @@ make setup                   # One-time setup (install deps)
 
 > **Note:** Verilator simulation previously had a race condition — `tuser` was sampled as 0 on the posedge of `clk_pix` due to INITIALDLY (NBA-in-initial-block treated as blocking). Fixed by introducing `drv_*` intermediary signals written with blocking `=` in the initial block, and an `always_ff @(negedge clk_pix)` as the sole driver of `s_axis_*`. Driving on negedge ensures DUT inputs are stable at the posedge sampling point.
 
-> **Scaler configuration:** The 2x spatial upscaler is now part of the `cfg_t` profile struct. Fields `CFG.scaler_en` (boolean) and `CFG.scale_filter` (string: "nn" or "bilinear") control the scaler; all standard profiles have `scaler_en=True, scale_filter="bilinear"` by default. The `no_scaler` profile sets `scaler_en=False` for legacy native-resolution operation. Neap nearest-neighbour is not exposed as a production choice — it lives only in the RTL for design completeness.
+> **Scaler configuration:** The 2x bilinear spatial upscaler is part of the `cfg_t` profile struct. Field `CFG.scaler_en` (boolean) gates the scaler; all standard profiles have `scaler_en=True` by default. The `no_scaler` profile sets `scaler_en=False` for legacy native-resolution operation.
 
 ## Project Structure
 

@@ -22,7 +22,6 @@ DEFAULT: ProfileT = dict(
     hflip_en=False,
     gamma_en=True,
     scaler_en=True,
-    scale_filter="bilinear",
     bbox_color=0x00_FF_00,
 )
 

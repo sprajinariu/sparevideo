@@ -28,8 +28,8 @@ module sparevideo_top
     parameter int   V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
     // Single algorithm config bundle. See sparevideo_pkg::cfg_t for fields,
     // and sparevideo_pkg::CFG_* for canonical profiles. The 2x upscaler's
-    // structural presence and filter selection live here as CFG.scaler_en
-    // and CFG.scale_filter — no separate top-level parameters.
+    // structural presence lives here as CFG.scaler_en — no separate
+    // top-level parameter.
     parameter sparevideo_pkg::cfg_t CFG = sparevideo_pkg::CFG_DEFAULT
 ) (
     // ---- Clocks & resets -------------------------------------------
@@ -457,22 +457,10 @@ module sparevideo_top
     );
 
     generate
-        if (CFG.scaler_en && CFG.scale_filter == sparevideo_pkg::SCALE_NN) begin : g_scale2x_nn
+        if (CFG.scaler_en) begin : g_scale2x
             axis_scale2x #(
-                .H_ACTIVE_IN  (H_ACTIVE),
-                .V_ACTIVE_IN  (V_ACTIVE),
-                .SCALE_FILTER ("nn")
-            ) u_scale2x (
-                .clk_i   (clk_dsp_i),
-                .rst_n_i (rst_dsp_n_i),
-                .s_axis  (gamma_to_pix_out),
-                .m_axis  (scale2x_to_pix_out)
-            );
-        end else if (CFG.scaler_en) begin : g_scale2x_bilinear
-            axis_scale2x #(
-                .H_ACTIVE_IN  (H_ACTIVE),
-                .V_ACTIVE_IN  (V_ACTIVE),
-                .SCALE_FILTER ("bilinear")
+                .H_ACTIVE_IN (H_ACTIVE),
+                .V_ACTIVE_IN (V_ACTIVE)
             ) u_scale2x (
                 .clk_i   (clk_dsp_i),
                 .rst_n_i (rst_dsp_n_i),

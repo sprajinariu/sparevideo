@@ -195,11 +195,8 @@ test-ip-gamma-cor:
 	obj_tb_axis_gamma_cor/Vtb_axis_gamma_cor
 
 # --- axis_scale2x ---
-# Standalone unit test of axis_scale2x; SCALE_FILTER is a string parameter
-# directly on the IP (independent of the top-level CFG profile).
-SCALE_FILTER ?= bilinear
 test-ip-scale2x:
-	verilator $(VLT_TB_FLAGS) -GSCALE_FILTER='"$(SCALE_FILTER)"' \
+	verilator $(VLT_TB_FLAGS) \
 	  --top-module tb_axis_scale2x --Mdir obj_tb_axis_scale2x \
 	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
 	  $(IP_SCALE2X_RTL) ../../hw/ip/scaler/tb/tb_axis_scale2x.sv

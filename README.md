@@ -19,7 +19,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 | [`axis_gamma_cor-arch.md`](docs/specs/axis_gamma_cor-arch.md) | Per-channel sRGB gamma correction at output tail (33-entry LUT + linear interp, `enable_i` bypass) |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
-| [`axis_scale2x-arch.md`](docs/specs/axis_scale2x-arch.md) | 2x spatial upscaler (NN or bilinear); controlled via `CFG.scaler_en` / `CFG.scale_filter` |
+| [`axis_scale2x-arch.md`](docs/specs/axis_scale2x-arch.md) | 2x bilinear spatial upscaler; controlled via `CFG.scaler_en` |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
 | [`ram-arch.md`](docs/specs/ram-arch.md) | Dual-port byte RAM, region descriptor model |
 | [`vga_controller-arch.md`](docs/specs/vga_controller-arch.md) | VGA timing generator |

@@ -70,7 +70,7 @@ help:
 	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
 	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
 	@echo "    test-ip-gamma-cor          axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough"
-	@echo "    test-ip-scale2x            axis_scale2x: 2x upscaler (nn|bilinear) - skeleton only until Tasks 7-8"
+	@echo "    test-ip-scale2x            axis_scale2x: 2x bilinear upscaler"
 	@echo ""
 	@echo "  Options (command-line always wins; 'make prepare' saves them for later steps):"
 	@echo "    SIMULATOR=verilator              Simulator: verilator"

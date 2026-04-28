@@ -82,24 +82,18 @@ package sparevideo_pkg;
     // Future runtime CSR will use the active profile as the reset-value
     // table; the same field set carries over.
     // ---------------------------------------------------------------
-    // 2x scaler filter selection. Encoded as a single bit so the cfg_t
-    // struct stays packed; the top-level translates this to the
-    // axis_scale2x SCALE_FILTER string at elaboration time.
-    typedef enum logic { SCALE_NN, SCALE_BILINEAR } scale_filter_e;
-
     typedef struct packed {
-        component_t    motion_thresh;       // raw |Y_cur - Y_prev| threshold
-        int            alpha_shift;         // EMA rate, non-motion pixels
-        int            alpha_shift_slow;    // EMA rate, motion pixels
-        int            grace_frames;        // aggressive-EMA grace after priming
-        int            grace_alpha_shift;   // EMA rate during grace window
-        logic          gauss_en;            // 3x3 Gaussian pre-filter on Y
-        logic          morph_en;            // 3x3 opening on mask
-        logic          hflip_en;            // horizontal mirror on input
-        logic          gamma_en;            // sRGB display gamma at output tail
-        logic          scaler_en;           // 2x spatial upscaler at output tail
-        scale_filter_e scale_filter;        // axis_scale2x kernel (NN or bilinear)
-        pixel_t        bbox_color;          // overlay colour
+        component_t motion_thresh;       // raw |Y_cur - Y_prev| threshold
+        int         alpha_shift;         // EMA rate, non-motion pixels
+        int         alpha_shift_slow;    // EMA rate, motion pixels
+        int         grace_frames;        // aggressive-EMA grace after priming
+        int         grace_alpha_shift;   // EMA rate during grace window
+        logic       gauss_en;            // 3x3 Gaussian pre-filter on Y
+        logic       morph_en;            // 3x3 opening on mask
+        logic       hflip_en;            // horizontal mirror on input
+        logic       gamma_en;            // sRGB display gamma at output tail
+        logic       scaler_en;           // 2x bilinear upscaler at output tail
+        pixel_t     bbox_color;          // overlay colour
     } cfg_t;
 
     // Default: all cleanup stages on, mirror OFF. Use CFG_DEFAULT_HFLIP if
@@ -124,7 +118,6 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
-        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -140,7 +133,6 @@ package sparevideo_pkg;
         hflip_en:          1'b1,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
-        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -158,7 +150,6 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
-        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -174,7 +165,6 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
-        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -190,7 +180,6 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
-        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -206,7 +195,6 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b0,
         scaler_en:         1'b1,
-        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -224,7 +212,6 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b0,
-        scale_filter:      SCALE_BILINEAR,   // ignored when scaler_en=0
         bbox_color:        24'h00_FF_00
     };
 

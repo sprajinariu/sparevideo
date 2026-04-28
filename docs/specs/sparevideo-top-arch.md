@@ -113,8 +113,7 @@ sparevideo_top (top level)
 | `CFG.morph_en` | `logic` | `1` | Enable the 3×3 morphological opening (`u_morph_open`) on the mask. `0` bypasses (raw mask flows downstream). |
 | `CFG.hflip_en` | `logic` | `0` | Enable the horizontal mirror (`u_hflip`) at the head of the proc-clock pipeline. `0` passes the input through unchanged. |
 | `CFG.gamma_en` | `logic` | `1` | Enable the sRGB gamma-correction stage (`u_gamma_cor`) at the post-mux tail. `0` bypasses (linear-light pixels reach the output FIFO). |
-| `CFG.scaler_en` | `logic` | `1` | Enable the 2x spatial upscaler (`u_scale2x`) before the output FIFO. `0` bypasses (output resolution equals input resolution). |
-| `CFG.scale_filter` | `string` | `"bilinear"` | Filter mode for `u_scale2x` when `scaler_en=1`: `"nn"` (nearest-neighbour pixel doubling) or `"bilinear"`. Ignored when `scaler_en=0`. |
+| `CFG.scaler_en` | `logic` | `1` | Enable the 2x bilinear spatial upscaler (`u_scale2x`) before the output FIFO. `0` bypasses (output resolution equals input resolution). |
 | `CFG.bbox_color` | `pixel_t` (24-bit RGB) | `0x00_FF_00` (green) | RGB triple drawn by `u_overlay_bbox` for every bounding-box edge pixel. Driven into `u_overlay_bbox.BBOX_COLOR`. |
 | `CCL_N_LABELS_INT` | `int` | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0). |
 | `CCL_N_OUT` | `int` | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox`. |
@@ -394,7 +393,7 @@ The control-flow mux selects between:
 Per-block roles for the processing stages (`u_motion_detect`, `u_morph_open`, `u_ccl`, `u_overlay_bbox`, `u_vga`) are covered in §5. The remaining top-level plumbing:
 
 - **u_fifo_in / u_fifo_out**: CDC between the pixel domains (`clk_pix_in` / `clk_pix_out`) and `clk_dsp`; `IN_FIFO_DEPTH = 128`, `OUT_FIFO_DEPTH = 256` (bumps to `1024` when `CFG.scaler_en=1` to absorb the scaler's burst output, since it emits up to 4 beats per input pixel). Overflow detected by SVA (§9).
-- **u_scale2x**: 2x spatial upscaler instantiated under a generate gate when `CFG.scaler_en=1`; bilinear or NN filter selected by `CFG.scale_filter`. When `CFG.scaler_en=0`, the gate produces a zero-latency combinational bridge (`assign` chain from `gamma_to_pix_out` to `scale2x_to_pix_out`) so the path is byte-identical to pre-scaler runs. See [axis_scale2x-arch.md](axis_scale2x-arch.md).
+- **u_scale2x**: 2x bilinear spatial upscaler instantiated under a generate gate when `CFG.scaler_en=1`. When `CFG.scaler_en=0`, the gate produces a zero-latency combinational bridge (`assign` chain from `gamma_to_pix_out` to `scale2x_to_pix_out`) so the path is byte-identical to pre-scaler runs. See [axis_scale2x-arch.md](axis_scale2x-arch.md).
 - **u_fork**: zero-latency 1-to-2 broadcast with per-output acceptance tracking, so asymmetric consumer stalls do not corrupt data. Instantiated in the motion pipeline path only; fork input `tvalid` is gated to 0 in passthrough mode.
 - **u_ram**: dual-port byte RAM. Port A owned by `u_motion_detect` for the EMA background model; port B reserved for a future host client. Zero-initialized. See [ram-arch.md](ram-arch.md).
 - **vga_rst_n gating**: VGA held in reset until the first `tuser=1` pixel exits `u_fifo_out`, aligning the VGA scan to a frame boundary regardless of FIFO fill time.

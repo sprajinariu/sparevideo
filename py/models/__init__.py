@@ -5,9 +5,9 @@ Dispatch via run_model() which maps the control flow name to the correct model.
 
 Pipeline-stage flags are applied in this dispatcher so each control-flow model
 only needs to know about its own algorithm:
-  - hflip_en: applied at the head (frames mirrored before dispatch).
-  - gamma_en: applied at the tail (sRGB encode on each output frame).
-  - scaler:   applied at the very tail (2x spatial upscale, nn|bilinear).
+  - hflip_en:  applied at the head (frames mirrored before dispatch).
+  - gamma_en:  applied at the tail (sRGB encode on each output frame).
+  - scaler_en: applied at the very tail (2x bilinear spatial upscale).
 """
 
 from models.ops.gamma_cor import gamma_cor as _gamma_cor
@@ -32,15 +32,14 @@ def run_model(ctrl_flow: str, frames: list, **kwargs) -> list:
             f"Unknown control flow '{ctrl_flow}'. "
             f"Available: {', '.join(sorted(_MODELS))}"
         )
-    hflip_en     = kwargs.pop("hflip_en", False)
-    gamma_en     = kwargs.pop("gamma_en", False)
-    scaler_en    = kwargs.pop("scaler_en", False)
-    scale_filter = kwargs.pop("scale_filter", "bilinear")
+    hflip_en  = kwargs.pop("hflip_en", False)
+    gamma_en  = kwargs.pop("gamma_en", False)
+    scaler_en = kwargs.pop("scaler_en", False)
     if hflip_en:
         frames = [_hflip(f) for f in frames]
     out = _MODELS[ctrl_flow](frames, **kwargs)
     if gamma_en:
         out = [_gamma_cor(f) for f in out]
     if scaler_en:
-        out = [_scale2x(f, mode=scale_filter) for f in out]
+        out = [_scale2x(f) for f in out]
     return out

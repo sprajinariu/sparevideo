@@ -1,7 +1,7 @@
-"""Unit tests for the scale2x reference model.
+"""Unit tests for the bilinear scale2x reference model.
 
-Two hand-crafted goldens per mode keep the tests legible; the pipeline-level
-test_models.py composition checks (added in Task 11) cover larger images.
+Two hand-crafted goldens keep the tests legible; the pipeline-level
+test_models.py composition checks cover larger images.
 """
 import numpy as np
 import pytest
@@ -9,27 +9,10 @@ import pytest
 from models.ops.scale2x import scale2x
 
 
-def _rgb(*triples):
-    return np.array(triples, dtype=np.uint8).reshape(-1, 3)
-
-
-def test_nn_2x2():
-    src = np.array([[[10, 20, 30], [40, 50, 60]],
-                    [[70, 80, 90], [100, 110, 120]]], dtype=np.uint8)
-    out = scale2x(src, mode="nn")
-    expected = np.array([
-        [[10, 20, 30], [10, 20, 30], [40, 50, 60], [40, 50, 60]],
-        [[10, 20, 30], [10, 20, 30], [40, 50, 60], [40, 50, 60]],
-        [[70, 80, 90], [70, 80, 90], [100, 110, 120], [100, 110, 120]],
-        [[70, 80, 90], [70, 80, 90], [100, 110, 120], [100, 110, 120]],
-    ], dtype=np.uint8)
-    assert np.array_equal(out, expected)
-
-
 def test_bilinear_horizontal_only():
     # Single-row check: vertical interp degenerates to identity.
     src = np.array([[[0, 0, 0], [100, 100, 100], [200, 200, 200]]], dtype=np.uint8)
-    out = scale2x(src, mode="bilinear")
+    out = scale2x(src)
     # Even cols: 0, 100, 200; odd cols: (0+100+1)/2=50, (100+200+1)/2=150,
     # right-edge replicate: 200.
     expected_row = np.array([[0, 0, 0], [50, 50, 50], [100, 100, 100],
@@ -43,7 +26,7 @@ def test_bilinear_horizontal_only():
 def test_bilinear_2x2_round_half_up():
     src = np.array([[[0, 0, 0], [3, 3, 3]],
                     [[7, 7, 7], [11, 11, 11]]], dtype=np.uint8)
-    out = scale2x(src, mode="bilinear")
+    out = scale2x(src)
     # Top output rows replicate source row 0 horizontally:
     #   0, (0+3+1)/2=2, 3, 3 (right replicate)
     # Bottom output row 0 (interp between source row 0 and source row 0): same as top
@@ -56,12 +39,6 @@ def test_bilinear_2x2_round_half_up():
     assert out[3, 0, 0] == 4 and out[3, 1, 0] == 6 and out[3, 2, 0] == 7 and out[3, 3, 0] == 7
 
 
-def test_unknown_mode_raises():
-    src = np.zeros((2, 2, 3), dtype=np.uint8)
-    with pytest.raises(ValueError):
-        scale2x(src, mode="lanczos")
-
-
 def test_dtype_mismatch_raises():
     with pytest.raises(ValueError):
-        scale2x(np.zeros((2, 2, 3), dtype=np.float32), mode="nn")
+        scale2x(np.zeros((2, 2, 3), dtype=np.float32))
