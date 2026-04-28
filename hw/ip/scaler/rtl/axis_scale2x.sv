@@ -230,6 +230,10 @@ module axis_scale2x #(
 
             // ---- Per-channel arithmetic helpers ----
             // 2-tap round-half-up average per channel.
+            // Bit [0] of each per-channel 9-bit sum is intentionally
+            // discarded by the >>1 (avg2 takes bits [8:1]). Suppress the
+            // UNUSEDSIGNAL warning Verilator raises for that bit.
+            /* verilator lint_off UNUSEDSIGNAL */
             function automatic logic [23:0] avg2(input logic [23:0] a,
                                                  input logic [23:0] b);
                 logic [8:0] r_sum, g_sum, b_sum;
@@ -240,6 +244,7 @@ module axis_scale2x #(
                     avg2  = {r_sum[8:1], g_sum[8:1], b_sum[8:1]};
                 end
             endfunction
+            /* verilator lint_on UNUSEDSIGNAL */
 
             // ---- PHASE_2 read indexing ----
             // Output column out_col_q in [0, 2W). Source columns:

@@ -15,7 +15,7 @@
 //   +DUMP_VCD          Dump waveforms to VCD
 //
 // Compile-time -G overrides:
-//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss)
+//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler)
 //   -GH_ACTIVE / -GV_ACTIVE Resolution overrides
 
 `timescale 1ns / 1ps
@@ -23,9 +23,7 @@
 module tb_sparevideo #(
     parameter int    H_ACTIVE     = 320,
     parameter int    V_ACTIVE     = 240,
-    parameter string CFG_NAME     = "default",
-    parameter int    SCALER       = 0,
-    parameter string SCALE_FILTER = "bilinear"
+    parameter string CFG_NAME     = "default"
 );
 
 `ifdef VERILATOR
@@ -44,17 +42,31 @@ module tb_sparevideo #(
     localparam int V_BACK_PORCH  = 5;
     localparam int V_BLANK       = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
 
-    localparam int H_ACTIVE_OUT = (SCALER == 1) ? 2 * H_ACTIVE : H_ACTIVE;
-    localparam int V_ACTIVE_OUT = (SCALER == 1) ? 2 * V_ACTIVE : V_ACTIVE;
+    // ---------------------------------------------------------------
+    // Algorithm profile resolution (must come before any localparam
+    // that depends on CFG.scaler_en). Add new entries here AND in
+    // sparevideo_pkg.sv AND in py/profiles.py.
+    // ---------------------------------------------------------------
+    localparam sparevideo_pkg::cfg_t CFG =
+        (CFG_NAME == "default_hflip") ? sparevideo_pkg::CFG_DEFAULT_HFLIP :
+        (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
+        (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
+        (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
+        (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
+        (CFG_NAME == "no_scaler")     ? sparevideo_pkg::CFG_NO_SCALER     :
+                                        sparevideo_pkg::CFG_DEFAULT;
+
+    localparam int H_ACTIVE_OUT = CFG.scaler_en ? 2 * H_ACTIVE : H_ACTIVE;
+    localparam int V_ACTIVE_OUT = CFG.scaler_en ? 2 * V_ACTIVE : V_ACTIVE;
 
     // 25 MHz output pixel clock (40ns), 100 MHz DSP clock (10ns).
-    // When SCALER=1, the input pixel clock runs at 1/4 of the output
+    // When CFG.scaler_en=1, the input pixel clock runs at 1/4 of the output
     // pixel clock so the long-term input pixel rate matches the
     // VGA-side consumption rate (one input pixel produces a 2x2 output
     // tile, i.e. 4 output pixels).
     localparam int CLK_PIX_OUT_PERIOD = 40;                                     // 25 MHz
-    localparam int CLK_PIX_IN_PERIOD  = (SCALER == 1) ? 4 * CLK_PIX_OUT_PERIOD  // 6.25 MHz when SCALER=1
-                                                      :     CLK_PIX_OUT_PERIOD; // 25 MHz when SCALER=0
+    localparam int CLK_PIX_IN_PERIOD  = CFG.scaler_en ? 4 * CLK_PIX_OUT_PERIOD  // 6.25 MHz when scaler enabled
+                                                      :     CLK_PIX_OUT_PERIOD; // 25 MHz when scaler bypassed
     localparam int CLK_DSP_PERIOD     = 10;                                     // 100 MHz, unchanged
 
     // ---------------------------------------------------------------
@@ -108,24 +120,14 @@ module tb_sparevideo #(
     logic [7:0] vga_g;
     logic [7:0] vga_b;
 
-    // Elaboration-time profile lookup. Add new entries here AND in
-    // sparevideo_pkg.sv AND in py/profiles.py. The Python parity test
-    // catches mismatches between SV and Python.
-    localparam sparevideo_pkg::cfg_t CFG =
-        (CFG_NAME == "default_hflip") ? sparevideo_pkg::CFG_DEFAULT_HFLIP :
-        (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
-        (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
-        (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
-        (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
-                                        sparevideo_pkg::CFG_DEFAULT;
-
     initial begin
         if (CFG_NAME != "default"       &&
             CFG_NAME != "default_hflip" &&
             CFG_NAME != "no_ema"        &&
             CFG_NAME != "no_morph"      &&
             CFG_NAME != "no_gauss"      &&
-            CFG_NAME != "no_gamma_cor")
+            CFG_NAME != "no_gamma_cor"  &&
+            CFG_NAME != "no_scaler")
             $warning("Unknown CFG_NAME '%s'; falling back to CFG_DEFAULT",
                      CFG_NAME);
     end
@@ -141,9 +143,7 @@ module tb_sparevideo #(
         .V_FRONT_PORCH (V_FRONT_PORCH),
         .V_SYNC_PULSE  (V_SYNC_PULSE),
         .V_BACK_PORCH  (V_BACK_PORCH),
-        .SCALER        (SCALER),
-        .CFG           (CFG),
-        .SCALE_FILTER  (SCALE_FILTER)
+        .CFG           (CFG)
     ) u_dut (
         .clk_pix_in_i    (clk_pix_in),
         .clk_pix_out_i   (clk_pix_out),
@@ -221,8 +221,8 @@ module tb_sparevideo #(
             end
         end
 
-        cfg_out_width  = (SCALER == 1) ? (2 * cfg_width)  : cfg_width;
-        cfg_out_height = (SCALER == 1) ? (2 * cfg_height) : cfg_height;
+        cfg_out_width  = CFG.scaler_en ? (2 * cfg_width)  : cfg_width;
+        cfg_out_height = CFG.scaler_en ? (2 * cfg_height) : cfg_height;
 
         $display("TB sparevideo: %0dx%0d in -> %0dx%0d out, %0d frames, mode=%s",
                  cfg_width, cfg_height, cfg_out_width, cfg_out_height,
@@ -267,8 +267,8 @@ module tb_sparevideo #(
         end
         if (cfg_mode != "text") begin
             integer hdr_w, hdr_h;
-            hdr_w = (SCALER == 1) ? (2 * cfg_width)  : cfg_width;
-            hdr_h = (SCALER == 1) ? (2 * cfg_height) : cfg_height;
+            hdr_w = CFG.scaler_en ? (2 * cfg_width)  : cfg_width;
+            hdr_h = CFG.scaler_en ? (2 * cfg_height) : cfg_height;
             $fwrite(fd_out, "%c%c%c%c",
                 hdr_w[7:0],  hdr_w[15:8],
                 hdr_w[23:16], hdr_w[31:24]);

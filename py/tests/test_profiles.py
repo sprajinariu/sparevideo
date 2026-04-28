@@ -36,7 +36,11 @@ def _parse_int(sv: str) -> int:
     return int(sv)
 
 
-EXPECTED_PROFILES = {"default", "default_hflip", "no_ema", "no_morph", "no_gauss", "no_gamma_cor"}
+EXPECTED_PROFILES = {"default", "default_hflip", "no_ema", "no_morph", "no_gauss", "no_gamma_cor", "no_scaler"}
+
+# scale_filter is an SV enum (scale_filter_e), not an int literal. The Python
+# mirror uses lowercase string names ("nn", "bilinear") to mirror the enum.
+SCALE_FILTER_MAP = {"SCALE_NN": "nn", "SCALE_BILINEAR": "bilinear"}
 
 
 def test_profile_set_is_complete() -> None:
@@ -59,7 +63,14 @@ def test_profile_matches_sv(name: str) -> None:
 
     py_cfg = PROFILES[name]
     for field, py_val in py_cfg.items():
-        sv_val = _parse_int(_sv_field(block, field))
-        assert sv_val == int(py_val), (
-            f"{sv_name}.{field}: SV={sv_val} Py={py_val}"
-        )
+        sv_raw = _sv_field(block, field)
+        if field == "scale_filter":
+            # Compare enum name → mirror string (e.g. SCALE_BILINEAR ↔ "bilinear").
+            assert SCALE_FILTER_MAP[sv_raw] == py_val, (
+                f"{sv_name}.{field}: SV={sv_raw} Py={py_val!r}"
+            )
+        else:
+            sv_val = _parse_int(sv_raw)
+            assert sv_val == int(py_val), (
+                f"{sv_name}.{field}: SV={sv_val} Py={py_val}"
+            )

@@ -26,20 +26,11 @@ module sparevideo_top
     parameter int   V_FRONT_PORCH = sparevideo_pkg::V_FRONT_PORCH,
     parameter int   V_SYNC_PULSE  = sparevideo_pkg::V_SYNC_PULSE,
     parameter int   V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
-    // Structural output-resolution selector. 0 = output dims == input
-    // dims (today's path). 1 = 2x upscale at the output tail. The
-    // upscaler RTL is wired in by a later task; this parameter just
-    // exists now so downstream tasks have something to attach to.
-    parameter int   SCALER       = 0,
     // Single algorithm config bundle. See sparevideo_pkg::cfg_t for fields,
-    // and sparevideo_pkg::CFG_* for canonical profiles.
-    parameter sparevideo_pkg::cfg_t CFG = sparevideo_pkg::CFG_DEFAULT,
-    // Filter selection for axis_scale2x: "nn" or "bilinear". Only
-    // consumed when SCALER=1; the lint default sweep (SCALER=0) sees
-    // it as unused, so the waiver is on the parameter itself.
-    /* verilator lint_off UNUSEDPARAM */
-    parameter string SCALE_FILTER = "bilinear"
-    /* verilator lint_on UNUSEDPARAM */
+    // and sparevideo_pkg::CFG_* for canonical profiles. The 2x upscaler's
+    // structural presence and filter selection live here as CFG.scaler_en
+    // and CFG.scale_filter — no separate top-level parameters.
+    parameter sparevideo_pkg::cfg_t CFG = sparevideo_pkg::CFG_DEFAULT
 ) (
     // ---- Clocks & resets -------------------------------------------
     input  logic        clk_pix_in_i,    // input-rate pixel clock (sensor / source)
@@ -63,16 +54,16 @@ module sparevideo_top
     output logic [7:0]  vga_b_o         // blue channel
 );
 
-    // Resolve output VGA dims from SCALER. Used only for the VGA
+    // Resolve output VGA dims from CFG.scaler_en. Used only for the VGA
     // controller and FIFO sizing; the upstream path is unaffected.
-    localparam int H_ACTIVE_OUT      = (SCALER == 1) ? sparevideo_pkg::H_ACTIVE_OUT_2X      : H_ACTIVE;
-    localparam int V_ACTIVE_OUT      = (SCALER == 1) ? sparevideo_pkg::V_ACTIVE_OUT_2X      : V_ACTIVE;
-    localparam int H_FRONT_PORCH_OUT = (SCALER == 1) ? sparevideo_pkg::H_FRONT_PORCH_OUT_2X : H_FRONT_PORCH;
-    localparam int H_SYNC_PULSE_OUT  = (SCALER == 1) ? sparevideo_pkg::H_SYNC_PULSE_OUT_2X  : H_SYNC_PULSE;
-    localparam int H_BACK_PORCH_OUT  = (SCALER == 1) ? sparevideo_pkg::H_BACK_PORCH_OUT_2X  : H_BACK_PORCH;
-    localparam int V_FRONT_PORCH_OUT = (SCALER == 1) ? sparevideo_pkg::V_FRONT_PORCH_OUT_2X : V_FRONT_PORCH;
-    localparam int V_SYNC_PULSE_OUT  = (SCALER == 1) ? sparevideo_pkg::V_SYNC_PULSE_OUT_2X  : V_SYNC_PULSE;
-    localparam int V_BACK_PORCH_OUT  = (SCALER == 1) ? sparevideo_pkg::V_BACK_PORCH_OUT_2X  : V_BACK_PORCH;
+    localparam int H_ACTIVE_OUT      = CFG.scaler_en ? sparevideo_pkg::H_ACTIVE_OUT_2X      : H_ACTIVE;
+    localparam int V_ACTIVE_OUT      = CFG.scaler_en ? sparevideo_pkg::V_ACTIVE_OUT_2X      : V_ACTIVE;
+    localparam int H_FRONT_PORCH_OUT = CFG.scaler_en ? sparevideo_pkg::H_FRONT_PORCH_OUT_2X : H_FRONT_PORCH;
+    localparam int H_SYNC_PULSE_OUT  = CFG.scaler_en ? sparevideo_pkg::H_SYNC_PULSE_OUT_2X  : H_SYNC_PULSE;
+    localparam int H_BACK_PORCH_OUT  = CFG.scaler_en ? sparevideo_pkg::H_BACK_PORCH_OUT_2X  : H_BACK_PORCH;
+    localparam int V_FRONT_PORCH_OUT = CFG.scaler_en ? sparevideo_pkg::V_FRONT_PORCH_OUT_2X : V_FRONT_PORCH;
+    localparam int V_SYNC_PULSE_OUT  = CFG.scaler_en ? sparevideo_pkg::V_SYNC_PULSE_OUT_2X  : V_SYNC_PULSE;
+    localparam int V_BACK_PORCH_OUT  = CFG.scaler_en ? sparevideo_pkg::V_BACK_PORCH_OUT_2X  : V_BACK_PORCH;
 
     // FIFO overflow flags (write-clock domain; sticky until reset).
     // Checked by SVAs below.
@@ -434,12 +425,12 @@ module sparevideo_top
     // with the verilog-axis output pipeline (~16 in-flight) absorbed in the
     // backpressure response.
     //
-    // SCALER=1: scaler emits 4 output beats per input pixel in bursts at
+    // CFG.scaler_en=1: scaler emits 4 output beats per input pixel in bursts at
     // clk_dsp rate, while VGA drains at clk_pix_out (~clk_dsp/4). Per
     // output line of 640 pixels, the FIFO accumulates ~3W ≈ 480 entries
     // at peak. 1024 covers that with the verilog-axis output pipeline
     // (~16 in-flight) plus ~50% headroom.
-    localparam int OUT_FIFO_DEPTH = (SCALER == 1) ? 1024 : 256;
+    localparam int OUT_FIFO_DEPTH = CFG.scaler_en ? 1024 : 256;
 
     logic [$clog2(OUT_FIFO_DEPTH):0] fifo_out_depth;  // write-side (clk_dsp)
 
@@ -451,7 +442,8 @@ module sparevideo_top
     // gamma_to_pix_out: u_gamma_cor.m_axis -> (scale2x or fifo_out).s_axis.
     axis_if #(.DATA_W(24), .USER_W(1)) gamma_to_pix_out ();
 
-    // scale2x_to_pix_out: drives u_fifo_out.s_axis in both SCALER=0 and SCALER=1 cases.
+    // scale2x_to_pix_out: drives u_fifo_out.s_axis whether the scaler is
+    // present (CFG.scaler_en=1) or bypassed (CFG.scaler_en=0).
     axis_if #(.DATA_W(24), .USER_W(1)) scale2x_to_pix_out ();
 
     // sRGB display gamma correction at the post-mux tail. enable_i=0 is a
@@ -465,11 +457,22 @@ module sparevideo_top
     );
 
     generate
-        if (SCALER == 1) begin : g_scale2x
+        if (CFG.scaler_en && CFG.scale_filter == sparevideo_pkg::SCALE_NN) begin : g_scale2x_nn
             axis_scale2x #(
                 .H_ACTIVE_IN  (H_ACTIVE),
                 .V_ACTIVE_IN  (V_ACTIVE),
-                .SCALE_FILTER (SCALE_FILTER)
+                .SCALE_FILTER ("nn")
+            ) u_scale2x (
+                .clk_i   (clk_dsp_i),
+                .rst_n_i (rst_dsp_n_i),
+                .s_axis  (gamma_to_pix_out),
+                .m_axis  (scale2x_to_pix_out)
+            );
+        end else if (CFG.scaler_en) begin : g_scale2x_bilinear
+            axis_scale2x #(
+                .H_ACTIVE_IN  (H_ACTIVE),
+                .V_ACTIVE_IN  (V_ACTIVE),
+                .SCALE_FILTER ("bilinear")
             ) u_scale2x (
                 .clk_i   (clk_dsp_i),
                 .rst_n_i (rst_dsp_n_i),
@@ -477,7 +480,7 @@ module sparevideo_top
                 .m_axis  (scale2x_to_pix_out)
             );
         end else begin : g_no_scale2x
-            // SCALER=0: gamma feeds the FIFO directly. Bridge the two
+            // CFG.scaler_en=0: gamma feeds the FIFO directly. Bridge the two
             // interface bundles with explicit assigns so the FIFO sees
             // gamma_to_pix_out's signals on the scale2x_to_pix_out
             // handle (keeps the FIFO instantiation single-form).

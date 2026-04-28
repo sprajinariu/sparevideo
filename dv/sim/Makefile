@@ -33,8 +33,6 @@ FRAMES    ?= 4
 MODE      ?= text
 CTRL_FLOW ?= motion
 CFG       ?= default
-SCALER    ?= 0
-SCALE_FILTER ?= bilinear
 INFILE    ?= ../data/input.txt
 OUTFILE   ?= ../data/output.txt
 
@@ -60,7 +58,6 @@ VLT_FLAGS = --binary -sv --timing \
             --Mdir $(VOBJ_DIR) \
             --public-flat-rw \
             -GH_ACTIVE=$(WIDTH) -GV_ACTIVE=$(HEIGHT) -GCFG_NAME='"$(CFG)"' \
-            -GSCALER=$(SCALER) -GSCALE_FILTER='"$(SCALE_FILTER)"' \
             -Wno-TIMESCALEMOD \
             -Wno-INITIALDLY \
             -Wno-SELRANGE \
@@ -70,12 +67,12 @@ VLT_FLAGS = --binary -sv --timing \
             -Wno-CASEINCOMPLETE \
             --trace
 
-# Recompile when WIDTH/HEIGHT/CFG/SCALER/SCALE_FILTER change.
+# Recompile when WIDTH/HEIGHT/CFG change.
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(CFG) $(SCALER) $(SCALE_FILTER)" | cmp -s - $@ || \
-	  echo "$(WIDTH) $(HEIGHT) $(CFG) $(SCALER) $(SCALE_FILTER)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(CFG)" | cmp -s - $@ || \
+	  echo "$(WIDTH) $(HEIGHT) $(CFG)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo
@@ -198,6 +195,9 @@ test-ip-gamma-cor:
 	obj_tb_axis_gamma_cor/Vtb_axis_gamma_cor
 
 # --- axis_scale2x ---
+# Standalone unit test of axis_scale2x; SCALE_FILTER is a string parameter
+# directly on the IP (independent of the top-level CFG profile).
+SCALE_FILTER ?= bilinear
 test-ip-scale2x:
 	verilator $(VLT_TB_FLAGS) -GSCALE_FILTER='"$(SCALE_FILTER)"' \
 	  --top-module tb_axis_scale2x --Mdir obj_tb_axis_scale2x \

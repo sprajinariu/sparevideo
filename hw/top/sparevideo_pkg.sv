@@ -82,17 +82,24 @@ package sparevideo_pkg;
     // Future runtime CSR will use the active profile as the reset-value
     // table; the same field set carries over.
     // ---------------------------------------------------------------
+    // 2x scaler filter selection. Encoded as a single bit so the cfg_t
+    // struct stays packed; the top-level translates this to the
+    // axis_scale2x SCALE_FILTER string at elaboration time.
+    typedef enum logic { SCALE_NN, SCALE_BILINEAR } scale_filter_e;
+
     typedef struct packed {
-        component_t motion_thresh;       // raw |Y_cur - Y_prev| threshold
-        int         alpha_shift;         // EMA rate, non-motion pixels
-        int         alpha_shift_slow;    // EMA rate, motion pixels
-        int         grace_frames;        // aggressive-EMA grace after priming
-        int         grace_alpha_shift;   // EMA rate during grace window
-        logic       gauss_en;            // 3x3 Gaussian pre-filter on Y
-        logic       morph_en;            // 3x3 opening on mask
-        logic       hflip_en;            // horizontal mirror on input
-        logic       gamma_en;            // sRGB display gamma at output tail
-        pixel_t     bbox_color;          // overlay colour
+        component_t    motion_thresh;       // raw |Y_cur - Y_prev| threshold
+        int            alpha_shift;         // EMA rate, non-motion pixels
+        int            alpha_shift_slow;    // EMA rate, motion pixels
+        int            grace_frames;        // aggressive-EMA grace after priming
+        int            grace_alpha_shift;   // EMA rate during grace window
+        logic          gauss_en;            // 3x3 Gaussian pre-filter on Y
+        logic          morph_en;            // 3x3 opening on mask
+        logic          hflip_en;            // horizontal mirror on input
+        logic          gamma_en;            // sRGB display gamma at output tail
+        logic          scaler_en;           // 2x spatial upscaler at output tail
+        scale_filter_e scale_filter;        // axis_scale2x kernel (NN or bilinear)
+        pixel_t        bbox_color;          // overlay colour
     } cfg_t;
 
     // Default: all cleanup stages on, mirror OFF. Use CFG_DEFAULT_HFLIP if
@@ -105,6 +112,8 @@ package sparevideo_pkg;
         // does not arise. Real-video deployments should override with a higher value.
         // hflip_en=0: intentional — mirror is deliberately OFF in the project
         // default. Use CFG_DEFAULT_HFLIP for selfie-cam / mirrored-sensor setups.
+        // scaler_en=1: 2x upscaler ON by default → 640x480 VGA output.
+        // Use CFG_NO_SCALER for the legacy 320x240 native-resolution path.
         motion_thresh:     8'd16,
         alpha_shift:       3,
         alpha_shift_slow:  6,
@@ -114,6 +123,8 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
+        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -128,6 +139,8 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b1,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
+        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -144,6 +157,8 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
+        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -158,6 +173,8 @@ package sparevideo_pkg;
         morph_en:          1'b0,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
+        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -172,6 +189,8 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
+        scale_filter:      SCALE_BILINEAR,
         bbox_color:        24'h00_FF_00
     };
 
@@ -186,6 +205,26 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b0,
+        scaler_en:         1'b1,
+        scale_filter:      SCALE_BILINEAR,
+        bbox_color:        24'h00_FF_00
+    };
+
+    // 2x scaler bypassed — output stays at native 320x240. The upstream
+    // pipeline is unchanged; this profile is byte-identical to the
+    // pre-scaler design's CFG_DEFAULT for SCALER=0.
+    localparam cfg_t CFG_NO_SCALER = '{
+        motion_thresh:     8'd16,
+        alpha_shift:       3,
+        alpha_shift_slow:  6,
+        grace_frames:      0,
+        grace_alpha_shift: 1,
+        gauss_en:          1'b1,
+        morph_en:          1'b1,
+        hflip_en:          1'b0,
+        gamma_en:          1'b1,
+        scaler_en:         1'b0,
+        scale_filter:      SCALE_BILINEAR,   // ignored when scaler_en=0
         bbox_color:        24'h00_FF_00
     };
 

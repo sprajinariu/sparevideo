@@ -71,8 +71,10 @@ def _load_input_output(args):
 
     if args.mode == "text":
         in_w, in_h, n = width, height, frames
-        out_w = 2 * in_w if getattr(args, "scaler", 0) else in_w
-        out_h = 2 * in_h if getattr(args, "scaler", 0) else in_h
+        cfg = resolve_cfg(getattr(args, "cfg", "default"))
+        scaler_en = cfg.get("scaler_en", False)
+        out_w = 2 * in_w if scaler_en else in_w
+        out_h = 2 * in_h if scaler_en else in_h
         input_frames = read_frames(
             args.input, mode="text",
             width=in_w, height=in_h, num_frames=n,
@@ -115,7 +117,6 @@ def cmd_verify(args):
     cfg = resolve_cfg(getattr(args, "cfg", "default"))
     expected_frames = run_model(
         ctrl_flow, input_frames,
-        scaler=bool(args.scaler), scale_filter=args.scale_filter,
         **cfg,
     )
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
@@ -153,7 +154,6 @@ def cmd_render(args):
     if ctrl_flow:
         reference_frames = run_model(
             ctrl_flow, input_frames,
-            scaler=bool(args.scaler), scale_filter=args.scale_filter,
             **cfg,
         )
     out_path = render_grid(input_frames, output_frames, args.render_output,
@@ -172,8 +172,6 @@ def main():
     common.add_argument("--height", type=int, default=None)
     common.add_argument("--frames", type=int, default=None)
     common.add_argument("--mode", choices=["text", "binary"], default="text")
-    common.add_argument("--scaler", type=int, default=0, choices=[0, 1])
-    common.add_argument("--scale-filter", default="bilinear", choices=["nn", "bilinear"])
 
     # prepare
     p_prep = sub.add_parser("prepare", parents=[common],

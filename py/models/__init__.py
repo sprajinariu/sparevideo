@@ -34,13 +34,13 @@ def run_model(ctrl_flow: str, frames: list, **kwargs) -> list:
         )
     hflip_en     = kwargs.pop("hflip_en", False)
     gamma_en     = kwargs.pop("gamma_en", False)
-    scaler       = kwargs.pop("scaler", False)
+    scaler_en    = kwargs.pop("scaler_en", False)
     scale_filter = kwargs.pop("scale_filter", "bilinear")
     if hflip_en:
         frames = [_hflip(f) for f in frames]
     out = _MODELS[ctrl_flow](frames, **kwargs)
     if gamma_en:
         out = [_gamma_cor(f) for f in out]
-    if scaler:
+    if scaler_en:
         out = [_scale2x(f, mode=scale_filter) for f in out]
     return out
