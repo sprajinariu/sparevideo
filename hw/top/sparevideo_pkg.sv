@@ -47,14 +47,20 @@ package sparevideo_pkg;
     // Output VGA timing — selected by the top-level SCALER parameter.
     //
     // SCALER=0 (default): output dims == input dims (the existing
-    // path). SCALER=1: 2x upscale → 640x480, with a wider front/back
-    // porch envelope to keep blanking comfortable for the axis_ccl
-    // EOF FSM and the verilog-axis FIFO output pipeline.
+    // path). SCALER=1: 2x upscale → 640x480.
     //
-    // The 2x of every porch is intentional: the design aims for a
-    // ~25 MHz pix_clk in both modes, so doubling H_ACTIVE alone would
-    // halve the per-line wall-clock time. Doubling the porches keeps
-    // the per-line wall-clock identical and the FSM budgets unchanged.
+    // Both H and V porches double in the SCALER=1 case so that the
+    // OUTPUT-frame wall-clock matches 4x the INPUT-frame wall-clock
+    // exactly. With clk_pix_in : clk_pix_out = 1:4 (the two-pix-clk
+    // model in axis_scale2x-arch.md §7a), this gives sustained
+    // rate balance over an arbitrary frame count. Concretely:
+    //   T_in_frame  = (H_in + ph_in) × (V_in + pv_in) × T_pix_in
+    //   T_out_frame = (2H_in + 2ph_in) × (2V_in + 2pv_in) × T_pix_out
+    //               = 4 × (H_in + ph_in)(V_in + pv_in) × T_pix_out
+    //               = T_in_frame   when T_pix_in = 4·T_pix_out
+    // The rate-balance assumption is documented per-block in
+    // axis_scale2x-arch.md §7a; real silicon still needs genlock or a
+    // frame buffer to absorb crystal tolerances.
     // ---------------------------------------------------------------
     localparam int H_ACTIVE_OUT_2X      = 2 * H_ACTIVE;
     localparam int H_FRONT_PORCH_OUT_2X = 2 * H_FRONT_PORCH;
@@ -62,9 +68,9 @@ package sparevideo_pkg;
     localparam int H_BACK_PORCH_OUT_2X  = 2 * H_BACK_PORCH;
 
     localparam int V_ACTIVE_OUT_2X      = 2 * V_ACTIVE;
-    localparam int V_FRONT_PORCH_OUT_2X = V_FRONT_PORCH;   // vertical porches stay
-    localparam int V_SYNC_PULSE_OUT_2X  = V_SYNC_PULSE;    // unchanged: lines, not
-    localparam int V_BACK_PORCH_OUT_2X  = V_BACK_PORCH;    // pixels.
+    localparam int V_FRONT_PORCH_OUT_2X = 2 * V_FRONT_PORCH;
+    localparam int V_SYNC_PULSE_OUT_2X  = 2 * V_SYNC_PULSE;
+    localparam int V_BACK_PORCH_OUT_2X  = 2 * V_BACK_PORCH;
 
     // ---------------------------------------------------------------
     // Algorithm tuning bundle — one struct, named profiles.
