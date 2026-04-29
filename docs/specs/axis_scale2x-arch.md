@@ -13,15 +13,20 @@
 - [5. Internal Architecture](#5-internal-architecture)
   - [5.1 Data flow overview](#51-data-flow-overview)
   - [5.2 Counters, registers, and rotation](#52-counters-registers-and-rotation)
+    - [5.2.1 Buffer role assignment](#521-buffer-role-assignment)
+    - [5.2.2 SOF same-cycle override](#522-sof-same-cycle-override)
+    - [5.2.3 Beat-to-address decode](#523-beat-to-address-decode)
+    - [5.2.4 Rotation and boundary synchronization](#524-rotation-and-boundary-synchronization)
+    - [5.2.5 Per-row timing](#525-per-row-timing)
   - [5.3 Output beat formatter](#53-output-beat-formatter)
   - [5.4 Backpressure and buffer write policy](#54-backpressure-and-buffer-write-policy)
   - [5.5 Resource cost summary](#55-resource-cost-summary)
 - [6. Control Logic](#6-control-logic)
 - [7. Timing](#7-timing)
-- [7a. Clock Assumptions](#7a-clock-assumptions)
-- [8. Shared Types](#8-shared-types)
-- [9. Known Limitations](#9-known-limitations)
-- [10. References](#10-references)
+- [8. Clock Assumptions](#8-clock-assumptions)
+- [9. Shared Types](#9-shared-types)
+- [10. Known Limitations](#10-known-limitations)
+- [11. References](#11-references)
 
 ---
 
@@ -142,7 +147,7 @@ Equivalently, sliding the anchor across an input row `S[r] = (A, B, C, …, X)` 
             │                │                             │
             │                ▼                             │
             │     ┌──────────────────────┐                 │
-            │     │ buf0 / buf1 / buf2   │                 │
+            │     │ buf_mem[0..2]        │                 │
             │     │ (W × 24 b each)      │                 │
             │     └──────────┬───────────┘                 │
             │                │                             │
@@ -153,7 +158,7 @@ Equivalently, sliding the anchor across an input row `S[r] = (A, B, C, …, X)` 
             └──────────────────────────────────────────────┘
 ```
 
-The input writer fills one of the three line buffers as a row streams in, and the output emitter reads from the other two. A 2-bit register `wr_sel_q` selects the write target; the other two indices follow combinationally as `anchor_sel` and `prev_sel` (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the new anchor, the prior anchor becomes the new prev, and the prior prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
+The three line buffers are held in a single indexed array `buf_mem[3][W]` of 24-bit words; the per-row roles `write_buf = buf_mem[wr_sel_q]`, `anchor_buf = buf_mem[anchor_sel]`, and `prev_buf = buf_mem[prev_sel]` are aliases used throughout the rest of this document. The input writer fills `write_buf` as a row streams in, and the output emitter reads from `anchor_buf` and `prev_buf`. A 2-bit register `wr_sel_q` selects the write target; the other two indices follow combinationally as `anchor_sel` and `prev_sel` (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the new anchor, the prior anchor becomes the new prev, and the prior prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
 
 ### 5.2 Counters, registers, and rotation
 
@@ -169,7 +174,7 @@ The control logic is two independent counters plus boolean flags. There is no FS
 | `first_pair_q` | 1 b | Asserted while emitting pair 0 of a frame. Causes the input writer to also write each accepted pixel into `anchor_buf` (top-edge replicate seed). Cleared at the first rotation of the frame. |
 | `sof_pending_q` | 1 b | Latched on accepted `s_axis.tuser`; cleared on emitted `m_axis.tuser`. |
 
-#### Buffer role assignment
+#### 5.2.1 Buffer role assignment
 
 `anchor_sel` and `prev_sel` are derived combinationally from `wr_sel_q` so that the three roles (write, anchor, prev) always pick three different buffers:
 
@@ -183,7 +188,7 @@ endcase
 
 Equivalently `anchor_sel = (wr_sel_q − 1) mod 3` and `prev_sel = (wr_sel_q − 2) mod 3`. The anchor buffer holds the source row that is the anchor of the pair currently being emitted; the prev buffer holds the source row immediately above it.
 
-#### SOF same-cycle override
+#### 5.2.2 SOF same-cycle override
 
 When a SOF input beat is accepted, the seed write to `anchor_buf` must fire on the *same* clock edge — but `first_pair_q` is updated through a register, so its new value only takes effect on the following clock. To avoid losing the SOF column's seed, the buffer-write logic consults a combinational override instead of `first_pair_q` directly:
 
@@ -195,7 +200,7 @@ effective_first_pair = first_pair_q || is_sof_pixel
 
 `effective_first_pair` equals `first_pair_q` everywhere except on the SOF cycle, where it is forced high so the seed write fires immediately. It is used by the buffer-write policy in §5.4.
 
-#### Beat-to-address decode
+#### 5.2.3 Beat-to-address decode
 
 The output beat counter is decoded combinationally into a phase, a source column index, and a parity bit. The output formatter (§5.3) and the right-edge clamp consume these:
 
@@ -207,7 +212,7 @@ src_cp1      = (src_c == W − 1) ? src_c : src_c + 1               // right-edg
 beat_is_odd  = out_beat_q[0]
 ```
 
-#### Rotation and boundary synchronization
+#### 5.2.4 Rotation and boundary synchronization
 
 A "**rotation**" advances `wr_sel_q` by 1 mod 3 and re-arms the emitter for the next pair. It fires when the input writer and the output emitter have both completed their work:
 
@@ -225,9 +230,9 @@ first_pair_q ← 0
 
 A new frame (accepted `s_axis.tuser`) re-arms `first_pair_q ← 1`. `wr_sel_q` is **not** reset — the rotation is invariant under starting offset, and seeding to `anchor_sel` (rather than to a fixed buffer index) keeps pair 0's `prev_sel` aligned with the seed regardless of where the rotation cycle is when the new frame begins.
 
-#### Per-row timing
+#### 5.2.5 Per-row timing
 
-The writer and emitter run as two independent processes synchronized only at the rotation. Under a sustained 1:4 input-to-DSP rate ratio (the project's nominal rate balance — see §7a), the writer's `W` input cycles and the emitter's `4W` DSP cycles complete simultaneously and the rotation is seamless. If the upstream FIFO holds up the input, the emitter idles after its last beat (`emit_armed_q = 0`) until the input row finishes. If the downstream stalls the output, the writer idles after its last input (`in_done_q = 1`, `s_axis.tready = 0`) until the emitter catches up. Either way, the rotation waits for both.
+The writer and emitter run as two independent processes synchronized only at the rotation. Under a sustained 1:4 input-to-DSP rate ratio (the project's nominal rate balance — see §8), the writer's `W` input cycles and the emitter's `4W` DSP cycles complete simultaneously and the rotation is seamless. If the upstream FIFO holds up the input, the emitter idles after its last beat (`emit_armed_q = 0`) until the input row finishes. If the downstream stalls the output, the writer idles after its last input (`in_done_q = 1`, `s_axis.tready = 0`) until the emitter catches up. Either way, the rotation waits for both.
 
 ### 5.3 Output beat formatter
 
@@ -243,7 +248,7 @@ bot phase:             avg2(anchor_c, prev_c)   avg2( avg2(anchor_c, anchor_cp1)
 (out_beat in [2W, 4W))                                avg2(prev_c,   prev_cp1)   )
 ```
 
-`avg2(a, b)` is the per-channel 2-tap round-half-up average `((a + b + 1) >> 1)`, applied independently to R, G, and B. `avg2(a, a) = a` exactly. The bot-odd 4-tap is the sequential-2-tap form (avg2 of two avg2s), differing from a true 4-tap by at most ±1 LSB and matching `py/models/ops/scale2x.py` bit-exactly.
+`avg2(a, b)` is the per-channel 2-tap round-half-up average `((a + b + 1) >> 1)`, applied independently to R, G, and B. `avg2(a, a) = a` exactly. The bot-odd 4-tap is the sequential-2-tap form (avg2 of two avg2s), differing from a true 4-tap `(a + b + c + d + 2) >> 2` by at most ±1 LSB but reusing the same `avg2` adder and producing a fully specified rounding rule.
 
 Sideband signals on `m_axis`:
 
@@ -255,15 +260,16 @@ Sideband signals on `m_axis`:
 **Backpressure.**
 
 ```
-s_axis.tready = !in_done_q && !(s_axis.tvalid && s_axis.tuser && emit_armed_q)
-m_axis.tvalid = emit_armed_q
+sof_blocks_input = s_axis.tvalid && s_axis.tuser && emit_armed_q
+s_axis.tready    = !in_done_q && !sof_blocks_input
+m_axis.tvalid    = emit_armed_q
 ```
 
 Within a row, `s_axis.tready` stays high (input arrives at ~25% duty under the 1:4 clock ratio). It deasserts only between input `tlast` and the next rotation — typically zero cycles when the writer and emitter complete simultaneously, and a small number of cycles only if the upstream is faster than the nominal 1:4 rate.
 
-The second term defensively stalls acceptance of any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
+`sof_blocks_input` defensively stalls acceptance of any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
 
-**Buffer writes.** A pixel accepted while `s_axis.tready = 1` is always written to `write_buf[in_col_q]` (the buffer indexed by `wr_sel_q`). When `effective_first_pair = 1` (defined in §5.2), the same pixel is *also* written to `anchor_buf[in_col_q]` (the buffer indexed by `anchor_sel`). The seed lands where pair 0's `prev_sel` will read it after the next rotation, so pair 0's bot row reads `prev == anchor` (top-edge replicate). `anchor_buf` is unused for *reads* during row 0 intake (`emit_armed_q = 0` during the latency phase), so the seed write to `anchor_sel` doesn't conflict with anything.
+**Buffer writes.** A pixel accepted while `s_axis.tready = 1` is always written to `write_buf[in_col_q]`. When `effective_first_pair = 1` (defined in §5.2.2), the same pixel is *also* written to `anchor_buf[in_col_q]`. The seed lands where pair 0's `prev_sel` will read it after the next rotation, so pair 0's bot row reads `prev == anchor` (top-edge replicate). `anchor_buf` is unused for *reads* during row 0 intake (`emit_armed_q = 0` during the latency phase), so the seed write to `anchor_sel` doesn't conflict with anything.
 
 **Frame entry.** Accepted `s_axis.tuser` re-arms `first_pair_q ← 1`. `wr_sel_q` continues rotating from wherever the previous frame left it; the seed-to-`anchor_sel` rule keeps the rotation invariant under starting offset.
 
@@ -273,7 +279,7 @@ Quantities at `H_ACTIVE_IN = 320`. Per-channel adders are 9-bit; counts are pre-
 
 | Resource | Count |
 |---|---|
-| Line buffers (`buf0`, `buf1`, `buf2`) | 3 × 320 × 24 b = 23,040 b. |
+| Line buffers (`buf_mem[0..2]`) | 3 × 320 × 24 b = 23,040 b. |
 | Counters | `in_col_q` (9 b) + `wr_sel_q` (2 b) + `out_beat_q` (11 b) = 22 b. |
 | Sideband regs | `in_done_q`, `emit_armed_q`, `first_pair_q`, `sof_pending_q` = 4 b. |
 | `avg2` instances per channel | 5 — `avg2(anchor_c, anchor_cp1)`, `avg2(prev_c, prev_cp1)`, `avg2(anchor_c, prev_c)`, and the two outer averages of the bot-odd sequential-2-tap formula. 15 9-bit adders total across R/G/B before any synthesis sharing. |
@@ -309,7 +315,7 @@ The 1-row startup latency is the cost of the uniform schedule: pair 0's bot row 
 
 ---
 
-## 7a. Clock Assumptions
+## 8. Clock Assumptions
 
 This module lives in `clk_dsp`. Correctness depends on the surrounding top-level wiring, where the input AXIS arrives via a CDC FIFO from `clk_pix_in_i` and the output AXIS leaves via a CDC FIFO into `clk_pix_out_i`.
 
@@ -320,7 +326,7 @@ This module lives in `clk_dsp`. Correctness depends on the surrounding top-level
 
 ---
 
-## 8. Shared Types
+## 9. Shared Types
 
 | Symbol | Usage |
 |--------|-------|
@@ -331,7 +337,7 @@ The module declares its data registers and arithmetic intermediates as raw `logi
 
 ---
 
-## 9. Known Limitations
+## 10. Known Limitations
 
 - **`H_ACTIVE_IN` must be even.** The horizontal output width is `2·H_ACTIVE_IN`; the right-edge-replication clamp assumes the input width is exact. Odd widths are not supported.
 - **Right-edge replication is the only horizontal edge policy.** No reflect, no zero-pad. The penultimate horizontal interpolant past the last column duplicates the last sample.
@@ -342,7 +348,7 @@ The module declares its data registers and arithmetic intermediates as raw `logi
 
 ---
 
-## 10. References
+## 11. References
 
 - [`sparevideo-top-arch.md`](sparevideo-top-arch.md) — Top-level pipeline.
 - **ARM IHI0051A — AMBA AXI4-Stream Protocol Specification** — §2.2 (handshake), §2.7 (`tuser`/`tlast`).

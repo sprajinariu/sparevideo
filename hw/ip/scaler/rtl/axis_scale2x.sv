@@ -40,10 +40,8 @@ module axis_scale2x #(
     localparam int OUT_COL_W = $clog2(2*H_ACTIVE_IN + 1);
     localparam int BEAT_W    = $clog2(4*H_ACTIVE_IN + 1);
 
-    // ---- Three line buffers ----
-    logic [23:0] buf0 [H_ACTIVE_IN];
-    logic [23:0] buf1 [H_ACTIVE_IN];
-    logic [23:0] buf2 [H_ACTIVE_IN];
+    // ---- Three line buffers, indexed by 2-bit selector ----
+    logic [23:0] buf_mem [3][H_ACTIVE_IN];
 
     // ---- Buffer rotation ----
     logic [1:0] wr_sel_q;
@@ -87,62 +85,59 @@ module axis_scale2x #(
     logic                  beat_is_odd;
 
     assign in_bot_phase = (out_beat_q >= BEAT_W'(2*H_ACTIVE_IN));
-    assign phase_col    = in_bot_phase
-                            ? OUT_COL_W'(out_beat_q - BEAT_W'(2*H_ACTIVE_IN))
-                            : OUT_COL_W'(out_beat_q);
+    assign phase_col    = in_bot_phase ? OUT_COL_W'(out_beat_q - BEAT_W'(2*H_ACTIVE_IN))
+                                       : OUT_COL_W'(out_beat_q);
     assign src_c        = phase_col[OUT_COL_W-1:1];
-    assign src_cp1      = (src_c == COL_W'(H_ACTIVE_IN - 1))
-                            ? src_c
-                            : COL_W'(src_c + COL_W'(1));
+    assign src_cp1      = (src_c == COL_W'(H_ACTIVE_IN - 1)) ? src_c
+                                                             : COL_W'(src_c + COL_W'(1));
     assign beat_is_odd  = out_beat_q[0];
 
     // ---- Buffer reads (combinational, two reads per buffer) ----
+    // Naming: <row>_<col>. Rows:
+    //   anchor = current input row (the source row whose 2-row output pair
+    //            is being emitted; the bottom row of the source 2x2);
+    //   prev   = input row immediately above the anchor; read only in the
+    //            bot output phase for vertical interpolation.
+    // Cols:
+    //   c   = source column src_c;
+    //   cp1 = source column src_c+1 (clamped at the right edge).
+    // The four reads form the 2x2 source neighbourhood feeding the
+    // bilinear formatter below.
     logic [23:0] anchor_c, anchor_cp1, prev_c, prev_cp1;
-    always_comb begin
-        unique case (anchor_sel)
-            2'd0:    begin anchor_c = buf0[src_c]; anchor_cp1 = buf0[src_cp1]; end
-            2'd1:    begin anchor_c = buf1[src_c]; anchor_cp1 = buf1[src_cp1]; end
-            default: begin anchor_c = buf2[src_c]; anchor_cp1 = buf2[src_cp1]; end
-        endcase
-        unique case (prev_sel)
-            2'd0:    begin prev_c = buf0[src_c]; prev_cp1 = buf0[src_cp1]; end
-            2'd1:    begin prev_c = buf1[src_c]; prev_cp1 = buf1[src_cp1]; end
-            default: begin prev_c = buf2[src_c]; prev_cp1 = buf2[src_cp1]; end
-        endcase
-    end
+    assign anchor_c   = buf_mem[anchor_sel][src_c];
+    assign anchor_cp1 = buf_mem[anchor_sel][src_cp1];
+    assign prev_c     = buf_mem[prev_sel  ][src_c];
+    assign prev_cp1   = buf_mem[prev_sel  ][src_cp1];
 
     // ---- Output beat formatter ----
     logic [23:0] tx_data;
     always_comb begin
-        if (!in_bot_phase) begin
-            tx_data = beat_is_odd ? avg2(anchor_c, anchor_cp1) : anchor_c;
-        end else begin
-            tx_data = beat_is_odd
-                        ? avg2(avg2(anchor_c, anchor_cp1),
-                               avg2(prev_c,   prev_cp1))
-                        : avg2(anchor_c, prev_c);
-        end
+        unique case ({in_bot_phase, beat_is_odd})
+            2'b00:   tx_data = anchor_c;                            // top, even col
+            2'b01:   tx_data = avg2(anchor_c, anchor_cp1);          // top, odd  col
+            2'b10:   tx_data = avg2(anchor_c, prev_c);              // bot, even col
+            default: tx_data = avg2(avg2(anchor_c, anchor_cp1),     // bot, odd  col
+                                    avg2(prev_c,   prev_cp1));
+        endcase
     end
 
-    // ---- SOF same-cycle override ----
-    // first_pair_q rearms at the SOF tail of always_ff (NBA), but the
-    // seed write needs the post-SOF value in the SAME cycle as the SOF
-    // accept. effective_first_pair makes the buffer-write code see
-    // first_pair_q=1 on the SOF cycle of every new frame.
     logic do_accept, do_emit;
     logic is_sof_pixel;
+    // Seed-write path needs first_pair_q=1 on the SOF cycle itself, before
+    // the NBA assignment lands.
     logic effective_first_pair;
+    // Defensive stall against malformed back-to-back frames; under nominal
+    // V_BLANK no SOF arrives while emit is still armed.
+    logic sof_blocks_input;
 
-    assign do_accept           = s_axis.tvalid && s_axis.tready;
-    assign do_emit             = m_axis.tvalid && m_axis.tready;
-    assign is_sof_pixel        = do_accept && s_axis.tuser;
+    assign do_accept            = s_axis.tvalid && s_axis.tready;
+    assign do_emit              = m_axis.tvalid && m_axis.tready;
+    assign is_sof_pixel         = do_accept && s_axis.tuser;
     assign effective_first_pair = first_pair_q || is_sof_pixel;
+    assign sof_blocks_input     = s_axis.tvalid && s_axis.tuser && emit_armed_q;
 
     // ---- AXIS port drives ----
-    // tready stalls a SOF input while emit is still in progress (defensive
-    // against malformed back-to-back frames; see plan §"SOF stall"). Under
-    // nominal V_BLANK it is a no-op.
-    assign s_axis.tready = !in_done_q && !(s_axis.tvalid && s_axis.tuser && emit_armed_q);
+    assign s_axis.tready = !in_done_q && !sof_blocks_input;
     assign m_axis.tdata  = tx_data;
     assign m_axis.tvalid = emit_armed_q;
     assign m_axis.tlast  = emit_armed_q && ((out_beat_q == BEAT_W'(2*H_ACTIVE_IN - 1)) ||
@@ -161,22 +156,12 @@ module axis_scale2x #(
         end else begin
             // ---- Input writer ----
             if (do_accept) begin
-                // Write to write_buf
-                unique case (wr_sel_q)
-                    2'd0:    buf0[in_col_q] <= s_axis.tdata;
-                    2'd1:    buf1[in_col_q] <= s_axis.tdata;
-                    default: buf2[in_col_q] <= s_axis.tdata;
-                endcase
-                // First-pair top-edge replicate seed: also write to anchor_buf
-                // (which becomes prev_buf for pair 0 emit after the next
-                // rotation; see plan §"Why the seed goes to anchor_sel").
-                if (effective_first_pair) begin
-                    unique case (anchor_sel)
-                        2'd0:    buf0[in_col_q] <= s_axis.tdata;
-                        2'd1:    buf1[in_col_q] <= s_axis.tdata;
-                        default: buf2[in_col_q] <= s_axis.tdata;
-                    endcase
-                end
+                buf_mem[wr_sel_q][in_col_q] <= s_axis.tdata;
+                // Top-edge replicate seed: anchor_buf becomes prev_buf for
+                // pair 0's emit after the next rotation, so seeding it with
+                // row 0 makes the bot phase read row 0 as its "row above".
+                if (effective_first_pair)
+                    buf_mem[anchor_sel][in_col_q] <= s_axis.tdata;
                 if (s_axis.tuser)
                     sof_pending_q <= 1'b1;
                 if (s_axis.tlast) begin
@@ -200,10 +185,8 @@ module axis_scale2x #(
             end
 
             // ---- Boundary rotation ----
-            // Triggers when input row is done AND emitter is idle. There may
-            // be a 1-cycle bubble between consecutive pairs (m_axis.tvalid=0
-            // for one cycle while emit_armed_q transitions through 0); this
-            // is acceptable and adds 1/(4W) overhead.
+            // 1-cycle bubble between pairs (emit_armed_q dips through 0)
+            // is acceptable: 1/(4W) rate overhead.
             if (in_done_q && !emit_armed_q) begin
                 wr_sel_q     <= (wr_sel_q == 2'd2) ? 2'd0 : (wr_sel_q + 2'd1);
                 in_done_q    <= 1'b0;
@@ -211,10 +194,8 @@ module axis_scale2x #(
                 first_pair_q <= 1'b0;
             end
 
-            // ---- SOF re-arm ----
-            // Accepted SOF input rearms first_pair_q for the new frame's
-            // top-edge replicate seeding. wr_sel_q is NOT reset — the
-            // rotation is invariant under starting offset.
+            // SOF re-arm. wr_sel_q is NOT reset — the rotation is invariant
+            // under starting offset.
             if (is_sof_pixel) begin
                 first_pair_q <= 1'b1;
             end
