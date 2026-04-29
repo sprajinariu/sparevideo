@@ -19,6 +19,7 @@ Architecture details, module interfaces, and design decisions are documented in 
 | [`axis_gamma_cor-arch.md`](docs/specs/axis_gamma_cor-arch.md) | Per-channel sRGB gamma correction at output tail (33-entry LUT + linear interp, `enable_i` bypass) |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
+| [`axis_scale2x-arch.md`](docs/specs/axis_scale2x-arch.md) | 2x bilinear spatial upscaler; controlled via `CFG.scaler_en` |
 | [`rgb2ycrcb-arch.md`](docs/specs/rgb2ycrcb-arch.md) | RGB888 → Y8 color-space converter |
 | [`ram-arch.md`](docs/specs/ram-arch.md) | Dual-port byte RAM, region descriptor model |
 | [`vga_controller-arch.md`](docs/specs/vga_controller-arch.md) | VGA timing generator |
@@ -53,6 +54,9 @@ hw/ip/filters/rtl/
 
 hw/ip/gamma/rtl/
 └── axis_gamma_cor.sv          Per-channel sRGB gamma correction (33-entry LUT, linear interp, 1-cycle skid, enable_i bypass)
+
+hw/ip/scaler/rtl/
+└── axis_scale2x.sv            2x spatial upscaler (NN or bilinear); instantiated under CFG.scaler_en generate gate
 
 hw/ip/motion/rtl/
 ├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
@@ -190,6 +194,7 @@ make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencin
 make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
+make run-pipeline CFG=no_scaler              # disable 2x output upscaler (output at input resolution)
 
 # Run per-block IP unit testbenches (fast, Verilator)
 make test-ip
@@ -257,7 +262,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator`) |
 | `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), `mask` (raw motion mask as B/W image), or `ccl_bbox` (mask-as-grey + CCL bboxes) |
-| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed), `no_gamma_cor` (sRGB gamma bypassed). |
+| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, 2x scaler ON, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed), `no_gamma_cor` (sRGB gamma bypassed), `no_scaler` (2x output upscaler disabled). |
 | `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |

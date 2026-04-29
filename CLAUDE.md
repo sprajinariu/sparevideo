@@ -24,7 +24,7 @@ All design specs, architecture docs, and implementation plans live under `docs/p
 
 ## Project Overview
 
-sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with CCL-driven N-way bounding-box overlay, mask display, or a `ccl_bbox` debug mode that shows the mask as a grey canvas under the CCL bboxes), crosses back to the pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. The VGA controller is now part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
+sparevideo is a video processing pipeline project. The top-level design (`sparevideo_top`) accepts an AXI4-Stream video input, crosses into a 100 MHz DSP clock domain via a vendored `axis_async_fifo`, runs through a control-flow-selectable processing pipeline (passthrough, motion detection with CCL-driven N-way bounding-box overlay, mask display, or a `ccl_bbox` debug mode that shows the mask as a grey canvas under the CCL bboxes), crosses back to the output pixel clock, and drives the instantiated `vga_controller` to produce RGB + hsync/vsync. There are two pixel clock domains: `clk_pix_in_i` (input AXIS, sensor rate) and `clk_pix_out_i` (VGA, display rate); the shared 100 MHz `clk_dsp_i` carries the pipeline. When `CFG.scaler_en=0` the two pixel clocks are tied together; when `CFG.scaler_en=1` `clk_pix_out_i` runs at 4x `clk_pix_in_i` so VGA can drain the 2x-scaled output at full rate. The VGA controller is part of the DUT; the testbench drives AXI4-Stream input and captures VGA output. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active processing path; the TB drives it via the `+CTRL_FLOW=` plusarg.
 
 All RTL is SystemVerilog (.sv files). Use synthesis-style SV only (no SVA assertions, no classes) — the project targets Verilator and uses SV interfaces (`axis_if`, `bbox_if`) for AXI-Stream and bbox sideband bundles.
 
@@ -58,6 +58,10 @@ make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
 
+# Upscaler profile selection
+make run-pipeline CFG=default                       # 640x480 output, bilinear (default, 2x scaler enabled)
+make run-pipeline CFG=no_scaler                     # 320x240 output (legacy native-resolution path, scaler disabled)
+
 # 'make prepare' saves WIDTH/HEIGHT/FRAMES/MODE/CTRL_FLOW/CFG to dv/data/config.mk.
 # Subsequent steps load it automatically — no need to repeat options.
 make prepare SOURCE="synthetic:moving_box" WIDTH=640 HEIGHT=480 FRAMES=8 MODE=binary
@@ -75,6 +79,8 @@ make setup                   # One-time setup (install deps)
 
 > **Note:** Verilator simulation previously had a race condition — `tuser` was sampled as 0 on the posedge of `clk_pix` due to INITIALDLY (NBA-in-initial-block treated as blocking). Fixed by introducing `drv_*` intermediary signals written with blocking `=` in the initial block, and an `always_ff @(negedge clk_pix)` as the sole driver of `s_axis_*`. Driving on negedge ensures DUT inputs are stable at the posedge sampling point.
 
+> **Scaler configuration:** The 2x bilinear spatial upscaler is part of the `cfg_t` profile struct. Field `CFG.scaler_en` (boolean) gates the scaler; all standard profiles have `scaler_en=True` by default. The `no_scaler` profile sets `scaler_en=False` for legacy native-resolution operation.
+
 ## Project Structure
 
 - `hw/top/sparevideo_pkg.sv` — Project-wide package: parameters, types, region descriptors, control flow constants
@@ -88,6 +94,7 @@ make setup                   # One-time setup (install deps)
 - `hw/ip/ccl/rtl/` — Streaming connected-components labeling (axis_ccl)
 - `hw/ip/overlay/rtl/` — Generic rectangle overlay on RGB video (axis_overlay_bbox)
 - `hw/ip/gamma/rtl/` — Per-channel sRGB gamma correction at output tail (axis_gamma_cor: 33-entry LUT + linear interp, 1-cycle skid, enable_i bypass; enabled via `gamma_en` field of `cfg_t`)
+- `hw/ip/scaler/rtl/` — 2x spatial upscaler (axis_scale2x: NN + bilinear modes; instantiated under CFG.scaler_en generate gate; OUT_FIFO_DEPTH bumps to 1024 in scaled mode)
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library

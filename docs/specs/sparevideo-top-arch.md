@@ -34,7 +34,7 @@
 
 ## 1. Purpose and Scope
 
-`sparevideo_top` is the top-level video processing pipeline. It accepts an AXI4-Stream RGB888 video input on a 25 MHz pixel clock (`clk_pix`), crosses the stream into a 100 MHz DSP clock domain, runs a **control-flow-selectable** processing pipeline, crosses back to the pixel clock, and drives a VGA controller to produce analogue RGB + hsync/vsync output.
+`sparevideo_top` is the top-level video processing pipeline. It accepts an AXI4-Stream RGB888 video input on the input pixel clock (`clk_pix_in_i`, nominally 25 MHz), crosses the stream into a 100 MHz DSP clock domain, runs a **control-flow-selectable** processing pipeline, crosses back to the output pixel clock (`clk_pix_out_i`), and drives a VGA controller to produce analogue RGB + hsync/vsync output. When `CFG.scaler_en=0` the two pixel clocks are tied together; when `CFG.scaler_en=1` `clk_pix_out_i` runs at 4x `clk_pix_in_i` so the VGA can drain the 2x-upscaled output stream at full rate.
 
 A top-level `ctrl_flow_i` sideband signal (2-bit) selects the active processing path. **Motion** is the production flow; **passthrough**, **mask display**, and **ccl_bbox** are debug/bring-up aids:
 - **Passthrough** (`ctrl_flow_i = 2'b00`): input pixels pass directly to the output FIFO with no processing.
@@ -62,7 +62,8 @@ sparevideo_top (top level)
 ├── axis_ccl           (u_ccl)           — cleaned mask → N_OUT × {min_x,max_x,min_y,max_y,valid}
 ├── axis_overlay_bbox  (u_overlay_bbox)  — draw N_OUT-wide bbox rectangles on RGB video
 ├── axis_gamma_cor     (u_gamma_cor)     — per-channel sRGB gamma correction; runtime bypassable
-├── axis_async_fifo    (u_fifo_out)      — CDC clk_dsp → clk_pix, vendored verilog-axis
+├── axis_scale2x       (u_scale2x)       — 2x spatial upscaler (NN or bilinear); compile-time gate (CFG.scaler_en)
+├── axis_async_fifo    (u_fifo_out)      — CDC clk_dsp → clk_pix_out, vendored verilog-axis
 └── vga_controller     (u_vga)          — streaming pixel → VGA timing + RGB output
 ```
 
@@ -73,15 +74,17 @@ sparevideo_top (top level)
 | Signal | Direction | Width | Description |
 |--------|-----------|-------|-------------|
 | **Clocks and resets** | | | |
-| `clk_pix_i` | input | 1 | 25 MHz pixel clock — input path and VGA output domain |
-| `clk_dsp_i` | input | 1 | 100 MHz DSP clock — motion pipeline domain |
-| `rst_pix_n_i` | input | 1 | Active-low synchronous reset, `clk_pix` domain |
+| `clk_pix_in_i` | input | 1 | Input pixel clock (nominally 25 MHz) — sensor / input AXIS domain |
+| `clk_pix_out_i` | input | 1 | Output pixel clock — VGA output domain. Tied to `clk_pix_in_i` when `CFG.scaler_en=0`; runs at 4x `clk_pix_in_i` when `CFG.scaler_en=1` to drain the 2x-upscaled stream. |
+| `clk_dsp_i` | input | 1 | 100 MHz DSP clock — motion / scaler pipeline domain |
+| `rst_pix_in_n_i` | input | 1 | Active-low synchronous reset, `clk_pix_in` domain |
+| `rst_pix_out_n_i` | input | 1 | Active-low synchronous reset, `clk_pix_out` domain |
 | `rst_dsp_n_i` | input | 1 | Active-low synchronous reset, `clk_dsp` domain |
-| **AXI4-Stream video input (clk_pix domain)** | | | |
+| **AXI4-Stream video input (clk_pix_in domain)** | | | |
 | `s_axis` | input | `axis_if.rx` | RGB888 pixel input stream (DATA_W=24, USER_W=1; `tdata={R,G,B}`, tuser=SOF, tlast=EOL). tready back-pressures the TB/source producer. |
 | **Control flow** | | | |
 | `ctrl_flow_i` | input | 2 | Control flow select: 2'b00 = passthrough, 2'b01 = motion, 2'b10 = mask, 2'b11 = ccl_bbox |
-| **VGA output (clk_pix domain)** | | | |
+| **VGA output (clk_pix_out domain)** | | | |
 | `vga_hsync_o` | output | 1 | Horizontal sync, active-low |
 | `vga_vsync_o` | output | 1 | Vertical sync, active-low |
 | `vga_r_o` | output | 8 | Red channel (0 during blanking) |
@@ -92,8 +95,8 @@ sparevideo_top (top level)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `H_ACTIVE` | `int` | pkg (320) | Active pixels per line. |
-| `V_ACTIVE` | `int` | pkg (240) | Active lines per frame. |
+| `H_ACTIVE` | `int` | pkg (320) | Active pixels per line (input dims; pipeline / motion / scaler-input all run at this width). |
+| `V_ACTIVE` | `int` | pkg (240) | Active lines per frame (input dims). |
 | `H_FRONT_PORCH` | `int` | pkg (4) | VGA horizontal front-porch length, in pixel clocks. |
 | `H_SYNC_PULSE` | `int` | pkg (8) | VGA horizontal sync-pulse width, in pixel clocks. |
 | `H_BACK_PORCH` | `int` | pkg (4) | VGA horizontal back-porch length, in pixel clocks. |
@@ -110,6 +113,7 @@ sparevideo_top (top level)
 | `CFG.morph_en` | `logic` | `1` | Enable the 3×3 morphological opening (`u_morph_open`) on the mask. `0` bypasses (raw mask flows downstream). |
 | `CFG.hflip_en` | `logic` | `0` | Enable the horizontal mirror (`u_hflip`) at the head of the proc-clock pipeline. `0` passes the input through unchanged. |
 | `CFG.gamma_en` | `logic` | `1` | Enable the sRGB gamma-correction stage (`u_gamma_cor`) at the post-mux tail. `0` bypasses (linear-light pixels reach the output FIFO). |
+| `CFG.scaler_en` | `logic` | `1` | Enable the 2x bilinear spatial upscaler (`u_scale2x`) before the output FIFO. `0` bypasses (output resolution equals input resolution). |
 | `CFG.bbox_color` | `pixel_t` (24-bit RGB) | `0x00_FF_00` (green) | RGB triple drawn by `u_overlay_bbox` for every bounding-box edge pixel. Driven into `u_overlay_bbox.BBOX_COLOR`. |
 | `CCL_N_LABELS_INT` | `int` | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0). |
 | `CCL_N_OUT` | `int` | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox`. |
@@ -119,7 +123,9 @@ sparevideo_top (top level)
 
 `H_ACTIVE` and `V_ACTIVE` set the active video region; the eight porch parameters set the surrounding blanking intervals. Together they determine the VGA frame format used by `u_vga` and the timing the input driver must mirror.
 
-`CFG` is resolved at compile time from the `CFG_NAME` string (TB plusarg / Makefile `CFG=` knob) and routed by `sparevideo_top` to the appropriate sub-module ports. The Python reference models in `py/models/` mirror the same fields via `py/profiles.py`; a parity test (`py/tests/test_profiles.py`) guards against drift. Adding a new algorithm knob costs one field in `cfg_t`, one matching key in every profile dict in `py/profiles.py`, and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. The existing profile set is `default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`.
+`CFG` is resolved at compile time from the `CFG_NAME` string (TB plusarg / Makefile `CFG=` knob) and routed by `sparevideo_top` to the appropriate sub-module ports. The Python reference models in `py/models/` mirror the same fields via `py/profiles.py`; a parity test (`py/tests/test_profiles.py`) guards against drift. Adding a new algorithm knob costs one field in `cfg_t`, one matching key in every profile dict in `py/profiles.py`, and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. The existing profile set is `default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`, `no_scaler`.
+
+**Output resolution.** `H_ACTIVE_OUT/V_ACTIVE_OUT` come from `sparevideo_pkg::*_OUT_2X` when `CFG.scaler_en=1`; otherwise they equal the input dims. The VGA controller uses the OUT dims; the input AXIS, motion pipeline, gamma stage, and scaler input all stay at input dims. The TB drives input frames at input dims and captures output at output dims. Rate balance between the input and output sides is enforced by the clock-period ratio: when `CFG.scaler_en=1` the caller drives `clk_pix_in_i` at one-quarter the frequency of `clk_pix_out_i`; when `CFG.scaler_en=0` they're tied to the same clock.
 
 `ctrl_flow_i` is a quasi-static sideband signal (set before the frame, not changed mid-frame).
 
@@ -205,7 +211,7 @@ Why this matters: the natural front-camera mental model is that the user's right
 
 **Backpressure note:** `axis_hflip` alternates between RX (asserts `s_axis_tready_o`) and TX (asserts `m_axis_tvalid_o`) phases over a single line buffer. During TX, upstream is stalled; the input CDC FIFO must absorb up to one line of write-clock pixels. `IN_FIFO_DEPTH = 128` is sized for `pix_clk = 25 MHz`, `dsp_clk = 100 MHz`, `H_ACTIVE = 320` (worst case ~80 entries with margin).
 
-The output CDC FIFO mirrors this concern in the opposite direction: hflip emits 320 pixels in 320 dsp_clk cycles during TX, while VGA drains at the slower pix_clk rate, so the FIFO accumulates ~3*H_ACTIVE/4 entries per line until backpressure throttles upstream. `OUT_FIFO_DEPTH = 256` is sized for H_ACTIVE = 320; future SCALER=1 configurations (H_ACTIVE = 640) will need a proportionally larger depth.
+The output CDC FIFO mirrors this concern in the opposite direction: hflip emits 320 pixels in 320 dsp_clk cycles during TX, while VGA drains at the slower pix_clk rate, so the FIFO accumulates ~3*H_ACTIVE/4 entries per line until backpressure throttles upstream. `OUT_FIFO_DEPTH = 256` is sized for H_ACTIVE = 320; the `CFG.scaler_en=1` configuration (output H_ACTIVE = 640, scaler emits 4 beats per input pixel in bursts) bumps `OUT_FIFO_DEPTH` to 1024 — see §6.1.
 
 ### 5.3 `u_morph_open` — clean up speckle in the mask
 
@@ -284,11 +290,11 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
                          sparevideo_top
   ┌──────────────────────────────────────────────────────────────────────────────┐
   │                                                                              │
-  │  s_axis (axis_if.rx: RGB888 + tlast + tuser)  clk_pix domain                 │
+  │  s_axis (axis_if.rx: RGB888 + tlast + tuser)  clk_pix_in domain              │
   │  ─────────────────────────────────────────────────────────                   │
   │           │                                                                  │
   │           ▼                                                                  │
-  │    ┌─────────────┐  CDC: clk_pix → clk_dsp                                   │
+  │    ┌─────────────┐  CDC: clk_pix_in → clk_dsp                                │
   │    │  u_fifo_in  │                                                           │
   │    └──────┬──────┘                                                           │
   │           │  pix_in_to_hflip (axis_if: RGB + tlast + tuser)  clk_dsp domain  │
@@ -352,12 +358,19 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
   │    │  ccl_bbox    → overlay_to_pix_out (grey canvas)  │                      │
   │    └────────────────────┬─────────────────────────────┘                      │
   │                         │  proc (axis_if: RGB + tlast + tuser)               │
+  │                         │  → u_gamma_cor (sRGB encode; CFG.gamma_en bypass)  │
   │                         ▼                                                    │
-  │                 ┌──────────────┐  CDC: clk_dsp → clk_pix                     │
-  │                 │  u_fifo_out  │                                             │
+  │                 ┌──────────────┐  2x upscaler when CFG.scaler_en=1;         │
+  │                 │  u_scale2x   │  flat bridge when CFG.scaler_en=0            │
+  │                 └──────┬───────┘                                             │
+  │                        │  scale2x_to_pix_out (axis_if: RGB + tlast + tuser)  │
+  │                        ▼                                                     │
+  │                 ┌──────────────┐  CDC: clk_dsp → clk_pix_out                 │
+  │                 │  u_fifo_out  │  (DEPTH = 1024 when CFG.scaler_en=1,        │
+  │                 │              │   else 256)                                  │
   │                 └──────┬───────┘                                             │
   │                        │  pix_out_axis (flat bridge: RGB + tlast + tuser)    │
-  │                        │                            clk_pix domain           │
+  │                        │                            clk_pix_out domain       │
   │                        ▼                                                     │
   │                 ┌──────────────┐  held in reset until first tuser=1          │
   │                 │    u_vga     │                                             │
@@ -379,7 +392,8 @@ The control-flow mux selects between:
 
 Per-block roles for the processing stages (`u_motion_detect`, `u_morph_open`, `u_ccl`, `u_overlay_bbox`, `u_vga`) are covered in §5. The remaining top-level plumbing:
 
-- **u_fifo_in / u_fifo_out**: CDC between `clk_pix` and `clk_dsp`; `IN_FIFO_DEPTH = 128`, `OUT_FIFO_DEPTH = 256`. Overflow detected by SVA (§9).
+- **u_fifo_in / u_fifo_out**: CDC between the pixel domains (`clk_pix_in` / `clk_pix_out`) and `clk_dsp`; `IN_FIFO_DEPTH = 128`, `OUT_FIFO_DEPTH = 256` (bumps to `1024` when `CFG.scaler_en=1` to absorb the scaler's burst output, since it emits up to 4 beats per input pixel). Overflow detected by SVA (§9).
+- **u_scale2x**: 2x bilinear spatial upscaler instantiated under a generate gate when `CFG.scaler_en=1`. When `CFG.scaler_en=0`, the gate produces a zero-latency combinational bridge (`assign` chain from `gamma_to_pix_out` to `scale2x_to_pix_out`) so the path is byte-identical to pre-scaler runs. See [axis_scale2x-arch.md](axis_scale2x-arch.md).
 - **u_fork**: zero-latency 1-to-2 broadcast with per-output acceptance tracking, so asymmetric consumer stalls do not corrupt data. Instantiated in the motion pipeline path only; fork input `tvalid` is gated to 0 in passthrough mode.
 - **u_ram**: dual-port byte RAM. Port A owned by `u_motion_detect` for the EMA background model; port B reserved for a future host client. Zero-initialized. See [ram-arch.md](ram-arch.md).
 - **vga_rst_n gating**: VGA held in reset until the first `tuser=1` pixel exits `u_fifo_out`, aligning the VGA scan to a frame boundary regardless of FIFO fill time.
@@ -399,10 +413,11 @@ Per-block roles for the processing stages (`u_motion_detect`, `u_morph_open`, `u
 
 | Domain | Clock | Modules |
 |--------|-------|---------|
-| `clk_pix` | 25 MHz | source driver, `u_fifo_in` write side, `u_fifo_out` read side, `u_vga`, VGA reset gating |
-| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_morph_open`, `u_ccl`, `u_overlay_bbox`, `u_fifo_out` write side |
+| `clk_pix_in` | nominally 25 MHz (1x) | source driver, `u_fifo_in` write side |
+| `clk_pix_out` | `CFG.scaler_en=0`: tied to `clk_pix_in`. `CFG.scaler_en=1`: 4x `clk_pix_in` so VGA can drain the 2x-upscaled output. | `u_fifo_out` read side, `u_vga`, VGA reset gating |
+| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_morph_open`, `u_ccl`, `u_overlay_bbox`, `u_gamma_cor`, `u_scale2x` (when `CFG.scaler_en=1`), `u_fifo_out` write side |
 
-CDC crossings use vendored `axis_async_fifo` from [alexforencich/verilog-axis](https://github.com/alexforencich/verilog-axis) (MIT). Active-high resets are derived at the top level: `rst_pix = ~rst_pix_n_i`, `rst_dsp = ~rst_dsp_n_i`.
+CDC crossings use vendored `axis_async_fifo` from [alexforencich/verilog-axis](https://github.com/alexforencich/verilog-axis) (MIT). Active-high resets are derived at the top level: `rst_pix_in = ~rst_pix_in_n_i`, `rst_pix_out = ~rst_pix_out_n_i`, `rst_dsp = ~rst_dsp_n_i`.
 
 ---
 
@@ -449,13 +464,13 @@ When runtime configurability is needed, the descriptor table and the `CFG` field
 - **Thin-feature deletion under morph**: `u_morph_open` erases foreground features narrower than 3 pixels (single-pixel lines, far-field point targets). Profile `no_morph` (`CFG.morph_en=0`) is the escape hatch; see [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md) §4.4.
 - **No AXI-Lite control**: all algorithm parameters (motion threshold, bbox colour, EMA rates, stage enables) are compile-time fields of `CFG`. Runtime override requires synthesizing a CSR slave (see §8.1).
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
-- **Single pixel clock**: both the input source and VGA output share `clk_pix`. Independent source/display clocks would need a third clock domain.
+- **Pixel-clock stability assumption (CFG.scaler_en=1)**: the design assumes the caller provides `clk_pix_out_i` at exactly 4x `clk_pix_in_i` so long-term input/output rates balance through the output FIFO. Real silicon would need either a genlocked PLL pair or a dedicated frame buffer at the output to handle independent source/display clocks; today's testbench drives the two clocks from a single integer divider, sidestepping the issue. See [axis_scale2x-arch.md](axis_scale2x-arch.md) for the rate-budget detail.
 
 ---
 
 ## 11. Resources
 
-**Bold** entries exceed 1 kB. CCL defaults: `N_LABELS_INT=64`. Input FIFO depth `IN_FIFO_DEPTH=128`, output FIFO depth `OUT_FIFO_DEPTH=256`; 26 bits wide (24 b `tdata` + `tlast` + `tuser`).
+**Bold** entries exceed 1 kB. CCL defaults: `N_LABELS_INT=64`. Input FIFO depth `IN_FIFO_DEPTH=128`, output FIFO depth `OUT_FIFO_DEPTH=256` (or 1024 when `CFG.scaler_en=1`); 26 bits wide (24 b `tdata` + `tlast` + `tuser`).
 
 | Memory | Module | 320×240 | 640×480 | 1920×1080 | Technology |
 |--------|--------|---------|---------|-----------|------------|

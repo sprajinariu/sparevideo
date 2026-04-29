@@ -6,6 +6,7 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/ip/axis/rtl/axis_async_fifo_ifc.sv \
            ../../hw/ip/hflip/rtl/axis_hflip.sv \
            ../../hw/ip/gamma/rtl/axis_gamma_cor.sv \
+           ../../hw/ip/scaler/rtl/axis_scale2x.sv \
            ../../hw/ip/window/rtl/axis_window3x3.sv \
            ../../hw/ip/filters/rtl/axis_gauss3x3.sv \
            ../../hw/ip/filters/rtl/axis_morph3x3_erode.sv \
@@ -45,7 +46,7 @@ SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
        test-ip-motion-detect test-ip-motion-detect-gauss \
        test-ip-overlay-bbox test-ip-ccl \
        test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open \
-       test-ip-hflip test-ip-gamma-cor
+       test-ip-hflip test-ip-gamma-cor test-ip-scale2x
 
 # ---------------------------------------------------------------------------
 # Verilator
@@ -106,6 +107,7 @@ IP_MORPH3X3_DILATE_RTL = ../../hw/ip/filters/rtl/axis_morph3x3_dilate.sv
 IP_MORPH3X3_OPEN_RTL   = ../../hw/ip/filters/rtl/axis_morph3x3_open.sv
 IP_HFLIP_RTL        = ../../hw/ip/hflip/rtl/axis_hflip.sv
 IP_GAMMA_COR_RTL    = ../../hw/ip/gamma/rtl/axis_gamma_cor.sv
+IP_SCALE2X_RTL      = ../../hw/ip/scaler/rtl/axis_scale2x.sv
 
 # Common Verilator flags for block TBs (suppress harmless TB warnings)
 VLT_TB_FLAGS = --binary -sv --timing \
@@ -113,7 +115,7 @@ VLT_TB_FLAGS = --binary -sv --timing \
                -Wno-WIDTHTRUNC -Wno-SELRANGE -Wno-WIDTHCONCAT \
                -Wno-UNUSEDSIGNAL -Wno-UNDRIVEN
 
-test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open test-ip-hflip test-ip-gamma-cor
+test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph3x3-open test-ip-hflip test-ip-gamma-cor test-ip-scale2x
 	@echo "All block testbenches passed."
 
 # --- rgb2ycrcb ---
@@ -192,6 +194,14 @@ test-ip-gamma-cor:
 	  $(IP_GAMMA_COR_RTL) ../../hw/ip/gamma/tb/tb_axis_gamma_cor.sv
 	obj_tb_axis_gamma_cor/Vtb_axis_gamma_cor
 
+# --- axis_scale2x ---
+test-ip-scale2x:
+	verilator $(VLT_TB_FLAGS) \
+	  --top-module tb_axis_scale2x --Mdir obj_tb_axis_scale2x \
+	  ../../hw/top/sparevideo_pkg.sv ../../hw/top/sparevideo_if.sv \
+	  $(IP_SCALE2X_RTL) ../../hw/ip/scaler/tb/tb_axis_scale2x.sv
+	obj_tb_axis_scale2x/Vtb_axis_scale2x
+
 # --- axis_overlay_bbox ---
 test-ip-overlay-bbox:
 	verilator $(VLT_TB_FLAGS) --top-module tb_axis_overlay_bbox --Mdir obj_tb_axis_overlay_bbox \
@@ -214,4 +224,4 @@ clean:
 	       obj_tb_axis_motion_detect obj_tb_axis_motion_detect_gauss \
 	       obj_tb_axis_overlay_bbox obj_tb_axis_ccl \
 	       obj_tb_axis_morph3x3_erode obj_tb_axis_morph3x3_dilate obj_tb_axis_morph3x3_open \
-	       obj_tb_axis_hflip obj_tb_axis_gamma_cor
+	       obj_tb_axis_hflip obj_tb_axis_gamma_cor obj_tb_axis_scale2x

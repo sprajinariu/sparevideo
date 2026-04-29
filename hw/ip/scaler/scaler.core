@@ -1,0 +1,16 @@
+CAPI=2:
+name: "sparevideo:ip:scaler"
+description: "2x spatial upscaler (nearest-neighbour or bilinear) AXIS stage"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_scale2x.sv
+    file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
+
+targets:
+  default:
+    filesets:
+      - files_rtl

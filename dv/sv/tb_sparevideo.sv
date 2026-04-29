@@ -1,7 +1,7 @@
 // Testbench for sparevideo_top (AXI4-Stream version)
 //
-// Drives an AXI4-Stream input on clk_pix, runs processing on clk_dsp,
-// and captures VGA RGB output on clk_pix.
+// Drives an AXI4-Stream input on clk_pix_in, runs processing on clk_dsp,
+// and captures VGA RGB output on clk_pix_out.
 //
 // Plusargs:
 //   +INFILE=<path>     Input frame file (default "input.txt")
@@ -15,15 +15,15 @@
 //   +DUMP_VCD          Dump waveforms to VCD
 //
 // Compile-time -G overrides:
-//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss)
+//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler)
 //   -GH_ACTIVE / -GV_ACTIVE Resolution overrides
 
 `timescale 1ns / 1ps
 
 module tb_sparevideo #(
-    parameter int    H_ACTIVE  = 320,
-    parameter int    V_ACTIVE  = 240,
-    parameter string CFG_NAME  = "default"
+    parameter int    H_ACTIVE     = 320,
+    parameter int    V_ACTIVE     = 240,
+    parameter string CFG_NAME     = "default"
 );
 
 `ifdef VERILATOR
@@ -42,9 +42,32 @@ module tb_sparevideo #(
     localparam int V_BACK_PORCH  = 5;
     localparam int V_BLANK       = V_FRONT_PORCH + V_SYNC_PULSE + V_BACK_PORCH;
 
-    // 25 MHz pixel clock (40ns), 100 MHz DSP clock (10ns)
-    localparam int CLK_PIX_PERIOD = 40;
-    localparam int CLK_DSP_PERIOD = 10;
+    // ---------------------------------------------------------------
+    // Algorithm profile resolution (must come before any localparam
+    // that depends on CFG.scaler_en). Add new entries here AND in
+    // sparevideo_pkg.sv AND in py/profiles.py.
+    // ---------------------------------------------------------------
+    localparam sparevideo_pkg::cfg_t CFG =
+        (CFG_NAME == "default_hflip") ? sparevideo_pkg::CFG_DEFAULT_HFLIP :
+        (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
+        (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
+        (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
+        (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
+        (CFG_NAME == "no_scaler")     ? sparevideo_pkg::CFG_NO_SCALER     :
+                                        sparevideo_pkg::CFG_DEFAULT;
+
+    localparam int H_ACTIVE_OUT = CFG.scaler_en ? 2 * H_ACTIVE : H_ACTIVE;
+    localparam int V_ACTIVE_OUT = CFG.scaler_en ? 2 * V_ACTIVE : V_ACTIVE;
+
+    // 25 MHz output pixel clock (40ns), 100 MHz DSP clock (10ns).
+    // When CFG.scaler_en=1, the input pixel clock runs at 1/4 of the output
+    // pixel clock so the long-term input pixel rate matches the
+    // VGA-side consumption rate (one input pixel produces a 2x2 output
+    // tile, i.e. 4 output pixels).
+    localparam int CLK_PIX_OUT_PERIOD = 40;                                     // 25 MHz
+    localparam int CLK_PIX_IN_PERIOD  = CFG.scaler_en ? 4 * CLK_PIX_OUT_PERIOD  // 6.25 MHz when scaler enabled
+                                                      :     CLK_PIX_OUT_PERIOD; // 25 MHz when scaler bypassed
+    localparam int CLK_DSP_PERIOD     = 10;                                     // 100 MHz, unchanged
 
     // ---------------------------------------------------------------
     // Configuration (from plusargs)
@@ -52,6 +75,8 @@ module tb_sparevideo #(
     integer cfg_width   = 320;
     integer cfg_height  = 240;
     integer cfg_frames  = 4;
+    integer cfg_out_width  = 320;
+    integer cfg_out_height = 240;
     string  cfg_infile  = "input.txt";
     string  cfg_outfile = "output.txt";
     string  cfg_mode    = "text";
@@ -62,9 +87,11 @@ module tb_sparevideo #(
     // ---------------------------------------------------------------
     // Clocks, resets, DUT signals
     // ---------------------------------------------------------------
-    logic clk_pix;
+    logic clk_pix_in;
+    logic clk_pix_out;
     logic clk_dsp;
-    logic rst_pix_n;
+    logic rst_pix_in_n;
+    logic rst_pix_out_n;
     logic rst_dsp_n;
 
     // AXI driver intermediaries — written by the initial block with blocking =.
@@ -80,7 +107,7 @@ module tb_sparevideo #(
     // always_ff sees a stable, settled value with no scheduling ambiguity.
     axis_if #(.DATA_W(24), .USER_W(1)) s_axis ();
 
-    always_ff @(negedge clk_pix) begin
+    always_ff @(negedge clk_pix_in) begin
         s_axis.tdata  <= drv_tdata;
         s_axis.tvalid <= drv_tvalid;
         s_axis.tlast  <= drv_tlast;
@@ -93,24 +120,14 @@ module tb_sparevideo #(
     logic [7:0] vga_g;
     logic [7:0] vga_b;
 
-    // Elaboration-time profile lookup. Add new entries here AND in
-    // sparevideo_pkg.sv AND in py/profiles.py. The Python parity test
-    // catches mismatches between SV and Python.
-    localparam sparevideo_pkg::cfg_t CFG =
-        (CFG_NAME == "default_hflip") ? sparevideo_pkg::CFG_DEFAULT_HFLIP :
-        (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
-        (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
-        (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
-        (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
-                                        sparevideo_pkg::CFG_DEFAULT;
-
     initial begin
         if (CFG_NAME != "default"       &&
             CFG_NAME != "default_hflip" &&
             CFG_NAME != "no_ema"        &&
             CFG_NAME != "no_morph"      &&
             CFG_NAME != "no_gauss"      &&
-            CFG_NAME != "no_gamma_cor")
+            CFG_NAME != "no_gamma_cor"  &&
+            CFG_NAME != "no_scaler")
             $warning("Unknown CFG_NAME '%s'; falling back to CFG_DEFAULT",
                      CFG_NAME);
     end
@@ -128,10 +145,12 @@ module tb_sparevideo #(
         .V_BACK_PORCH  (V_BACK_PORCH),
         .CFG           (CFG)
     ) u_dut (
-        .clk_pix_i   (clk_pix),
-        .clk_dsp_i   (clk_dsp),
-        .rst_pix_n_i (rst_pix_n),
-        .rst_dsp_n_i (rst_dsp_n),
+        .clk_pix_in_i    (clk_pix_in),
+        .clk_pix_out_i   (clk_pix_out),
+        .clk_dsp_i       (clk_dsp),
+        .rst_pix_in_n_i  (rst_pix_in_n),
+        .rst_pix_out_n_i (rst_pix_out_n),
+        .rst_dsp_n_i     (rst_dsp_n),
         .s_axis      (s_axis),
         .ctrl_flow_i (ctrl_flow),
         .vga_hsync_o (vga_hsync),
@@ -141,10 +160,12 @@ module tb_sparevideo #(
         .vga_b_o     (vga_b)
     );
 
-    initial clk_pix = 0;
-    always #(CLK_PIX_PERIOD/2) clk_pix = ~clk_pix;
-    initial clk_dsp = 0;
-    always #(CLK_DSP_PERIOD/2) clk_dsp = ~clk_dsp;
+    initial clk_pix_in  = 0;
+    always #(CLK_PIX_IN_PERIOD/2)  clk_pix_in  = ~clk_pix_in;
+    initial clk_pix_out = 0;
+    always #(CLK_PIX_OUT_PERIOD/2) clk_pix_out = ~clk_pix_out;
+    initial clk_dsp     = 0;
+    always #(CLK_DSP_PERIOD/2)     clk_dsp     = ~clk_dsp;
 
     // Waveform dump
     initial begin
@@ -200,8 +221,12 @@ module tb_sparevideo #(
             end
         end
 
-        $display("TB sparevideo: %0dx%0d, %0d frames, mode=%s",
-                 cfg_width, cfg_height, cfg_frames, cfg_mode);
+        cfg_out_width  = CFG.scaler_en ? (2 * cfg_width)  : cfg_width;
+        cfg_out_height = CFG.scaler_en ? (2 * cfg_height) : cfg_height;
+
+        $display("TB sparevideo: %0dx%0d in -> %0dx%0d out, %0d frames, mode=%s",
+                 cfg_width, cfg_height, cfg_out_width, cfg_out_height,
+                 cfg_frames, cfg_mode);
         $display("  ctrl_flow: %s",
             (ctrl_flow == sparevideo_pkg::CTRL_PASSTHROUGH)   ? "passthrough" :
             (ctrl_flow == sparevideo_pkg::CTRL_MOTION_DETECT) ? "motion"      :
@@ -241,12 +266,15 @@ module tb_sparevideo #(
             $finish;
         end
         if (cfg_mode != "text") begin
+            integer hdr_w, hdr_h;
+            hdr_w = CFG.scaler_en ? (2 * cfg_width)  : cfg_width;
+            hdr_h = CFG.scaler_en ? (2 * cfg_height) : cfg_height;
             $fwrite(fd_out, "%c%c%c%c",
-                cfg_width[7:0],  cfg_width[15:8],
-                cfg_width[23:16], cfg_width[31:24]);
+                hdr_w[7:0],  hdr_w[15:8],
+                hdr_w[23:16], hdr_w[31:24]);
             $fwrite(fd_out, "%c%c%c%c",
-                cfg_height[7:0], cfg_height[15:8],
-                cfg_height[23:16], cfg_height[31:24]);
+                hdr_h[7:0], hdr_h[15:8],
+                hdr_h[23:16], hdr_h[31:24]);
             $fwrite(fd_out, "%c%c%c%c",
                 cfg_frames[7:0], cfg_frames[15:8],
                 cfg_frames[23:16], cfg_frames[31:24]);
@@ -258,12 +286,14 @@ module tb_sparevideo #(
         end else begin
             $display("--- RTL simulation mode ---");
             // Reset (drv_* start at 0 from their declarations)
-            rst_pix_n <= 0;
-            rst_dsp_n <= 0;
-            repeat (10) @(posedge clk_pix);
-            rst_pix_n <= 1;
-            rst_dsp_n <= 1;
-            @(posedge clk_pix);
+            rst_pix_in_n  <= 0;
+            rst_pix_out_n <= 0;
+            rst_dsp_n     <= 0;
+            repeat (10) @(posedge clk_pix_out);
+            rst_pix_in_n  <= 1;
+            rst_pix_out_n <= 1;
+            rst_dsp_n     <= 1;
+            @(posedge clk_pix_out);
             // Enable VGA-side capture
             fd_out_rtl    = fd_out;
             rtl_capturing = 1;
@@ -329,8 +359,8 @@ module tb_sparevideo #(
                         drv_tlast  = (col_idx == cfg_width - 1);
 
                         // Hold until accepted (backpressure)
-                        @(posedge clk_pix);
-                        while (!s_axis.tready) @(posedge clk_pix);
+                        @(posedge clk_pix_in);
+                        while (!s_axis.tready) @(posedge clk_pix_in);
 
                         drv_tvalid = 0;
                         drv_tuser  = 0;
@@ -345,7 +375,7 @@ module tb_sparevideo #(
                 // input rate equals the output rate and the output FIFO never overflows.
                 if (!sw_dry_run) begin
                     drv_tvalid = 0;
-                    repeat (H_BLANK) @(posedge clk_pix);
+                    repeat (H_BLANK) @(posedge clk_pix_in);
                 end
             end // row
 
@@ -356,7 +386,7 @@ module tb_sparevideo #(
                     integer vb;
                     drv_tvalid = 0;
                     for (vb = 0; vb < V_BLANK * (cfg_width + H_BLANK); vb = vb + 1)
-                        @(posedge clk_pix);
+                        @(posedge clk_pix_in);
                 end
             end
 
@@ -388,10 +418,10 @@ module tb_sparevideo #(
             // Wait until VGA has emitted all expected pixels (or watchdog kills us)
             begin
                 integer expected_pixels;
-                expected_pixels = cfg_width * cfg_height * cfg_frames;
-                while (rtl_out_total < expected_pixels) @(posedge clk_pix);
+                expected_pixels = cfg_out_width * cfg_out_height * cfg_frames;
+                while (rtl_out_total < expected_pixels) @(posedge clk_pix_out);
             end
-            repeat (10) @(posedge clk_pix);
+            repeat (10) @(posedge clk_pix_out);
             rtl_capturing = 0;
 
             $fclose(fd_in);
@@ -399,7 +429,7 @@ module tb_sparevideo #(
 
             begin
                 integer expected_pixels;
-                expected_pixels = cfg_width * cfg_height * cfg_frames;
+                expected_pixels = cfg_out_width * cfg_out_height * cfg_frames;
                 $display("");
                 $display("=== RTL Sim Summary ===");
                 $display("Frames: %0d, Output pixels: %0d (expected %0d)",
@@ -443,18 +473,18 @@ module tb_sparevideo #(
                     & u_dut.pix_out_tvalid
                     & u_dut.vga_started;
     logic dut_active_d;
-    always_ff @(posedge clk_pix) begin
-        if (!rst_pix_n) dut_active_d <= 1'b0;
-        else            dut_active_d <= dut_active;
+    always_ff @(posedge clk_pix_out) begin
+        if (!rst_pix_out_n) dut_active_d <= 1'b0;
+        else                dut_active_d <= dut_active;
     end
 
-    always @(negedge clk_pix) begin
+    always @(negedge clk_pix_out) begin
         if (rtl_capturing && dut_active_d) begin
             if (cfg_mode == "text") begin
                 if (rtl_out_col > 0) $fwrite(fd_out_rtl, " ");
                 $fwrite(fd_out_rtl, "%02X%02X%02X", vga_r, vga_g, vga_b);
                 rtl_out_col = rtl_out_col + 1;
-                if (rtl_out_col == cfg_width) begin
+                if (rtl_out_col == cfg_out_width) begin
                     $fwrite(fd_out_rtl, "\n");
                     rtl_out_col = 0;
                 end
@@ -472,9 +502,9 @@ module tb_sparevideo #(
         #1;
         begin
             integer timeout_clocks;
-            timeout_clocks = (cfg_width + H_BLANK) * (cfg_height + V_BLANK)
+            timeout_clocks = (cfg_out_width + H_BLANK) * (cfg_out_height + V_BLANK)
                            * (cfg_frames + 4);
-            #(CLK_PIX_PERIOD * timeout_clocks);
+            #(CLK_PIX_IN_PERIOD * timeout_clocks);
             $display("ERROR: Watchdog timeout after %0d clocks", timeout_clocks);
             $finish;
         end

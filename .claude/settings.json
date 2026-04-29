@@ -21,5 +21,18 @@
       "Bash(bash << *)",
       "Bash(bash /tmp/*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/scripts/skill-reminder.py"
+          }
+        ]
+      }
+    ]
   }
 }

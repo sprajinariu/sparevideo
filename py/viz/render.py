@@ -32,7 +32,7 @@ def render_grid(input_frames, output_frames, path, reference_frames=None,
     # Scale factor: ensure the final image is at least min_width wide
     scale = max(1, min_width // native_w)
 
-    sw, sh = w * scale, h * scale  # scaled frame dimensions
+    sw, sh = w * scale, h * scale  # scaled frame dimensions (input row)
     sgap = gap * scale
 
     frames_w = n * sw + (n - 1) * sgap
@@ -44,6 +44,14 @@ def render_grid(input_frames, output_frames, path, reference_frames=None,
     ]
     if reference_frames is not None:
         rows.append(("REFERENCE MODEL", reference_frames))
+
+    # Per-row scaled frame dimensions — frames in different rows may have
+    # different native dims (e.g. the scaler doubles output but not input).
+    # Each row's frames are resized to fit (sw, sh) using nearest-neighbour.
+    row_dims = []
+    for _, frames_list in rows:
+        rh, rw = frames_list[0].shape[:2]
+        row_dims.append((rh, rw))
 
     num_rows = len(rows)
     grid_h = num_rows * (label_height + sh)
@@ -57,15 +65,21 @@ def render_grid(input_frames, output_frames, path, reference_frames=None,
         label_y = row_idx * (label_height + sh)
         frames_y = label_y + label_height
         label_ys.append(label_y)
+        rh, rw = row_dims[row_idx]
 
         # Label bar — slightly lighter background
         grid[label_y : label_y + label_height, :] = 55
 
-        # Place frames (scale up with nearest-neighbor)
+        # Place frames; each row resamples to (sw, sh) with nearest-neighbour
+        # so rows with differing native dims (scaler) line up.
         for i, frame in enumerate(frames_list[:n]):
             x = i * (sw + sgap)
-            scaled = np.repeat(np.repeat(frame, scale, axis=0), scale, axis=1)
-            grid[frames_y : frames_y + sh, x : x + sw] = scaled
+            # Use PIL for arbitrary nearest-neighbour resize (handles
+            # non-integer ratios when row dims differ from (h, w)).
+            resized = np.asarray(
+                Image.fromarray(frame).resize((sw, sh), Image.NEAREST)
+            )
+            grid[frames_y : frames_y + sh, x : x + sw] = resized
 
     # Draw text labels using Pillow
     img = Image.fromarray(grid)

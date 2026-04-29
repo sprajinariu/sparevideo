@@ -70,13 +70,18 @@ def _load_input_output(args):
     width, height, frames = _resolve_dims(args)
 
     if args.mode == "text":
+        in_w, in_h, n = width, height, frames
+        cfg = resolve_cfg(getattr(args, "cfg", "default"))
+        scaler_en = cfg.get("scaler_en", False)
+        out_w = 2 * in_w if scaler_en else in_w
+        out_h = 2 * in_h if scaler_en else in_h
         input_frames = read_frames(
             args.input, mode="text",
-            width=width, height=height, num_frames=frames,
+            width=in_w, height=in_h, num_frames=n,
         )
         output_frames = read_frames(
             args.output, mode="text",
-            width=width, height=height, num_frames=frames,
+            width=out_w, height=out_h, num_frames=n,
         )
     else:
         input_frames = read_frames(args.input, mode="binary")
@@ -110,7 +115,10 @@ def cmd_verify(args):
     tolerance = args.tolerance
 
     cfg = resolve_cfg(getattr(args, "cfg", "default"))
-    expected_frames = run_model(ctrl_flow, input_frames, **cfg)
+    expected_frames = run_model(
+        ctrl_flow, input_frames,
+        **cfg,
+    )
     results = compare_frames(expected_frames, output_frames, tolerance=tolerance)
 
     all_pass = True
@@ -144,7 +152,10 @@ def cmd_render(args):
     cfg = resolve_cfg(getattr(args, "cfg", "default"))
     reference_frames = None
     if ctrl_flow:
-        reference_frames = run_model(ctrl_flow, input_frames, **cfg)
+        reference_frames = run_model(
+            ctrl_flow, input_frames,
+            **cfg,
+        )
     out_path = render_grid(input_frames, output_frames, args.render_output,
                            reference_frames=reference_frames)
     print(f"Rendered comparison grid to {out_path}")

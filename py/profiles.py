@@ -21,6 +21,7 @@ DEFAULT: ProfileT = dict(
     morph_en=True,
     hflip_en=False,
     gamma_en=True,
+    scaler_en=True,
     bbox_color=0x00_FF_00,
 )
 
@@ -39,6 +40,9 @@ NO_GAUSS: ProfileT = dict(DEFAULT, gauss_en=False)
 # sRGB gamma correction bypassed (linear passthrough at output tail).
 NO_GAMMA_COR: ProfileT = dict(DEFAULT, gamma_en=False)
 
+# 2x spatial upscaler bypassed (output resolution = input resolution).
+NO_SCALER: ProfileT = dict(DEFAULT, scaler_en=False)
+
 PROFILES: dict[str, ProfileT] = {
     "default":       DEFAULT,
     "default_hflip": DEFAULT_HFLIP,
@@ -46,6 +50,7 @@ PROFILES: dict[str, ProfileT] = {
     "no_morph":      NO_MORPH,
     "no_gauss":      NO_GAUSS,
     "no_gamma_cor":  NO_GAMMA_COR,
+    "no_scaler":     NO_SCALER,
 }
 
 

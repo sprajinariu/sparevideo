@@ -44,6 +44,35 @@ package sparevideo_pkg;
     localparam int V_BACK_PORCH  = 2;
 
     // ---------------------------------------------------------------
+    // Output VGA timing — selected by the top-level SCALER parameter.
+    //
+    // SCALER=0 (default): output dims == input dims (the existing
+    // path). SCALER=1: 2x upscale → 640x480.
+    //
+    // Both H and V porches double in the SCALER=1 case so that the
+    // OUTPUT-frame wall-clock matches 4x the INPUT-frame wall-clock
+    // exactly. With clk_pix_in : clk_pix_out = 1:4 (the two-pix-clk
+    // model in axis_scale2x-arch.md §7a), this gives sustained
+    // rate balance over an arbitrary frame count. Concretely:
+    //   T_in_frame  = (H_in + ph_in) × (V_in + pv_in) × T_pix_in
+    //   T_out_frame = (2H_in + 2ph_in) × (2V_in + 2pv_in) × T_pix_out
+    //               = 4 × (H_in + ph_in)(V_in + pv_in) × T_pix_out
+    //               = T_in_frame   when T_pix_in = 4·T_pix_out
+    // The rate-balance assumption is documented per-block in
+    // axis_scale2x-arch.md §7a; real silicon still needs genlock or a
+    // frame buffer to absorb crystal tolerances.
+    // ---------------------------------------------------------------
+    localparam int H_ACTIVE_OUT_2X      = 2 * H_ACTIVE;
+    localparam int H_FRONT_PORCH_OUT_2X = 2 * H_FRONT_PORCH;
+    localparam int H_SYNC_PULSE_OUT_2X  = 2 * H_SYNC_PULSE;
+    localparam int H_BACK_PORCH_OUT_2X  = 2 * H_BACK_PORCH;
+
+    localparam int V_ACTIVE_OUT_2X      = 2 * V_ACTIVE;
+    localparam int V_FRONT_PORCH_OUT_2X = 2 * V_FRONT_PORCH;
+    localparam int V_SYNC_PULSE_OUT_2X  = 2 * V_SYNC_PULSE;
+    localparam int V_BACK_PORCH_OUT_2X  = 2 * V_BACK_PORCH;
+
+    // ---------------------------------------------------------------
     // Algorithm tuning bundle — one struct, named profiles.
     //
     // Resolution (H_ACTIVE/V_ACTIVE/porches) and sim-only knobs (FRAMES)
@@ -63,6 +92,7 @@ package sparevideo_pkg;
         logic       morph_en;            // 3x3 opening on mask
         logic       hflip_en;            // horizontal mirror on input
         logic       gamma_en;            // sRGB display gamma at output tail
+        logic       scaler_en;           // 2x bilinear upscaler at output tail
         pixel_t     bbox_color;          // overlay colour
     } cfg_t;
 
@@ -76,6 +106,8 @@ package sparevideo_pkg;
         // does not arise. Real-video deployments should override with a higher value.
         // hflip_en=0: intentional — mirror is deliberately OFF in the project
         // default. Use CFG_DEFAULT_HFLIP for selfie-cam / mirrored-sensor setups.
+        // scaler_en=1: 2x upscaler ON by default → 640x480 VGA output.
+        // Use CFG_NO_SCALER for the legacy 320x240 native-resolution path.
         motion_thresh:     8'd16,
         alpha_shift:       3,
         alpha_shift_slow:  6,
@@ -85,6 +117,7 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -99,6 +132,7 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b1,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -115,6 +149,7 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -129,6 +164,7 @@ package sparevideo_pkg;
         morph_en:          1'b0,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -143,6 +179,7 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b1,
+        scaler_en:         1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -157,6 +194,24 @@ package sparevideo_pkg;
         morph_en:          1'b1,
         hflip_en:          1'b0,
         gamma_en:          1'b0,
+        scaler_en:         1'b1,
+        bbox_color:        24'h00_FF_00
+    };
+
+    // 2x scaler bypassed — output stays at native 320x240. The upstream
+    // pipeline is unchanged; this profile is byte-identical to the
+    // pre-scaler design's CFG_DEFAULT for SCALER=0.
+    localparam cfg_t CFG_NO_SCALER = '{
+        motion_thresh:     8'd16,
+        alpha_shift:       3,
+        alpha_shift_slow:  6,
+        grace_frames:      0,
+        grace_alpha_shift: 1,
+        gauss_en:          1'b1,
+        morph_en:          1'b1,
+        hflip_en:          1'b0,
+        gamma_en:          1'b1,
+        scaler_en:         1'b0,
         bbox_color:        24'h00_FF_00
     };
 

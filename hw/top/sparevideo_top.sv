@@ -27,14 +27,18 @@ module sparevideo_top
     parameter int   V_SYNC_PULSE  = sparevideo_pkg::V_SYNC_PULSE,
     parameter int   V_BACK_PORCH  = sparevideo_pkg::V_BACK_PORCH,
     // Single algorithm config bundle. See sparevideo_pkg::cfg_t for fields,
-    // and sparevideo_pkg::CFG_* for canonical profiles.
+    // and sparevideo_pkg::CFG_* for canonical profiles. The 2x upscaler's
+    // structural presence lives here as CFG.scaler_en — no separate
+    // top-level parameter.
     parameter sparevideo_pkg::cfg_t CFG = sparevideo_pkg::CFG_DEFAULT
 ) (
     // ---- Clocks & resets -------------------------------------------
-    input  logic        clk_pix_i,      // 25 MHz pixel clock (input + VGA output domain)
-    input  logic        clk_dsp_i,      // 100 MHz processing clock (CDC FIFOs cross to here)
-    input  logic        rst_pix_n_i,    // active-low synchronous reset, clk_pix domain
-    input  logic        rst_dsp_n_i,    // active-low synchronous reset, clk_dsp domain
+    input  logic        clk_pix_in_i,    // input-rate pixel clock (sensor / source)
+    input  logic        clk_pix_out_i,   // output-rate pixel clock (VGA / display)
+    input  logic        clk_dsp_i,       // 100 MHz processing clock (CDC FIFOs cross to here)
+    input  logic        rst_pix_in_n_i,  // active-low sync reset, clk_pix_in domain
+    input  logic        rst_pix_out_n_i, // active-low sync reset, clk_pix_out domain
+    input  logic        rst_dsp_n_i,     // active-low sync reset, clk_dsp domain
 
     // ---- AXI4-Stream video input (clk_pix domain) ------------------
     axis_if.rx          s_axis,           // {tdata[23:0], tvalid, tready, tlast, tuser[0]}
@@ -49,6 +53,17 @@ module sparevideo_top
     output logic [7:0]  vga_g_o,        // green channel
     output logic [7:0]  vga_b_o         // blue channel
 );
+
+    // Resolve output VGA dims from CFG.scaler_en. Used only for the VGA
+    // controller and FIFO sizing; the upstream path is unaffected.
+    localparam int H_ACTIVE_OUT      = CFG.scaler_en ? sparevideo_pkg::H_ACTIVE_OUT_2X      : H_ACTIVE;
+    localparam int V_ACTIVE_OUT      = CFG.scaler_en ? sparevideo_pkg::V_ACTIVE_OUT_2X      : V_ACTIVE;
+    localparam int H_FRONT_PORCH_OUT = CFG.scaler_en ? sparevideo_pkg::H_FRONT_PORCH_OUT_2X : H_FRONT_PORCH;
+    localparam int H_SYNC_PULSE_OUT  = CFG.scaler_en ? sparevideo_pkg::H_SYNC_PULSE_OUT_2X  : H_SYNC_PULSE;
+    localparam int H_BACK_PORCH_OUT  = CFG.scaler_en ? sparevideo_pkg::H_BACK_PORCH_OUT_2X  : H_BACK_PORCH;
+    localparam int V_FRONT_PORCH_OUT = CFG.scaler_en ? sparevideo_pkg::V_FRONT_PORCH_OUT_2X : V_FRONT_PORCH;
+    localparam int V_SYNC_PULSE_OUT  = CFG.scaler_en ? sparevideo_pkg::V_SYNC_PULSE_OUT_2X  : V_SYNC_PULSE;
+    localparam int V_BACK_PORCH_OUT  = CFG.scaler_en ? sparevideo_pkg::V_BACK_PORCH_OUT_2X  : V_BACK_PORCH;
 
     // FIFO overflow flags (write-clock domain; sticky until reset).
     // Checked by SVAs below.
@@ -71,8 +86,8 @@ module sparevideo_top
         .DATA_W (24),
         .USER_W (1)
     ) u_fifo_in (
-        .s_clk            (clk_pix_i),
-        .s_rst_n          (rst_pix_n_i),
+        .s_clk            (clk_pix_in_i),
+        .s_rst_n          (rst_pix_in_n_i),
         .m_clk            (clk_dsp_i),
         .m_rst_n          (rst_dsp_n_i),
         .s_axis           (s_axis),
@@ -410,10 +425,12 @@ module sparevideo_top
     // with the verilog-axis output pipeline (~16 in-flight) absorbed in the
     // backpressure response.
     //
-    // NOTE: This sizing is calibrated for H_ACTIVE <= 320. Future SCALER=1
-    // configurations (H_ACTIVE=640) require revisiting -- doubling H_ACTIVE
-    // doubles the per-TX delta (~480), exceeding 256.
-    localparam int OUT_FIFO_DEPTH = 256;
+    // CFG.scaler_en=1: scaler emits 4 output beats per input pixel in bursts at
+    // clk_dsp rate, while VGA drains at clk_pix_out (~clk_dsp/4). Per
+    // output line of 640 pixels, the FIFO accumulates ~3W ≈ 480 entries
+    // at peak. 1024 covers that with the verilog-axis output pipeline
+    // (~16 in-flight) plus ~50% headroom.
+    localparam int OUT_FIFO_DEPTH = CFG.scaler_en ? 1024 : 256;
 
     logic [$clog2(OUT_FIFO_DEPTH):0] fifo_out_depth;  // write-side (clk_dsp)
 
@@ -422,8 +439,12 @@ module sparevideo_top
     // write-side ready) is read back by the mux and by morph_to_ccl.tready.
     axis_if #(.DATA_W(24), .USER_W(1)) proc_axis ();
 
-    // gamma_to_pix_out: u_gamma_cor.m_axis -> u_fifo_out.s_axis (direct pass-through).
+    // gamma_to_pix_out: u_gamma_cor.m_axis -> (scale2x or fifo_out).s_axis.
     axis_if #(.DATA_W(24), .USER_W(1)) gamma_to_pix_out ();
+
+    // scale2x_to_pix_out: drives u_fifo_out.s_axis whether the scaler is
+    // present (CFG.scaler_en=1) or bypassed (CFG.scaler_en=0).
+    axis_if #(.DATA_W(24), .USER_W(1)) scale2x_to_pix_out ();
 
     // sRGB display gamma correction at the post-mux tail. enable_i=0 is a
     // zero-latency combinational passthrough.
@@ -434,6 +455,30 @@ module sparevideo_top
         .s_axis   (proc_axis),
         .m_axis   (gamma_to_pix_out)
     );
+
+    generate
+        if (CFG.scaler_en) begin : g_scale2x
+            axis_scale2x #(
+                .H_ACTIVE_IN (H_ACTIVE),
+                .V_ACTIVE_IN (V_ACTIVE)
+            ) u_scale2x (
+                .clk_i   (clk_dsp_i),
+                .rst_n_i (rst_dsp_n_i),
+                .s_axis  (gamma_to_pix_out),
+                .m_axis  (scale2x_to_pix_out)
+            );
+        end else begin : g_no_scale2x
+            // CFG.scaler_en=0: gamma feeds the FIFO directly. Bridge the two
+            // interface bundles with explicit assigns so the FIFO sees
+            // gamma_to_pix_out's signals on the scale2x_to_pix_out
+            // handle (keeps the FIFO instantiation single-form).
+            assign scale2x_to_pix_out.tdata    = gamma_to_pix_out.tdata;
+            assign scale2x_to_pix_out.tvalid   = gamma_to_pix_out.tvalid;
+            assign scale2x_to_pix_out.tlast    = gamma_to_pix_out.tlast;
+            assign scale2x_to_pix_out.tuser    = gamma_to_pix_out.tuser;
+            assign gamma_to_pix_out.tready     = scale2x_to_pix_out.tready;
+        end
+    endgenerate
 
     // pix_out_axis: permanent bridge from output FIFO m_axis to VGA flat ports.
     // VGA controller is outside the AXI-Stream conversion scope and stays flat.
@@ -455,9 +500,9 @@ module sparevideo_top
     ) u_fifo_out (
         .s_clk            (clk_dsp_i),
         .s_rst_n          (rst_dsp_n_i),
-        .m_clk            (clk_pix_i),
-        .m_rst_n          (rst_pix_n_i),
-        .s_axis           (gamma_to_pix_out),
+        .m_clk            (clk_pix_out_i),
+        .m_rst_n          (rst_pix_out_n_i),
+        .s_axis           (scale2x_to_pix_out),
         .m_axis           (pix_out_axis),
         .s_status_depth   (fifo_out_depth),
         .s_status_overflow(fifo_out_overflow),
@@ -475,28 +520,28 @@ module sparevideo_top
     logic vga_started;
     logic vga_pixel_ready;
 
-    always_ff @(posedge clk_pix_i) begin
-        if (!rst_pix_n_i) begin
+    always_ff @(posedge clk_pix_out_i) begin
+        if (!rst_pix_out_n_i) begin
             vga_started <= 1'b0;
         end else if (!vga_started && pix_out_tvalid && pix_out_tuser) begin
             vga_started <= 1'b1;
         end
     end
 
-    assign vga_rst_n      = rst_pix_n_i & vga_started;
+    assign vga_rst_n      = rst_pix_out_n_i & vga_started;
     assign pix_out_tready = vga_pixel_ready & vga_started;
 
     vga_controller #(
-        .H_ACTIVE      (H_ACTIVE),
-        .H_FRONT_PORCH (H_FRONT_PORCH),
-        .H_SYNC_PULSE  (H_SYNC_PULSE),
-        .H_BACK_PORCH  (H_BACK_PORCH),
-        .V_ACTIVE      (V_ACTIVE),
-        .V_FRONT_PORCH (V_FRONT_PORCH),
-        .V_SYNC_PULSE  (V_SYNC_PULSE),
-        .V_BACK_PORCH  (V_BACK_PORCH)
+        .H_ACTIVE      (H_ACTIVE_OUT),
+        .H_FRONT_PORCH (H_FRONT_PORCH_OUT),
+        .H_SYNC_PULSE  (H_SYNC_PULSE_OUT),
+        .H_BACK_PORCH  (H_BACK_PORCH_OUT),
+        .V_ACTIVE      (V_ACTIVE_OUT),
+        .V_FRONT_PORCH (V_FRONT_PORCH_OUT),
+        .V_SYNC_PULSE  (V_SYNC_PULSE_OUT),
+        .V_BACK_PORCH  (V_BACK_PORCH_OUT)
     ) u_vga (
-        .clk_i         (clk_pix_i),   // pixel clock
+        .clk_i         (clk_pix_out_i),   // pixel clock
         .rst_n_i       (vga_rst_n),   // active-low synchronous reset; held until first SOF
         // Streaming pixel input (from output async FIFO, clk_pix domain)
         .pixel_data_i  (pix_out_tdata),   // {R[7:0], G[7:0], B[7:0]}
@@ -525,19 +570,19 @@ module sparevideo_top
 
     // (1) Input must not be back-pressured.
     assert_no_input_backpressure: assert property (
-        @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
+        @(posedge clk_pix_in_i) disable iff (!rst_pix_in_n_i)
             s_axis.tvalid |-> s_axis.tready
     ) else $error("sparevideo_top: input s_axis was back-pressured (DSP pipeline stalled)");
 
     // (2) Once started, no underruns inside the VGA active region.
     assert_no_output_underrun: assert property (
-        @(posedge clk_pix_i) disable iff (!rst_pix_n_i || sva_drain_mode)
+        @(posedge clk_pix_out_i) disable iff (!rst_pix_out_n_i || sva_drain_mode)
             (vga_started && vga_pixel_ready) |-> pix_out_tvalid
     ) else $error("sparevideo_top: output FIFO underrun during active region (screen tearing)");
 
     // (3) Input FIFO depth must never reach full capacity.
     assert_fifo_in_not_full: assert property (
-        @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
+        @(posedge clk_pix_in_i) disable iff (!rst_pix_in_n_i)
             fifo_in_depth < ($bits(fifo_in_depth))'(IN_FIFO_DEPTH)
     ) else $error("sparevideo_top: input FIFO full (depth=%0d/%0d) — overflow imminent",
                   fifo_in_depth, IN_FIFO_DEPTH);
@@ -549,9 +594,9 @@ module sparevideo_top
     ) else $error("sparevideo_top: output FIFO full (depth=%0d/%0d) — overflow imminent",
                   fifo_out_depth, OUT_FIFO_DEPTH);
 
-    // (5) Input FIFO must never overflow (sticky flag in clk_pix domain).
+    // (5) Input FIFO must never overflow (sticky flag in clk_pix_in domain).
     assert_fifo_in_no_overflow: assert property (
-        @(posedge clk_pix_i) disable iff (!rst_pix_n_i)
+        @(posedge clk_pix_in_i) disable iff (!rst_pix_in_n_i)
             !fifo_in_overflow
     ) else $error("sparevideo_top: input FIFO overflow — pixels lost at CDC crossing");
 

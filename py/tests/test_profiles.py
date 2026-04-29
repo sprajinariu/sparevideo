@@ -36,7 +36,7 @@ def _parse_int(sv: str) -> int:
     return int(sv)
 
 
-EXPECTED_PROFILES = {"default", "default_hflip", "no_ema", "no_morph", "no_gauss", "no_gamma_cor"}
+EXPECTED_PROFILES = {"default", "default_hflip", "no_ema", "no_morph", "no_gauss", "no_gamma_cor", "no_scaler"}
 
 
 def test_profile_set_is_complete() -> None:
@@ -59,7 +59,8 @@ def test_profile_matches_sv(name: str) -> None:
 
     py_cfg = PROFILES[name]
     for field, py_val in py_cfg.items():
-        sv_val = _parse_int(_sv_field(block, field))
+        sv_raw = _sv_field(block, field)
+        sv_val = _parse_int(sv_raw)
         assert sv_val == int(py_val), (
             f"{sv_name}.{field}: SV={sv_val} Py={py_val}"
         )

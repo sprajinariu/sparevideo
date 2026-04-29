@@ -1,6 +1,6 @@
 ---
 name: hardware-arch-doc
-description: Use when starting a new hardware stage or module before implementation begins, to produce a detailed architecture document covering module hierarchy, signal interfaces, state machines, datapath, and timing.
+description: Use when writing or editing any hardware architecture spec under `docs/specs/` (filename pattern `*-arch.md`), or before implementing a new RTL stage / module / submodule. Covers module hierarchy, signal interfaces, state machines, datapath, timing, and the spec scope/style rules (no Python/TB narrative, no prior-design refs, no simulation-scheduler vocabulary, datapath-only overview diagrams, term-before-use).
 ---
 
 # Hardware Architecture Documentation
@@ -8,6 +8,8 @@ description: Use when starting a new hardware stage or module before implementat
 ## Overview
 
 Produce a detailed architecture document for a hardware stage or module before writing any RTL. The document is the contract between design intent and implementation — if something is in the document, it should be reflected in the RTL.
+
+**Audience.** The intended reader is a hardware *designer* — someone implementing, modifying, or reviewing the RTL. Not a verification engineer, not a software consumer of the IP. Keep the doc focused on what a designer needs to write or maintain the module.
 
 
 ## When to Use
@@ -103,6 +105,9 @@ A spec is the **design contract** for one RTL module. It describes what the modu
 - Implementation-plan links (`docs/plans/*`).
 - Unit-TB tolerance (belongs in the TB, not the spec).
 - Simulator-specific framing ("Verilator only", "at sim time").
+- **Verification details of any kind**: how the module is tested, what coverage is collected, which TB drives which stimulus, "this is verified by X". The spec describes the design; the verification belongs in the TB and the verification plan. SVAs are the only exception — they formalize design invariants and ship with the RTL.
+- **References to prior implementations that no longer exist.** Phrases like "compared with the prior 2-buffer arch", "this used to use a peek window", "+50% vs. the previous version" — drop them. The reader is being asked to understand the *current* design, not its history. Refactor narrative belongs in commit messages, PR descriptions, or the plan doc, not the spec. If a rejected alternative is worth calling out, phrase it forward-looking ("any future variant must preserve raster-scan output order"), not as a backward comparison.
+- **Simulation-scheduler vocabulary.** Terms like "NBA" / "non-blocking assignment", "blocking assignment", "delta cycle", "evaluation region", "active region" describe how a SystemVerilog *simulator* schedules events, not how the hardware is structured. The spec is a design contract — talk about registers, clock-edge updates, and combinational paths instead. If the point is "this register's new value isn't visible until the next cycle," say exactly that; don't paraphrase as "NBA-scheduled" or "the NBA hasn't fired yet". A register update at a clock edge is "registered at the next clock edge" or "X updates at cycle N+1", not "the NBA fires at N".
 
 **Do include:**
 - SVA assertions — they formalize design invariants and are part of the RTL deliverable. A dedicated chapter in the top spec is appropriate.
@@ -126,6 +131,9 @@ A spec is the **design contract** for one RTL module. It describes what the modu
 - Update this document whenever the RTL interface changes — the document and the RTL must stay in sync.
 - **Contents section**: add a `## Contents` table of contents immediately after the title, with markdown anchor links to every section and sub-section. Place a `---` separator between Contents and section 1.
 - **Sub-header numbering**: number sub-headers with the full `H.SH` scheme (e.g. `### 3.1 Parameters`, `### 3.2 Ports`). Use this scheme whenever a section has sub-headers; omit numbering only for sections with no sub-headers at all.
+- **Define terms before use.** The first time a non-standard term, abbreviation, internal signal name, or domain word (e.g. "pair", "rotation", `wr_sel_q`, `effective_first_pair`) appears in the document, define it inline or in a small "Terminology" block near the top of the relevant section. Standard AXI4-Stream / SystemVerilog vocabulary and names already declared in `sparevideo_pkg` do not need redefining. The reader should never have to scroll forward to figure out what something means.
+- **Overview diagrams show the datapath, not the details.** The block diagram in §2 (Module Hierarchy) and the data-flow diagram in §5 are *high-level* — they show where data enters, what stages it passes through, and where it exits. Do **not** annotate them with: register widths, individual signal names, control-signal arrows, mux conditions, FSM state names, parametric expressions, or comparison-with-prior-design notes. Reserve that detail for the surrounding tables and prose. A reader should be able to glance at an overview diagram and understand "what flows where" in under 30 seconds. If the diagram needs a paragraph of inline annotation to be understood, it's too detailed.
+- **Be straightforward; clarity beats completeness.** Prefer short sentences, direct phrasing, and one point per sentence. If a passage requires the reader to backtrack or chase qualifiers across multiple clauses, simplify it — split the sentence, drop the parenthetical, or move the corner case into its own bullet. A spec that omits a subtle detail is fixable in review; a spec that confuses the reader on the main path is not. When you find yourself stacking nested clauses or hedges ("which, except in the case where Y, behaves like..."), stop and rewrite.
 
 ## After Writing
 
@@ -135,3 +143,6 @@ A spec is the **design contract** for one RTL module. It describes what the modu
 4. Update the architecture doc to reflect any RTL update.
 5. Update the Contents section to reflect any new sections or sub-sections added during writing.
 6. Scope audit: grep the spec for `python`, `pytest`, `plusarg`, `tb_`, `testbench`, `TOLERANCE`, `py/models`. Each hit must either be removed or justified by the Scope and Content Rules above.
+7. Prior-design audit: grep the spec for `prior `, `previous `, `used to`, `compared with the`, `compared to the`, `was replaced`, `legacy`. Any hit that compares against an implementation that no longer exists in the codebase must be removed or rephrased forward-looking.
+8. Term-definition audit: skim every section header from top to bottom. The first occurrence of any non-standard term (project-specific signal, custom abbreviation, design-pattern noun) must be defined inline or by a clearly visible reference to its definition earlier in the doc. If you find yourself using a term in §5 that is only defined deep in §5.4, move the definition forward.
+9. Diagram audit: open each ASCII diagram in §2 and §5. Strip anything that is not a datapath block or a directional arrow — no widths, no signal names inside the boxes beyond the block label, no inline comments explaining behaviour. The detail belongs in the surrounding prose and tables.
