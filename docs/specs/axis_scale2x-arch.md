@@ -12,7 +12,7 @@
   - [4.2 Edge handling](#42-edge-handling)
 - [5. Internal Architecture](#5-internal-architecture)
   - [5.1 Data flow overview](#51-data-flow-overview)
-  - [5.2 FSM and counters](#52-fsm-and-counters)
+  - [5.2 Counters, registers, and rotation](#52-counters-registers-and-rotation)
   - [5.3 Output beat formatter](#53-output-beat-formatter)
   - [5.4 Backpressure and buffer write policy](#54-backpressure-and-buffer-write-policy)
   - [5.5 Resource cost summary](#55-resource-cost-summary)
@@ -52,18 +52,20 @@ The interpolation kernel is bilinear with 2-tap horizontal and 2×2 vertical ker
 
 | Signal | Direction | Type | Description |
 |--------|-----------|------|-------------|
-| `clk_i`   | input  | `logic`      | `clk_dsp`, rising edge |
-| `rst_n_i` | input  | `logic`      | Active-low synchronous reset |
-| `s_axis`  | input  | `axis_if.rx` | RGB input stream. `tready` is asserted only while the FSM is in `S_RX_FIRST` or `S_RX_NEXT` (see §5.2); it is deasserted during top-row beat emission and during the entire bot-row replay phase that follows each source row. |
-| `m_axis`  | output | `axis_if.tx` | Upscaled RGB output stream. `tuser` marks the very first beat of each frame; `tlast` asserts on the last beat of every output row (so twice per source row, once at the end of the top output row and once at the end of the bot output row). |
+| `clk_i`   | input  | `logic`      | `clk_dsp`, rising edge. |
+| `rst_n_i` | input  | `logic`      | Active-low synchronous reset. |
+| `s_axis`  | input  | `axis_if.rx` | RGB input stream (24-bit packed RGB888 on `tdata`). |
+| `m_axis`  | output | `axis_if.tx` | Upscaled RGB output stream. Same encoding as `s_axis`. |
 
-There is no `enable_i` port — the module's presence in the build is itself the enable.
+There is no `enable_i` port — the module's presence in the build is itself the enable. The handshake (`tready`/`tvalid`) and sideband framing (`tuser`/`tlast`) on both ports are detailed in §5.3 and §5.4.
 
 ---
 
 ## 4. Concept Description
 
 A 2× spatial upscaler maps each input pixel `S[r, c]` (input row `r`, input column `c`) to a 2×2 block of output pixels at `(2r, 2c)`, `(2r, 2c+1)`, `(2r+1, 2c)`, `(2r+1, 2c+1)`. The total output frame size is `(2·V_ACTIVE_IN) × (2·H_ACTIVE_IN)`.
+
+For brevity throughout this document, `W` denotes `H_ACTIVE_IN` (input row width in pixels), and a "**pair**" is the two output rows produced from one input source row — `out[2r]` (top) and `out[2r+1]` (bot). Each pair is `4W` output beats long.
 
 ### 4.1 Bilinear 2×
 
@@ -101,7 +103,7 @@ Output coordinates (rows downward, cols rightward):
 
 All weights are powers of two, so the datapath is shift-and-add. Round-half-up is implemented by adding `1` (2-tap) before the shift. R, G, and B are processed independently with the same weights. The `(2r+1, 2c+1)` corner can be computed in either of two near-equivalent forms: a single 4-tap `(a + b + c + d + 2) >> 2`, or a sequential 2-tap `avg2(avg2(a, b), avg2(c, d))`. The two differ by at most ±1 LSB depending on the input bit pattern. The implementation uses the **sequential 2-tap** form (see §5.3) — same area, identical `avg2` adder reused across all four output formulas, and the rounding behaviour is fully specified by the same per-channel `(a + b + 1) >> 1` rule used everywhere else.
 
-Equivalently, sliding the anchor across an input row `S[r] = (A, B, C, …, X)` of `W = H_ACTIVE_IN` pixels yields the row-level form:
+Equivalently, sliding the anchor across an input row `S[r] = (A, B, C, …, X)` of `W` pixels yields the row-level form:
 
 - **Top output row** `out[2r]` (column-doubled, with horizontal interpolants in the odd columns):
   ```
@@ -131,256 +133,179 @@ Equivalently, sliding the anchor across an input row `S[r] = (A, B, C, …, X)` 
 ### 5.1 Data flow overview
 
 ```
-            ┌────────────────────────────────────────────────────────────┐
-            │                       axis_scale2x                         │
-            │                                                            │
-            │     ┌─────────────────────────────────┐                    │
-            │     │  6-state FSM                    │                    │
-            │     │  S_RX_FIRST → S_RX_NEXT →       │                    │
-            │     │  S_TOP1/2 → S_BOT1/2            │                    │
-            │     └─────────────────────────────────┘                    │
-            │                                                            │
-   s_axis ──┼──► ┌──────────────────┐    cur_q                           │
-            │    │ peek window      │ ─────────────┐                     │
-            │    │ cur_q, next_q    │              │                     │
-            │    └────────┬─────────┘              │                     │
-            │             │                        ▼                     │
-            │             │ writes        ┌─────────────────┐            │
-            │             ▼               │  output         │            │
-            │    ┌──────────────────┐     │  formatter      │            │
-            │    │ buf0, buf1       │ ──► │  S_TOP1: cur_q  │ ──► m_axis │
-            │    │ (W × 24b each)   │     │  S_TOP2:        │            │
-            │    │ ping-pong        │     │   avg2(cur,nxt) │            │
-            │    │ cur_sel_q        │     │  S_BOT1/2:      │            │
-            │    └──────────────────┘     │   bot_even/odd  │            │
-            │                             │   from buffers  │            │
-            │                             └─────────────────┘            │
-            └────────────────────────────────────────────────────────────┘
+            ┌──────────────────────────────────────────────┐
+            │                axis_scale2x                  │
+            │                                              │
+            │     ┌──────────────────────┐                 │
+   s_axis ──┼──►  │ input writer         │                 │
+            │     └──────────┬───────────┘                 │
+            │                │                             │
+            │                ▼                             │
+            │     ┌──────────────────────┐                 │
+            │     │ buf0 / buf1 / buf2   │                 │
+            │     │ (W × 24 b each)      │                 │
+            │     └──────────┬───────────┘                 │
+            │                │                             │
+            │                ▼                             │
+            │     ┌──────────────────────┐                 │
+            │     │ output emitter       │ ──► m_axis      │
+            │     └──────────────────────┘                 │
+            └──────────────────────────────────────────────┘
 ```
 
-Top-row beats are formatted from the `cur_q`/`next_q` peek window during the source row's intake. Bot-row beats are formatted by replaying both buffers (current row and previous row) after the source row's `tlast` has been seen. The two phases never overlap on the same source row.
+The input writer fills one of the three line buffers as a row streams in, and the output emitter reads from the other two. A 2-bit register `wr_sel_q` selects the write target; the other two indices follow combinationally as `anchor_sel` and `prev_sel` (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the new anchor, the prior anchor becomes the new prev, and the prior prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
 
-### 5.2 FSM and counters
+### 5.2 Counters, registers, and rotation
 
-Six states. **Output beats are emitted sequentially, one per cycle when `m_axis.tready = 1` — never in parallel.** The four output pixels associated with one source anchor `S[r, c]` are produced by four distinct FSM states across two non-contiguous time windows:
+The control logic is two independent counters plus boolean flags. There is no FSM in the conventional sense.
 
-- **Top pair** (`out[2r, 2c]` and `out[2r, 2c+1]`) — emitted during `S_TOP1`/`S_TOP2`, **interleaved with input acceptance** as the source row streams in.
-- **Bot pair** (`out[2r+1, 2c]` and `out[2r+1, 2c+1]`) — **deferred** until after the entire source row has been consumed, then emitted as part of the `2W`-beat bot-row replay during `S_BOT1`/`S_BOT2`.
+| Signal | Width | Role |
+|---|---|---|
+| `wr_sel_q` | 2 b | Index of the buffer being **written** for the current input row, in `{0, 1, 2}`. Advances by 1 mod 3 at each rotation (defined below). Reset to 0 on `rst_n_i`; not affected by SOF. |
+| `in_col_q` | `$clog2(W+1)` | Source column where the next accepted input pixel lands. Resets to 0 on input `tlast`. |
+| `out_beat_q` | `$clog2(4W+1)` | Output beat counter, 0..4W−1. Wraps to 0 when the `(4W−1)`-th beat retires. |
+| `in_done_q` | 1 b | Asserted between input `tlast` accept and the next rotation. While high, `s_axis.tready = 0`. |
+| `emit_armed_q` | 1 b | Asserted while emitting a pair; pulled into `m_axis.tvalid`. Cleared by the end-of-pair retirement; the next rotation re-asserts it. |
+| `first_pair_q` | 1 b | Asserted while emitting pair 0 of a frame. Causes the input writer to also write each accepted pixel into `anchor_buf` (top-edge replicate seed). Cleared at the first rotation of the frame. |
+| `sof_pending_q` | 1 b | Latched on accepted `s_axis.tuser`; cleared on emitted `m_axis.tuser`. |
 
-The output stream is raster-scan: for source row `r`, all `2W` top-row beats are emitted first (interleaved with intake), then all `2W` bot-row beats (back-to-back, no input).
+#### Buffer role assignment
 
-#### Input backpressure pattern
-
-`s_axis.tready` is asserted only in `S_RX_FIRST` and `S_RX_NEXT`. The input therefore sees backpressure in two distinct regimes:
-
-- **Within-row, intermittent.** Each peeked input pair `(cur, next)` requires 1 RX cycle followed by 2 TOP-emit cycles before another input can be accepted. At steady state `tready` follows a `1·0·0` pattern (one accept per three cycles). The right-edge replicate adds one extra `(0, 0)` TOP pair without intervening RX, since `next` is held equal to `cur`.
-- **Cross-row, sustained.** Once the row's last input has been peeked, `tready` deasserts for the full `2W` cycles of bot-row replay. The next row's first pixel is accepted in the cycle after the bot row's last beat retires.
-
-The handshake itself is a single line of RTL — see §5.4.
-
-#### State transitions
+`anchor_sel` and `prev_sel` are derived combinationally from `wr_sel_q` so that the three roles (write, anchor, prev) always pick three different buffers:
 
 ```
-                 ┌───────────────────────────────────────────────────────┐
-                 │  end-of-bot-row: out_col_q == 2W-1                    │
-                 │  (flip cur_sel_q, clear first_row_q)                  │
-                 ▼                                                       │
-            ┌─────────────┐                                              │
-            │ S_RX_FIRST  │◄────────────────────────────────┐            │
-            └──────┬──────┘                                 │            │
-                   │ rx_accept                              │            │
-                   ▼                                        │            │
-            ┌─────────────┐                                 │            │
-            │ S_RX_NEXT   │◄────────────────────┐           │            │
-            └──────┬──────┘                     │           │            │
-                   │ rx_accept                  │           │            │
-                   ▼                            │           │            │
-            ┌─────────────┐                     │           │            │
-       ┌───►│ S_TOP1      │                     │           │            │
-       │    └──────┬──────┘                     │           │            │
-       │           │ m_tready                   │           │            │
-       │           ▼                            │           │            │
-       │    ┌─────────────┐                     │           │            │
-       │    │ S_TOP2      │                     │           │            │
-       │    └──┬───────┬──┘                     │           │            │
-       │       │       │ m_tready,              │           │            │
-       │       │       │ !cur_is_last           │           │            │
-       │       │       ├────────────────────────┘           │            │
-       │       │       │ (next_is_last? S_TOP1 : S_RX_NEXT) │            │
-       │       │       │                                    │            │
-       │       │       └─────► (right-edge: back to S_TOP1) │            │
-       │       │                                            │            │
-       │       │ m_tready, cur_is_last                      │            │
-       │       │ (out_col_q ← 0, in_col_q ← 0)              │            │
-       │       ▼                                            │            │
-       │  ┌─────────────┐                                   │            │
-       │  │ S_BOT1      │◄─────────────────┐                │            │
-       │  └──────┬──────┘                  │                │            │
-       │         │ m_tready                │                │            │
-       │         │ (out_col_q += 1)        │                │            │
-       │         ▼                         │                │            │
-       │  ┌─────────────┐                  │                │            │
-       │  │ S_BOT2      │                  │                │            │
-       │  └──────┬───┬──┘                  │                │            │
-       │         │   │ m_tready,           │                │            │
-       │         │   │ out_col_q < 2W-1    │                │            │
-       │         │   │ (out_col_q += 1)    │                │            │
-       │         │   └─────────────────────┘                │            │
-       │         │                                          │            │
-       │         │ m_tready, out_col_q == 2W-1              │            │
-       └─────────┴──────────────────────────────────────────┘            │
-                                                                         │
-                                                                         │
-                  Right-edge replicate path (S_TOP2 → S_TOP1) ───────────┘
+case (wr_sel_q)
+    2'd0: { anchor_sel, prev_sel } = { 2'd2, 2'd1 }
+    2'd1: { anchor_sel, prev_sel } = { 2'd0, 2'd2 }
+    2'd2: { anchor_sel, prev_sel } = { 2'd1, 2'd0 }
+endcase
 ```
 
-The S_RX_FIRST / S_RX_NEXT block is the only place `tready = 1`; everything to the right of S_TOP1 holds `tready = 0`.
+Equivalently `anchor_sel = (wr_sel_q − 1) mod 3` and `prev_sel = (wr_sel_q − 2) mod 3`. The anchor buffer holds the source row that is the anchor of the pair currently being emitted; the prev buffer holds the source row immediately above it.
 
-#### Cycle-by-cycle example (W = 4, `m_tready = 1` throughout)
+#### SOF same-cycle override
 
-For one source row `(A, B, C, D)`, 20 cycles total: 12 cycles of top-row intake/emit, 8 cycles of bot-row replay. Inputs are accepted on cycles 0, 1, 4, 7; outputs are emitted on cycles 2–11 (top) and 12–19 (bot).
+When a SOF input beat is accepted, the seed write to `anchor_buf` must fire on the *same* clock edge — but `first_pair_q` is updated through a register, so its new value only takes effect on the following clock. To avoid losing the SOF column's seed, the buffer-write logic consults a combinational override instead of `first_pair_q` directly:
 
-| cyc | state       | s.tready | s_axis input  | m.tvalid | m_axis output       | notes                                          |
-|----:|-------------|:--------:|---------------|:--------:|---------------------|------------------------------------------------|
-|  0  | S_RX_FIRST  | 1        | A (sof, !lst) | 0        | —                   | accept A → cur                                 |
-|  1  | S_RX_NEXT   | 1        | B (!lst)      | 0        | —                   | accept B → next                                |
-|  2  | S_TOP1      | 0        |               | 1        | A                   | emit anchor A; tuser=1 (sof of frame)          |
-|  3  | S_TOP2      | 0        |               | 1        | avg2(A, B)          | shift cur ← B; → S_RX_NEXT                    |
-|  4  | S_RX_NEXT   | 1        | C (!lst)      | 0        | —                   | accept C → next                                |
-|  5  | S_TOP1      | 0        |               | 1        | B                   |                                                |
-|  6  | S_TOP2      | 0        |               | 1        | avg2(B, C)          | shift cur ← C                                  |
-|  7  | S_RX_NEXT   | 1        | D (lst)       | 0        | —                   | accept D → next, next_is_last=1                |
-|  8  | S_TOP1      | 0        |               | 1        | C                   |                                                |
-|  9  | S_TOP2      | 0        |               | 1        | avg2(C, D)          | next_is_last=1 → S_TOP1 (skip RX_NEXT)         |
-| 10  | S_TOP1      | 0        |               | 1        | D                   |                                                |
-| 11  | S_TOP2      | 0        |               | 1        | avg2(D, D) = D      | cur_is_last=1; tlast=1; → S_BOT1              |
-| 12  | S_BOT1      | 0        |               | 1        | bot_even @ src_c=0  | out_col_q ← 1                                  |
-| 13  | S_BOT2      | 0        |               | 1        | bot_odd  @ src_c=0  | out_col_q ← 2                                  |
-| 14  | S_BOT1      | 0        |               | 1        | bot_even @ src_c=1  | out_col_q ← 3                                  |
-| 15  | S_BOT2      | 0        |               | 1        | bot_odd  @ src_c=1  | out_col_q ← 4                                  |
-| 16  | S_BOT1      | 0        |               | 1        | bot_even @ src_c=2  | out_col_q ← 5                                  |
-| 17  | S_BOT2      | 0        |               | 1        | bot_odd  @ src_c=2  | out_col_q ← 6                                  |
-| 18  | S_BOT1      | 0        |               | 1        | bot_even @ src_c=3  | out_col_q ← 7                                  |
-| 19  | S_BOT2      | 0        |               | 1        | bot_odd  @ src_c=3  | out_col_q == 2W-1; tlast=1; → S_RX_FIRST       |
+```
+do_accept            = s_axis.tvalid && s_axis.tready
+is_sof_pixel         = do_accept && s_axis.tuser
+effective_first_pair = first_pair_q || is_sof_pixel
+```
 
-This matches the §7 budget: `5W = 20` cycles for `4W = 16` output beats, sustained `0.8` beats/cycle. Within-row throughput is `2/3` (2 outputs per 3 cycles) during the intake-interleaved top phase, then `1.0` during the bot phase.
+`effective_first_pair` equals `first_pair_q` everywhere except on the SOF cycle, where it is forced high so the seed write fires immediately. It is used by the buffer-write policy in §5.4.
 
-#### State table
+#### Beat-to-address decode
 
-| State          | Behaviour |
-|----------------|-----------|
-| `S_RX_FIRST`   | Accept the first source pixel of a new source row (the row's leftmost column). Buffer the pixel into `buf0`/`buf1` per the write policy in §5.4. Latch `cur_q ← s_axis.tdata`. → `S_RX_NEXT`. |
-| `S_RX_NEXT`    | Accept the peeked-ahead pixel as `next_q`. Buffer it. → `S_TOP1`. |
-| `S_TOP1`       | Emit top-row even beat: `tdata = cur_q`. → `S_TOP2`. |
-| `S_TOP2`       | Emit top-row odd beat: `tdata = avg2(cur_q, next_q)`. If `cur_is_last_q`, source row is done → `S_BOT1`. Else: shift `cur_q ← next_q`. If the just-shifted pair is the right edge (`next_is_last_q`), hold `next_q` and skip back to `S_TOP1`; otherwise → `S_RX_NEXT` to peek the next sample. |
-| `S_BOT1`       | Emit bot-row even beat: `tdata = bot_even`. Increment `out_col_q`. → `S_BOT2`. |
-| `S_BOT2`       | Emit bot-row odd beat: `tdata = bot_odd`, `tlast = 1` on the last out-col (`out_col_q == 2W − 1`). End-of-row: flip `cur_sel_q` and clear `first_row_q`. → `S_RX_FIRST`. Else: increment `out_col_q` → `S_BOT1`. |
+The output beat counter is decoded combinationally into a phase, a source column index, and a parity bit. The output formatter (§5.3) and the right-edge clamp consume these:
 
-Counters and pipeline registers:
+```
+in_bot_phase = (out_beat_q >= 2W)
+phase_col    = in_bot_phase ? (out_beat_q − 2W) : out_beat_q     // 0..2W-1
+src_c        = phase_col >> 1                                     // 0..W-1
+src_cp1      = (src_c == W − 1) ? src_c : src_c + 1               // right-edge clamp
+beat_is_odd  = out_beat_q[0]
+```
 
-| Signal           | Width                        | Role |
-|------------------|------------------------------|------|
-| `state_q`        | 3 b                          | Current FSM state. |
-| `in_col_q`       | `$clog2(W+1)`                | Source column where the **next** accepted input pixel lands in the buffer. |
-| `pair_col_q`     | `$clog2(W+1)`                | Source column of `cur_q`, used to gate `tuser` to the very first emitted beat. |
-| `out_col_q`      | `$clog2(2W+1)`               | Output column during bot-row replay, range `[0, 2W − 1]`. |
-| `cur_q`, `next_q`| 24 b each                    | Two-pixel peek window for top-row emit. |
-| `cur_is_last_q`  | 1 b                          | `cur_q` was the source row's last pixel. |
-| `next_is_last_q` | 1 b                          | `next_q` was the source row's last pixel (drives right-edge replicate). |
-| `sof_pending_q`  | 1 b                          | Latched on accepted `s_axis.tuser`; cleared on the very first emitted beat (drives `m_axis.tuser`). |
-| `first_row_q`    | 1 b                          | 1 while emitting the first row of a frame; clears at end of bot row of row 0. |
-| `cur_sel_q`      | 1 b                          | Buffer ping-pong select — picks which of `buf0`/`buf1` is "cur" for bot-row reads. |
+#### Rotation and boundary synchronization
+
+A "**rotation**" advances `wr_sel_q` by 1 mod 3 and re-arms the emitter for the next pair. It fires when the input writer and the output emitter have both completed their work:
+
+- **Input row complete** (accepted `s_axis.tlast`): `in_col_q ← 0`, `in_done_q ← 1`.
+- **Output pair complete** (`out_beat_q == 4W−1` retires): `out_beat_q ← 0`, `emit_armed_q ← 0`.
+
+When both events are visible in the same cycle (`in_done_q && !emit_armed_q`), the rotation triggers:
+
+```
+wr_sel_q     ← (wr_sel_q == 2) ? 0 : (wr_sel_q + 1)
+in_done_q    ← 0
+emit_armed_q ← 1
+first_pair_q ← 0
+```
+
+A new frame (accepted `s_axis.tuser`) re-arms `first_pair_q ← 1`. `wr_sel_q` is **not** reset — the rotation is invariant under starting offset, and seeding to `anchor_sel` (rather than to a fixed buffer index) keeps pair 0's `prev_sel` aligned with the seed regardless of where the rotation cycle is when the new frame begins.
+
+#### Per-row timing
+
+The writer and emitter run as two independent processes synchronized only at the rotation. Under a sustained 1:4 input-to-DSP rate ratio (the project's nominal rate balance — see §7a), the writer's `W` input cycles and the emitter's `4W` DSP cycles complete simultaneously and the rotation is seamless. If the upstream FIFO holds up the input, the emitter idles after its last beat (`emit_armed_q = 0`) until the input row finishes. If the downstream stalls the output, the writer idles after its last input (`in_done_q = 1`, `s_axis.tready = 0`) until the emitter catches up. Either way, the rotation waits for both.
 
 ### 5.3 Output beat formatter
 
-The combinational formatter selects `m_axis.tdata`/`tvalid`/`tlast`/`tuser` from `state_q`:
-
-| State        | `tdata`                              | `tvalid` | `tlast`                                                                 | `tuser`                                |
-|--------------|--------------------------------------|----------|--------------------------------------------------------------------------|----------------------------------------|
-| `S_RX_FIRST` | —                                    | 0        | 0                                                                        | 0                                      |
-| `S_RX_NEXT`  | —                                    | 0        | 0                                                                        | 0                                      |
-| `S_TOP1`     | `cur_q`                              | 1        | 0                                                                        | `sof_pending_q && pair_col_q == 0`     |
-| `S_TOP2`     | `avg2(cur_q, next_q)`                | 1        | `cur_is_last_q`                                                          | 0                                      |
-| `S_BOT1`     | `bot_even`                           | 1        | 0                                                                        | 0                                      |
-| `S_BOT2`     | `bot_odd`                            | 1        | `out_col_q == 2W − 1`                                                    | 0                                      |
-
-The bot-row data is fed by combinational reads from the two ping-pong buffers, with `cur_sel_q` selecting which buffer is "cur" and which is "prev":
+Each output cycle the formatter selects `m_axis.tdata` from the buffer reads (`anchor_c`, `anchor_cp1`, `prev_c`, `prev_cp1`) according to the phase and parity bits decoded in §5.2:
 
 ```
-src_c        = out_col_q >> 1
-src_c_next   = min(src_c + 1, W − 1)                        — right-edge clamp
+                       beat_is_odd = 0          beat_is_odd = 1
+                       (even out col)           (odd out col)
+top phase:             anchor_c                 avg2(anchor_c, anchor_cp1)
+(out_beat in [0, 2W))
 
-cur_top_odd   = avg2(cur_buf [src_c], cur_buf [src_c_next]) — horizontal 2-tap, current row
-prev_top_odd  = avg2(prev_buf[src_c], prev_buf[src_c_next]) — horizontal 2-tap, previous row
-
-bot_even = avg2(cur_buf [src_c], prev_buf[src_c])           — vertical 2-tap
-bot_odd  = avg2(cur_top_odd,    prev_top_odd)               — sequential 2-tap (≡ 4-tap ±1 LSB)
+bot phase:             avg2(anchor_c, prev_c)   avg2( avg2(anchor_c, anchor_cp1),
+(out_beat in [2W, 4W))                                avg2(prev_c,   prev_cp1)   )
 ```
 
-`avg2(a, b)` is the per-channel 2-tap round-half-up average: `((a + b + 1) >> 1)` applied independently to each 8-bit colour channel.
+`avg2(a, b)` is the per-channel 2-tap round-half-up average `((a + b + 1) >> 1)`, applied independently to R, G, and B. `avg2(a, a) = a` exactly. The bot-odd 4-tap is the sequential-2-tap form (avg2 of two avg2s), differing from a true 4-tap by at most ±1 LSB and matching `py/models/ops/scale2x.py` bit-exactly.
 
-### 5.4 Backpressure and buffer write policy
+Sideband signals on `m_axis`:
 
-**Backpressure.** The handshake is one line:
+- `tlast` asserts at the last beat of each output row: `out_beat_q == 2W − 1` (end of top row) or `out_beat_q == 4W − 1` (end of bot row, end of pair). Each output row is therefore a separate AXI-Stream packet.
+- `tuser` asserts at the first beat of the first pair of a frame: `sof_pending_q && out_beat_q == 0`.
 
-```
-s_axis.tready = (state_q == S_RX_FIRST) || (state_q == S_RX_NEXT)
-```
+### 5.4 Backpressure and buffer-write policy
 
-There is no skid buffer. Output `tvalid`/`tdata` are combinational from `state_q`; downstream stall holds `state_q` because every state-advance in the always_ff is gated on `m_axis.tready`.
-
-**Buffer writes.** A pixel accepted in `S_RX_FIRST` or `S_RX_NEXT` is written by the `write_lbufs` task, which always writes to the "cur" buffer at index `in_col_q`. If `effective_first_row` is asserted, the same pixel is *also* written to the "prev" buffer — this seeds the top-edge replicate so row 0's bot-row replay reads `prev == cur` and produces `cur` for every bot beat.
-
-**Ping-pong.** At end of bot row (last beat in `S_BOT2`), `cur_sel_q ← ~cur_sel_q` so the row just streamed in becomes the new "prev" row for the next source row.
-
-**SOF override.** `first_row_q` and `cur_sel_q` are updated by the always_ff tail on the SOF cycle, but those updates only take effect *next* cycle. The case-block writing the buffers in `S_RX_FIRST` runs in the *same* cycle and must therefore see the post-SOF values. Two combinational overrides supply them:
+**Backpressure.**
 
 ```
-is_sof_pixel        = (state_q == S_RX_FIRST) && rx_accept && s_axis.tuser
-effective_first_row = first_row_q || is_sof_pixel
-effective_cur_sel   = is_sof_pixel ? 1'b0 : cur_sel_q
+s_axis.tready = !in_done_q && !(s_axis.tvalid && s_axis.tuser && emit_armed_q)
+m_axis.tvalid = emit_armed_q
 ```
 
-Without this override, the first pixel of every non-zero frame would land in only one buffer (chosen by stale `cur_sel_q`) and the top-edge replicate write to the other buffer would be skipped (because `first_row_q` is still 0 from the previous frame). The visible failure is two mismatched pixels on output row 1 of every non-zero frame whenever the input differs across frame boundaries.
+Within a row, `s_axis.tready` stays high (input arrives at ~25% duty under the 1:4 clock ratio). It deasserts only between input `tlast` and the next rotation — typically zero cycles when the writer and emitter complete simultaneously, and a small number of cycles only if the upstream is faster than the nominal 1:4 rate.
+
+The second term defensively stalls acceptance of any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
+
+**Buffer writes.** A pixel accepted while `s_axis.tready = 1` is always written to `write_buf[in_col_q]` (the buffer indexed by `wr_sel_q`). When `effective_first_pair = 1` (defined in §5.2), the same pixel is *also* written to `anchor_buf[in_col_q]` (the buffer indexed by `anchor_sel`). The seed lands where pair 0's `prev_sel` will read it after the next rotation, so pair 0's bot row reads `prev == anchor` (top-edge replicate). `anchor_buf` is unused for *reads* during row 0 intake (`emit_armed_q = 0` during the latency phase), so the seed write to `anchor_sel` doesn't conflict with anything.
+
+**Frame entry.** Accepted `s_axis.tuser` re-arms `first_pair_q ← 1`. `wr_sel_q` continues rotating from wherever the previous frame left it; the seed-to-`anchor_sel` rule keeps the rotation invariant under starting offset.
 
 ### 5.5 Resource cost summary
 
 Quantities at `H_ACTIVE_IN = 320`. Per-channel adders are 9-bit; counts are pre-synthesis-sharing.
 
-| Resource                              | Count                                                                          |
-|---------------------------------------|--------------------------------------------------------------------------------|
-| Line buffers (`buf0`, `buf1`)         | 2 × 320 × 24 b = 15,360 b.                                                     |
-| Pipeline data regs                    | `cur_q` + `next_q` = 48 b.                                                     |
-| Sideband regs                         | `cur_is_last_q`, `next_is_last_q`, `sof_pending_q`, `first_row_q`, `cur_sel_q` = 5 b. |
-| Counters                              | `in_col_q` + `pair_col_q` (each `$clog2(321) = 9` b) + `out_col_q` (`$clog2(641) = 10` b) = 28 b. |
-| `avg2` instances per channel          | 5 — one in `S_TOP2`, four in the bot-replay datapath (`cur_top_odd`, `prev_top_odd`, `bot_even`, `bot_odd`). 15 9-bit adders total across R/G/B before any synthesis sharing. |
-| Multipliers / DSPs                    | 0.                                                                             |
+| Resource | Count |
+|---|---|
+| Line buffers (`buf0`, `buf1`, `buf2`) | 3 × 320 × 24 b = 23,040 b. |
+| Counters | `in_col_q` (9 b) + `wr_sel_q` (2 b) + `out_beat_q` (11 b) = 22 b. |
+| Sideband regs | `in_done_q`, `emit_armed_q`, `first_pair_q`, `sof_pending_q` = 4 b. |
+| `avg2` instances per channel | 5 — `avg2(anchor_c, anchor_cp1)`, `avg2(prev_c, prev_cp1)`, `avg2(anchor_c, prev_c)`, and the two outer averages of the bot-odd sequential-2-tap formula. 15 9-bit adders total across R/G/B before any synthesis sharing. |
+| Multipliers / DSPs | 0. |
 
 ---
 
 ## 6. Control Logic
 
-The §5.2 FSM is the entire control. There are no nested FSMs.
+§5.2 covers the entire control surface — there is no separate FSM. The relevant boundary behaviours are:
 
-- **Reset (`rst_n_i = 0`).** `state_q ← S_RX_FIRST`; all counters and data regs cleared; `sof_pending_q ← 0`; `first_row_q ← 1`; `cur_sel_q ← 0`. Line-buffer contents are undefined; they are not consumed before the first source row's `tlast` is seen.
-- **Frame entry.** A new frame is detected by an accepted input beat with `tuser = 1`. The SOF override (§5.4) takes effect in the same cycle to seed the top-edge replicate; the always_ff tail re-arms `first_row_q ← 1` and `cur_sel_q ← 0` for the next cycle.
-- **End of source row.** `cur_is_last_q == 1` on the accepted top-row odd beat steers the FSM into `S_BOT1`, with `out_col_q ← 0` and `in_col_q ← 0` to start the bot-row replay and prepare for the next source row's writes.
-- **End of bot row.** `out_col_q == 2W − 1` in `S_BOT2` returns the FSM to `S_RX_FIRST`, flips `cur_sel_q`, and clears `first_row_q`.
+- **Reset (`rst_n_i = 0`).** `wr_sel_q ← 0`; counters cleared (`in_col_q`, `out_beat_q`); `in_done_q ← 0`; `emit_armed_q ← 0`; `first_pair_q ← 1`; `sof_pending_q ← 0`. Line-buffer contents are undefined; they are not consumed before the first source row's `tlast` is seen.
+- **Frame entry.** An accepted input beat with `tuser = 1` re-arms `first_pair_q ← 1` (so the same-cycle `effective_first_pair` triggers the top-edge-replicate seed write into `anchor_buf`) and latches `sof_pending_q ← 1`. `wr_sel_q` continues rotating from wherever the previous frame left it — the rotation is invariant under starting offset (see §5.4).
+- **End of source row.** Accepted `s_axis.tlast` resets `in_col_q ← 0` and asserts `in_done_q ← 1`. `s_axis.tready` deasserts so no further input is accepted until the rotation fires.
+- **End of pair emit.** The retiring `out_beat_q == 4W − 1` beat resets `out_beat_q ← 0` and clears `emit_armed_q ← 0`.
+- **Boundary rotation.** When both `in_done_q == 1` and `emit_armed_q == 0` are true on the same cycle, `wr_sel_q` advances by 1 (mod 3), `in_done_q` clears, `emit_armed_q` re-asserts (next pair begins emitting), and `first_pair_q` clears (after the first pair's seed has been written).
 
 ---
 
 ## 7. Timing
 
-| Metric                                                       | Value                                                                       |
-|--------------------------------------------------------------|-----------------------------------------------------------------------------|
-| Latency from accepted SOF beat to first `m_axis` beat        | 2 `clk_dsp` cycles (peek-ahead)                                              |
-| Steady-state output ratio                                    | 4 output beats per source pixel                                              |
-| Cycle budget per source row of `W` pixels                    | ≈ `5W` `clk_dsp` cycles for `4W` output beats — output rate ≈ 0.8 beats/cycle |
-| Top-row emit phase                                           | `2W` cycles, interleaved with input acceptance                               |
-| Bot-row replay phase                                         | `2W` cycles, **input fully back-pressured** (no `s_axis` accept during this window) |
-| Hold under downstream stall                                  | indefinite — `state_q` and combinational outputs hold while `m_axis.tready = 0` |
+| Metric | Value |
+|---|---|
+| Latency from accepted SOF beat to first `m_axis` beat | `4W` `clk_dsp` cycles (1 input row at the nominal 1:4 input/DSP rate) |
+| Steady-state output ratio | 4 output beats per source pixel |
+| Cycle budget per source row of `W` pixels | `4W` `clk_dsp` cycles for `4W` output beats — output rate **1.0 beats/cycle** sustained |
+| Top-row emit phase | First 2W of the 4W cycles, no input-side back-pressure |
+| Bot-row emit phase | Second 2W of the 4W cycles, no input-side back-pressure |
+| Hold under downstream stall | Indefinite — `out_beat_q` and `emit_armed_q` hold; `in_done_q` blocks new input once the row completes |
+| Hold under upstream stall | Indefinite — emitter idles once `out_beat_q == 4W−1` retires; rotation waits for `in_done_q` |
 
-The 4× output-per-input ratio matches a 1:4 input-pixel-clock to DSP-clock ratio in steady state. The `2W`-cycle bot-row replay produces a bursty access pattern at the top-level output FIFO: the source-row's `2W` top beats are interleaved with input accepts (~0.5 beats/cycle), then `2W` bot beats are produced back-to-back with no input. Output FIFO sizing at the top level must absorb this burst.
+The 1-row startup latency is the cost of the uniform schedule: pair 0's bot row uses row 0 as both anchor and prev (top-edge replicate), so it can't be emitted until row 0 is fully buffered. From pair 1 onward the design is in steady state — every row consumes exactly 4W DSP cycles, with the emitter and writer running concurrently and finishing simultaneously under nominal rate balance.
 
 ---
 
@@ -389,7 +314,7 @@ The 4× output-per-input ratio matches a 1:4 input-pixel-clock to DSP-clock rati
 This module lives in `clk_dsp`. Correctness depends on the surrounding top-level wiring, where the input AXIS arrives via a CDC FIFO from `clk_pix_in_i` and the output AXIS leaves via a CDC FIFO into `clk_pix_out_i`.
 
 - **Long-term rate balance.** For every input pixel the module emits 4 output pixels, so `clk_pix_in_i × 4 = clk_pix_out_i` on average over a frame. Sustained mismatch drifts the output FIFO and trips the top-level FIFO-overflow / output-underrun SVAs.
-- **Per-frame startup.** The module's first-output latency is 2 `clk_dsp` cycles after an accepted SOF. The much larger startup cost is the per-row pattern in §7: each source row produces a `2W`-cycle bot-row replay during which `s_axis` is back-pressured. As long as the downstream VGA controller's `V_BLANK` exceeds those bursts in real time (which it does by a wide margin at any reasonable resolution), no output underflow occurs.
+- **Per-frame startup.** The module's first-output latency is `4W` `clk_dsp` cycles after an accepted SOF — one full input row at the 1:4 input/DSP rate, needed because pair 0's bot row reads row 0 from a fully-buffered anchor (and the seeded prev). After this 1-row primer, the module runs at uniform sustained throughput: each source row produces 4W output beats over 4W DSP cycles. Downstream `V_BLANK` slack absorbs the per-frame primer; with sparevideo's `V_BACK_PORCH_OUT_2X` etc. (output blanking doubled with the scaler enabled) there is far more than 4W cycles of headroom.
 - **Phase between input SOF and output VGA frame boundary** is **not** enforced by this module. Frame-0 alignment is a top-level concern; subsequent frames rely on the rate balance plus output `V_BLANK` slack to absorb the per-frame startup delay above.
 - **Real-silicon deployments** must satisfy the rate-balance constraint through one of: (a) genlock — derive `clk_pix_out_i` from `clk_pix_in_i` via a PLL; (b) a frame buffer between the pipeline and VGA, with explicit drop/duplicate-frame logic; (c) audit headroom for the worst-case crystal tolerance on both clocks.
 
@@ -408,11 +333,12 @@ The module declares its data registers and arithmetic intermediates as raw `logi
 
 ## 9. Known Limitations
 
-- **`H_ACTIVE_IN` must be even.** The horizontal output width is `2·H_ACTIVE_IN`; the right-edge-replication logic assumes the input width is exact. Odd widths are not supported.
+- **`H_ACTIVE_IN` must be even.** The horizontal output width is `2·H_ACTIVE_IN`; the right-edge-replication clamp assumes the input width is exact. Odd widths are not supported.
 - **Right-edge replication is the only horizontal edge policy.** No reflect, no zero-pad. The penultimate horizontal interpolant past the last column duplicates the last sample.
 - **Top-edge replication is the only vertical edge policy for `r = 0`.** The first input row's bottom output row equals its top output row.
 - **2× only.** No support for non-2× factors (1.5×, 3×, …). A future general scaler would replace this module rather than parameterise it.
-- **Bot-row replay is bursty.** During each source row's bot-replay phase the input is back-pressured for `2W` consecutive cycles (§7). Top-level output FIFO sizing must absorb this; not addressed inside this module.
+- **One-input-row latency from SOF to first output beat.** This is structural to the uniform 3-buffer schedule (pair 0's bot needs row 0 fully buffered before it can read it). For the project's video resolutions this is sub-millisecond and irrelevant; for ultra-low-latency applications a different upscaler would be needed.
+- **`H_ACTIVE_IN`-deep × 24-bit × 3 line buffers** are instantiated regardless of the input row's actual width. Rows are assumed to always be exactly `H_ACTIVE_IN` wide (matches top-level usage); shorter rows are not supported.
 
 ---
 

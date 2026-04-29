@@ -4,29 +4,27 @@
 
 // axis_scale2x -- 2x bilinear spatial upscaler on a 24-bit RGB AXIS.
 //
-// Each input pixel S[r,c] anchors a 2x2 output block at out coords
-// (2r..2r+1, 2c..2c+1). Top output row uses (cur, avg2(cur,next));
-// bot output row uses 2x2 averages of the current row and the previous
-// source row held in a line buffer. All weights are 1/2 -- shift-and-add,
-// no multipliers.
+// Three line buffers in cyclic rotation give "write target" / "anchor" /
+// "prev" disjoint at all times, so the input writer and the output emitter
+// run as two independent processes with no read/write aliasing.
 //
-// FSM:
-//   S_RX_FIRST : accept first source pixel of a new row.
-//   S_RX_NEXT  : accept the peeked-ahead next pixel.
-//   S_TOP1/2   : emit two top-row beats: cur, then avg2(cur, next).
-//   S_BOT1/2   : after the source row's tlast, replay both buffers to
-//                emit 2W bot-row beats.
+// Per-row schedule (steady state, after row 0):
+//   - Input writer: writes one pixel per 4 DSP cycles (under clk_dsp = 4 *
+//     clk_pix_in rate balance) into write_buf at column in_col_q.
+//   - Output emitter: emits one beat per DSP cycle for 4W cycles, reading
+//     anchor_buf during the top phase (out_beat_q in [0, 2W)) and reading
+//     anchor_buf + prev_buf during the bot phase ([2W, 4W)).
+//   - At input tlast + emit-pair-done, wr_sel_q advances mod 3.
 //
-// Edge handling:
-//   * Top edge: row 0 is written into both line buffers, so its bot-row
-//     replay reads prev == cur.
-//   * Right edge: at the row's last pixel, next_q is held equal to cur_q
-//     so avg2 returns cur_q; src_c_next clamps to W-1 during bot reads.
+// Frame entry: accepted s_axis.tuser re-arms first_pair_q (top-edge
+// replicate seed -- writes go to BOTH write_buf AND anchor_buf for the
+// first pair of a frame; the seed lands where pair 0's prev_sel will read
+// it after the next rotation). wr_sel_q is NOT reset on SOF -- the rotation
+// is invariant under starting offset.
 //
-// Latency: 2 clk_dsp cycles from accepted SOF to first m_axis beat.
-// Long-term throughput: per source row of W pixels, ~5W cycles produce
-// 4W output beats. s_axis is back-pressured during the entire 2W-cycle
-// bot-row replay following each source row.
+// Latency: 4W clk_dsp cycles from accepted SOF to first m_axis beat (one
+// full input row of 1:4-paced intake before pair 0's bot can read row 0).
+// Steady-state output rate: 1.0 beats/cycle sustained, no per-row burst.
 
 module axis_scale2x #(
     parameter int H_ACTIVE_IN = sparevideo_pkg::H_ACTIVE,
@@ -40,30 +38,33 @@ module axis_scale2x #(
 
     localparam int COL_W     = $clog2(H_ACTIVE_IN + 1);
     localparam int OUT_COL_W = $clog2(2*H_ACTIVE_IN + 1);
+    localparam int BEAT_W    = $clog2(4*H_ACTIVE_IN + 1);
 
-    typedef enum logic [2:0] {
-        S_RX_FIRST, S_RX_NEXT, S_TOP1, S_TOP2, S_BOT1, S_BOT2
-    } state_e;
-    state_e state_q;
-
-    logic [COL_W-1:0]     in_col_q;        // src col where the next accept lands
-    logic [COL_W-1:0]     pair_col_q;      // src col of cur_q (gates SOF tuser)
-    logic [OUT_COL_W-1:0] out_col_q;       // 0..2W-1 during BOT phase
-    logic [23:0]          cur_q;
-    logic [23:0]          next_q;
-    logic                 cur_is_last_q;
-    logic                 next_is_last_q;
-    logic                 sof_pending_q;
-    logic                 first_row_q;     // 1 while emitting the first row of a frame
-    logic                 cur_sel_q;       // ping-pong: which buffer is "cur"
-
-    // ---- Two ping-pong line buffers ----
+    // ---- Three line buffers ----
     logic [23:0] buf0 [H_ACTIVE_IN];
     logic [23:0] buf1 [H_ACTIVE_IN];
+    logic [23:0] buf2 [H_ACTIVE_IN];
+
+    // ---- Buffer rotation ----
+    logic [1:0] wr_sel_q;
+    logic [1:0] anchor_sel, prev_sel;
+    always_comb begin
+        unique case (wr_sel_q)
+            2'd0:    begin anchor_sel = 2'd2; prev_sel = 2'd1; end
+            2'd1:    begin anchor_sel = 2'd0; prev_sel = 2'd2; end
+            default: begin anchor_sel = 2'd1; prev_sel = 2'd0; end
+        endcase
+    end
+
+    // ---- Counters and flags ----
+    logic [COL_W-1:0]  in_col_q;
+    logic [BEAT_W-1:0] out_beat_q;
+    logic              in_done_q;
+    logic              emit_armed_q;
+    logic              first_pair_q;
+    logic              sof_pending_q;
 
     // ---- Per-channel 2-tap round-half-up average. avg2(a, a) = a. ----
-    // The bot-odd 4-tap is built from two avg2's of avg2's; the LSB rounding
-    // matches py/models/ops/scale2x.py.
     /* verilator lint_off UNUSEDSIGNAL */
     function automatic logic [23:0] avg2(input logic [23:0] a,
                                          input logic [23:0] b);
@@ -77,205 +78,145 @@ module axis_scale2x #(
     endfunction
     /* verilator lint_on UNUSEDSIGNAL */
 
-    // ---- SOF same-cycle override ----
-    // first_row_q / cur_sel_q re-arm at the SOF tail of always_ff, but the
-    // S_RX_FIRST buffer write runs in the SAME cycle and must see the
-    // post-SOF values for the top-edge replicate to fire on every frame.
-    logic rx_accept;
-    logic is_sof_pixel;
-    logic effective_first_row;
-    logic effective_cur_sel;
+    // ---- Beat -> address decode ----
+    logic                  in_bot_phase;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic [OUT_COL_W-1:0]  phase_col;
+    /* verilator lint_on UNUSEDSIGNAL */
+    logic [COL_W-1:0]      src_c, src_cp1;
+    logic                  beat_is_odd;
 
-    assign rx_accept           = ((state_q == S_RX_FIRST) || (state_q == S_RX_NEXT))
-                                 && s_axis.tvalid;
-    assign is_sof_pixel        = (state_q == S_RX_FIRST) && rx_accept && s_axis.tuser;
-    assign effective_first_row = first_row_q || is_sof_pixel;
-    assign effective_cur_sel   = is_sof_pixel ? 1'b0 : cur_sel_q;
+    assign in_bot_phase = (out_beat_q >= BEAT_W'(2*H_ACTIVE_IN));
+    assign phase_col    = in_bot_phase
+                            ? OUT_COL_W'(out_beat_q - BEAT_W'(2*H_ACTIVE_IN))
+                            : OUT_COL_W'(out_beat_q);
+    assign src_c        = phase_col[OUT_COL_W-1:1];
+    assign src_cp1      = (src_c == COL_W'(H_ACTIVE_IN - 1))
+                            ? src_c
+                            : COL_W'(src_c + COL_W'(1));
+    assign beat_is_odd  = out_beat_q[0];
 
-    // ---- Line-buffer write helper ----
-    // Always writes to "cur" buffer at col; on the first row of a frame,
-    // also writes to "prev" buffer (top-edge replicate seed).
-    task automatic write_lbufs(input logic [COL_W-1:0] col,
-                               input logic [23:0]     data);
-        if (effective_cur_sel == 1'b0) begin
-            buf0[col] <= data;
-            if (effective_first_row)
-                buf1[col] <= data;
-        end else begin
-            buf1[col] <= data;
-            if (effective_first_row)
-                buf0[col] <= data;
-        end
-    endtask
-
-    // ---- BOT-phase combinational read path ----
-    //   src_c      = out_col_q >> 1
-    //   src_c_next = min(src_c + 1, W - 1)        -- right-edge clamp
-    logic [COL_W-1:0] src_c, src_c_next;
-    logic [23:0]      cur_buf_c, cur_buf_cn, prev_buf_c, prev_buf_cn;
-    logic [23:0]      cur_top_odd, prev_top_odd;
-    logic [23:0]      bot_even, bot_odd;
-
+    // ---- Buffer reads (combinational, two reads per buffer) ----
+    logic [23:0] anchor_c, anchor_cp1, prev_c, prev_cp1;
     always_comb begin
-        src_c      = out_col_q[OUT_COL_W-1:1];
-        src_c_next = (src_c == COL_W'(H_ACTIVE_IN - 1)) ? src_c
-                                                       : (COL_W'(src_c + (COL_W)'(1)));
-
-        if (cur_sel_q == 1'b0) begin
-            cur_buf_c   = buf0[src_c];
-            cur_buf_cn  = buf0[src_c_next];
-            prev_buf_c  = buf1[src_c];
-            prev_buf_cn = buf1[src_c_next];
-        end else begin
-            cur_buf_c   = buf1[src_c];
-            cur_buf_cn  = buf1[src_c_next];
-            prev_buf_c  = buf0[src_c];
-            prev_buf_cn = buf0[src_c_next];
-        end
-
-        cur_top_odd  = avg2(cur_buf_c,   cur_buf_cn);
-        prev_top_odd = avg2(prev_buf_c,  prev_buf_cn);
-        bot_even     = avg2(cur_buf_c,   prev_buf_c);
-        bot_odd      = avg2(cur_top_odd, prev_top_odd);
+        unique case (anchor_sel)
+            2'd0:    begin anchor_c = buf0[src_c]; anchor_cp1 = buf0[src_cp1]; end
+            2'd1:    begin anchor_c = buf1[src_c]; anchor_cp1 = buf1[src_cp1]; end
+            default: begin anchor_c = buf2[src_c]; anchor_cp1 = buf2[src_cp1]; end
+        endcase
+        unique case (prev_sel)
+            2'd0:    begin prev_c = buf0[src_c]; prev_cp1 = buf0[src_cp1]; end
+            2'd1:    begin prev_c = buf1[src_c]; prev_cp1 = buf1[src_cp1]; end
+            default: begin prev_c = buf2[src_c]; prev_cp1 = buf2[src_cp1]; end
+        endcase
     end
 
     // ---- Output beat formatter ----
     logic [23:0] tx_data;
-    logic        tx_valid;
-    logic        tx_last;
-    logic        tx_user;
-
     always_comb begin
-        tx_data  = '0;
-        tx_valid = 1'b0;
-        tx_last  = 1'b0;
-        tx_user  = 1'b0;
-        unique case (state_q)
-            S_RX_FIRST, S_RX_NEXT: begin
-                tx_valid = 1'b0;
-            end
-            S_TOP1: begin
-                tx_data  = cur_q;
-                tx_valid = 1'b1;
-                tx_user  = sof_pending_q && (pair_col_q == '0);
-            end
-            S_TOP2: begin
-                tx_data  = avg2(cur_q, next_q);
-                tx_valid = 1'b1;
-                tx_last  = cur_is_last_q;
-            end
-            S_BOT1: begin
-                tx_data  = bot_even;
-                tx_valid = 1'b1;
-            end
-            S_BOT2: begin
-                tx_data  = bot_odd;
-                tx_valid = 1'b1;
-                tx_last  = (out_col_q == OUT_COL_W'(2*H_ACTIVE_IN - 1));
-            end
-            default: begin
-                tx_valid = 1'b0;
-            end
-        endcase
+        if (!in_bot_phase) begin
+            tx_data = beat_is_odd ? avg2(anchor_c, anchor_cp1) : anchor_c;
+        end else begin
+            tx_data = beat_is_odd
+                        ? avg2(avg2(anchor_c, anchor_cp1),
+                               avg2(prev_c,   prev_cp1))
+                        : avg2(anchor_c, prev_c);
+        end
     end
 
-    // ---- AXIS port drives ----
-    assign s_axis.tready = (state_q == S_RX_FIRST) || (state_q == S_RX_NEXT);
-    assign m_axis.tdata  = tx_data;
-    assign m_axis.tvalid = tx_valid;
-    assign m_axis.tlast  = tx_last;
-    assign m_axis.tuser  = tx_user;
+    // ---- SOF same-cycle override ----
+    // first_pair_q rearms at the SOF tail of always_ff (NBA), but the
+    // seed write needs the post-SOF value in the SAME cycle as the SOF
+    // accept. effective_first_pair makes the buffer-write code see
+    // first_pair_q=1 on the SOF cycle of every new frame.
+    logic do_accept, do_emit;
+    logic is_sof_pixel;
+    logic effective_first_pair;
 
-    // ---- FSM ----
+    assign do_accept           = s_axis.tvalid && s_axis.tready;
+    assign do_emit             = m_axis.tvalid && m_axis.tready;
+    assign is_sof_pixel        = do_accept && s_axis.tuser;
+    assign effective_first_pair = first_pair_q || is_sof_pixel;
+
+    // ---- AXIS port drives ----
+    // tready stalls a SOF input while emit is still in progress (defensive
+    // against malformed back-to-back frames; see plan §"SOF stall"). Under
+    // nominal V_BLANK it is a no-op.
+    assign s_axis.tready = !in_done_q && !(s_axis.tvalid && s_axis.tuser && emit_armed_q);
+    assign m_axis.tdata  = tx_data;
+    assign m_axis.tvalid = emit_armed_q;
+    assign m_axis.tlast  = emit_armed_q && ((out_beat_q == BEAT_W'(2*H_ACTIVE_IN - 1)) ||
+                                            (out_beat_q == BEAT_W'(4*H_ACTIVE_IN - 1)));
+    assign m_axis.tuser  = emit_armed_q && sof_pending_q && (out_beat_q == '0);
+
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
-            state_q        <= S_RX_FIRST;
+            wr_sel_q       <= 2'd0;
             in_col_q       <= '0;
-            pair_col_q     <= '0;
-            out_col_q      <= '0;
-            cur_q          <= '0;
-            next_q         <= '0;
-            cur_is_last_q  <= 1'b0;
-            next_is_last_q <= 1'b0;
+            out_beat_q     <= '0;
+            in_done_q      <= 1'b0;
+            emit_armed_q   <= 1'b0;
+            first_pair_q   <= 1'b1;
             sof_pending_q  <= 1'b0;
-            first_row_q    <= 1'b1;
-            cur_sel_q      <= 1'b0;
         end else begin
-            unique case (state_q)
-                S_RX_FIRST: begin
-                    if (rx_accept) begin
-                        cur_q         <= s_axis.tdata;
-                        cur_is_last_q <= s_axis.tlast;
-                        pair_col_q    <= '0;
-                        write_lbufs(in_col_q, s_axis.tdata);
-                        if (s_axis.tuser)
-                            sof_pending_q <= 1'b1;
-                        in_col_q <= in_col_q + (COL_W)'(1);
-                        state_q  <= S_RX_NEXT;
-                    end
+            // ---- Input writer ----
+            if (do_accept) begin
+                // Write to write_buf
+                unique case (wr_sel_q)
+                    2'd0:    buf0[in_col_q] <= s_axis.tdata;
+                    2'd1:    buf1[in_col_q] <= s_axis.tdata;
+                    default: buf2[in_col_q] <= s_axis.tdata;
+                endcase
+                // First-pair top-edge replicate seed: also write to anchor_buf
+                // (which becomes prev_buf for pair 0 emit after the next
+                // rotation; see plan §"Why the seed goes to anchor_sel").
+                if (effective_first_pair) begin
+                    unique case (anchor_sel)
+                        2'd0:    buf0[in_col_q] <= s_axis.tdata;
+                        2'd1:    buf1[in_col_q] <= s_axis.tdata;
+                        default: buf2[in_col_q] <= s_axis.tdata;
+                    endcase
                 end
-                S_RX_NEXT: begin
-                    if (rx_accept) begin
-                        next_q         <= s_axis.tdata;
-                        next_is_last_q <= s_axis.tlast;
-                        write_lbufs(in_col_q, s_axis.tdata);
-                        in_col_q <= in_col_q + (COL_W)'(1);
-                        state_q  <= S_TOP1;
-                    end
+                if (s_axis.tuser)
+                    sof_pending_q <= 1'b1;
+                if (s_axis.tlast) begin
+                    in_col_q  <= '0;
+                    in_done_q <= 1'b1;
+                end else begin
+                    in_col_q <= in_col_q + COL_W'(1);
                 end
-                S_TOP1: begin
-                    if (m_axis.tready) begin
-                        if (sof_pending_q && (pair_col_q == '0))
-                            sof_pending_q <= 1'b0;
-                        state_q <= S_TOP2;
-                    end
-                end
-                S_TOP2: begin
-                    if (m_axis.tready) begin
-                        if (cur_is_last_q) begin
-                            // End of source row -> bot-row replay.
-                            out_col_q <= '0;
-                            in_col_q  <= '0;
-                            state_q   <= S_BOT1;
-                        end else begin
-                            // Shift the peek window: cur <- next.
-                            cur_q         <= next_q;
-                            cur_is_last_q <= next_is_last_q;
-                            pair_col_q    <= pair_col_q + (COL_W)'(1);
-                            // Right-edge replicate: when next was the row's
-                            // last pixel, hold next == cur for one more pair
-                            // (skip RX_NEXT) so avg2 returns cur.
-                            state_q <= next_is_last_q ? S_TOP1 : S_RX_NEXT;
-                        end
-                    end
-                end
-                S_BOT1: begin
-                    if (m_axis.tready) begin
-                        out_col_q <= out_col_q + (OUT_COL_W)'(1);
-                        state_q   <= S_BOT2;
-                    end
-                end
-                S_BOT2: begin
-                    if (m_axis.tready) begin
-                        if (out_col_q == OUT_COL_W'(2*H_ACTIVE_IN - 1)) begin
-                            state_q     <= S_RX_FIRST;
-                            out_col_q   <= '0;
-                            pair_col_q  <= '0;
-                            cur_sel_q   <= ~cur_sel_q;
-                            first_row_q <= 1'b0;
-                        end else begin
-                            out_col_q <= out_col_q + (OUT_COL_W)'(1);
-                            state_q   <= S_BOT1;
-                        end
-                    end
-                end
-                default: state_q <= S_RX_FIRST;
-            endcase
+            end
 
-            // SOF re-arms top-edge replicate and ping-pong on every frame.
-            if (rx_accept && s_axis.tuser) begin
-                first_row_q <= 1'b1;
-                cur_sel_q   <= 1'b0;
+            // ---- Output emitter ----
+            if (do_emit) begin
+                if (out_beat_q == BEAT_W'(4*H_ACTIVE_IN - 1)) begin
+                    out_beat_q   <= '0;
+                    emit_armed_q <= 1'b0;
+                end else begin
+                    out_beat_q <= out_beat_q + BEAT_W'(1);
+                end
+                if (sof_pending_q && (out_beat_q == '0))
+                    sof_pending_q <= 1'b0;
+            end
+
+            // ---- Boundary rotation ----
+            // Triggers when input row is done AND emitter is idle. There may
+            // be a 1-cycle bubble between consecutive pairs (m_axis.tvalid=0
+            // for one cycle while emit_armed_q transitions through 0); this
+            // is acceptable and adds 1/(4W) overhead.
+            if (in_done_q && !emit_armed_q) begin
+                wr_sel_q     <= (wr_sel_q == 2'd2) ? 2'd0 : (wr_sel_q + 2'd1);
+                in_done_q    <= 1'b0;
+                emit_armed_q <= 1'b1;
+                first_pair_q <= 1'b0;
+            end
+
+            // ---- SOF re-arm ----
+            // Accepted SOF input rearms first_pair_q for the new frame's
+            // top-edge replicate seeding. wr_sel_q is NOT reset — the
+            // rotation is invariant under starting offset.
+            if (is_sof_pixel) begin
+                first_pair_q <= 1'b1;
             end
         end
     end
