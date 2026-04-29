@@ -138,27 +138,41 @@ Equivalently, sliding the anchor across an input row `S[r] = (A, B, C, …, X)` 
 ### 5.1 Data flow overview
 
 ```
-            ┌──────────────────────────────────────────────┐
-            │                axis_scale2x                  │
-            │                                              │
-            │     ┌──────────────────────┐                 │
-   s_axis ──┼──►  │ input writer         │                 │
-            │     └──────────┬───────────┘                 │
-            │                │                             │
-            │                ▼                             │
-            │     ┌──────────────────────┐                 │
-            │     │ buf_mem[0..2]        │                 │
-            │     │ (W × 24 b each)      │                 │
-            │     └──────────┬───────────┘                 │
-            │                │                             │
-            │                ▼                             │
-            │     ┌──────────────────────┐                 │
-            │     │ output emitter       │ ──► m_axis      │
-            │     └──────────────────────┘                 │
-            └──────────────────────────────────────────────┘
+        ┌─────────────────────────────────────────────────────┐
+        │                   axis_scale2x                      │
+        │                                                     │
+        │             ┌─────────────────────────┐             │
+s_axis ─┼────────────►│      input writer       │             │
+        │             └────────────┬────────────┘             │
+        │                          │                          │
+        │                          ▼                          │
+        │               ┌──────────┬──────────┐               │
+        │               │         1:3         │               │
+        │ wr_sel_q ────►│        demux        │               │
+        │               └─┬────────┬────────┬─┘               │
+        │                 │        │        │                 │
+        │                 ▼        ▼        ▼                 │
+        │             ┌───┬───┐┌───┬───┐┌───┬───┐             │
+        │             │ buf 0 ││ buf 1 ││ buf 2 │             │
+        │             └───┬───┘└───┬───┘└───┬───┘             │
+        │                 │        │        │                 │
+        │                 ▼        ▼        ▼                 │
+        │             ┌───┬────────┬────────┬───┐             │
+        │ anchor_sel ►│     3:1 row mux × 2     │◄ prev_sel   │
+        │             │   (anchor + prev rows;  │             │
+        │             │    each cols c, c+1)    │             │
+        │             └───────┬─────────┬───────┘             │
+        │                     │         │                     │
+        │                     ▼         ▼                     │
+        │             ┌───────┬─────────┬───────┐             │
+        │             │     output emitter      │─────────────┼─► m_axis
+        │             └─────────────────────────┘             │
+        └─────────────────────────────────────────────────────┘
 ```
 
-The three line buffers are held in a single indexed array `buf_mem[3][W]` of 24-bit words; the per-row roles `write_buf = buf_mem[wr_sel_q]`, `anchor_buf = buf_mem[anchor_sel]`, and `prev_buf = buf_mem[prev_sel]` are aliases used throughout the rest of this document. The input writer fills `write_buf` as a row streams in, and the output emitter reads from `anchor_buf` and `prev_buf`. A 2-bit register `wr_sel_q` selects the write target; the other two indices follow combinationally as `anchor_sel` and `prev_sel` (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the new anchor, the prior anchor becomes the new prev, and the prior prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
+The three line buffers are held in a single indexed array `buf_mem[3][W]` of 24-bit words. Conceptually, the input writer feeds a 1:3 demux that routes each accepted pixel into exactly one of `buf[0..2]`, with select input `wr_sel_q`. The read side is more involved: the bilinear formatter needs the 2×2 source neighbourhood `(anchor[c], anchor[c+1], prev[c], prev[c+1])`, which is two row roles by two columns. Each `buf[k]` therefore exposes a *pair* of combinational reads per cycle, at addresses `src_c` and `src_cp1`. Two parallel 3:1 row muxes — selected by `anchor_sel` and `prev_sel` — pick which buffer's column-pair becomes the anchor row and which becomes the prev row. That is the "3:1 row mux × 2" block in the diagram; its four scalar outputs are `anchor_c`, `anchor_cp1`, `prev_c`, `prev_cp1`, which feed the output emitter. The rotation is visible as datapath: the demux selector picks the buffer in the **write** role, and the two read-mux selectors pick the buffers in the **anchor** and **prev** roles.
+
+The per-row buffer roles are aliases over the same array: `write_buf = buf_mem[wr_sel_q]`, `anchor_buf = buf_mem[anchor_sel]`, `prev_buf = buf_mem[prev_sel]`. A 2-bit register `wr_sel_q` selects the write target; the other two indices follow combinationally as `anchor_sel` and `prev_sel` (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the new anchor, the prior anchor becomes the new prev, and the prior prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
 
 ### 5.2 Counters, registers, and rotation
 
@@ -234,6 +248,27 @@ A new frame (accepted `s_axis.tuser`) re-arms `first_pair_q ← 1`. `wr_sel_q` i
 
 The writer and emitter run as two independent processes synchronized only at the rotation. Under a sustained 1:4 input-to-DSP rate ratio (the project's nominal rate balance — see §8), the writer's `W` input cycles and the emitter's `4W` DSP cycles complete simultaneously and the rotation is seamless. If the upstream FIFO holds up the input, the emitter idles after its last beat (`emit_armed_q = 0`) until the input row finishes. If the downstream stalls the output, the writer idles after its last input (`in_done_q = 1`, `s_axis.tready = 0`) until the emitter catches up. Either way, the rotation waits for both.
 
+Conceptual schedule for one steady-state pair, with `wr_sel_q = m` held for the whole row:
+
+```
+                                                    rotation
+                                                      ▼
+DSP cyc:   0   1   2   3   4   5  ...  4W-3 4W-2 4W-1 │ 4W  4W+1 4W+2 ...
+
+Writer:    W   ·   ·   ·   W   ·  ...   ·    ·    W   │  ·    W    ·  ...
+                                                  ▲
+                                                  tlast → in_done_q ← 1
+
+Emitter:   E   E   E   E   E   E  ...   E    E    E   │  ░    E    E  ...
+                                                  ▲      ▲
+                                          emit_armed_q ← 0│
+                                                         1-cyc bubble before
+                                                         next pair (rotation
+                                                         updates as in §5.2.4)
+```
+
+`W` = accepted input beat, `·` = idle DSP cycle, `E` = emit beat, `░` = bubble.
+
 ### 5.3 Output beat formatter
 
 Each output cycle the formatter selects `m_axis.tdata` from the buffer reads (`anchor_c`, `anchor_cp1`, `prev_c`, `prev_cp1`) according to the phase and parity bits decoded in §5.2:
@@ -265,9 +300,20 @@ s_axis.tready    = !in_done_q && !sof_blocks_input
 m_axis.tvalid    = emit_armed_q
 ```
 
-Within a row, `s_axis.tready` stays high (input arrives at ~25% duty under the 1:4 clock ratio). It deasserts only between input `tlast` and the next rotation — typically zero cycles when the writer and emitter complete simultaneously, and a small number of cycles only if the upstream is faster than the nominal 1:4 rate.
+`in_done_q` is the row-boundary rate clamp. There is no per-pixel back-pressure. The mechanism is three lines of cooperation:
 
-`sof_blocks_input` defensively stalls acceptance of any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
+- **Set:** `in_done_q ← 1` on the cycle the row's last input beat (`s_axis.tlast`) is accepted.
+- **Hold:** while `in_done_q = 1`, `s_axis.tready = 0`, so no further input is accepted.
+- **Clear:** the rotation block clears `in_done_q` only when `emit_armed_q = 0` — i.e., when the emitter has retired the `(4W − 1)`-th beat of the current pair. The same rotation re-asserts `emit_armed_q` for the next pair, so the next row's first pixel is accepted on the cycle after `in_done_q` clears.
+
+Consequences for a faster-than-1:4 upstream:
+- *Within* a row, `s_axis.tready` stays high. The writer accepts at the upstream's full rate, even if that is faster than one pixel per four DSP cycles, and finishes its `W` writes early.
+- *At* the row boundary, the early `tlast` latches `in_done_q` and `tready` drops to 0 until the emitter completes the in-flight pair (which still takes `4W` DSP cycles).
+- *Long-term*, throughput is therefore clamped to one row per `4W` DSP cycles — exactly 1:4 — regardless of the upstream's instantaneous rate. Bursty input is absorbed; sustained over-rate is back-pressured at the boundary.
+
+Symmetric case: an upstream slower than 1:4 will let the writer's `W`-th pixel arrive *after* the emitter has finished its 4W beats. `emit_armed_q` then clears first; the rotation waits in the `in_done_q = 0`, `emit_armed_q = 0` quiescent state until `tlast` arrives, at which point the rotation fires the same cycle. In this case `tready` never drops; the emitter idles instead.
+
+`sof_blocks_input` is a separate, narrow stall: it defensively holds `tready` low for any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
 
 **Buffer writes.** A pixel accepted while `s_axis.tready = 1` is always written to `write_buf[in_col_q]`. When `effective_first_pair = 1` (defined in §5.2.2), the same pixel is *also* written to `anchor_buf[in_col_q]`. The seed lands where pair 0's `prev_sel` will read it after the next rotation, so pair 0's bot row reads `prev == anchor` (top-edge replicate). `anchor_buf` is unused for *reads* during row 0 intake (`emit_armed_q = 0` during the latency phase), so the seed write to `anchor_sel` doesn't conflict with anything.
 
