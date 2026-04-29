@@ -99,8 +99,17 @@ help:
 
 # ---- Main pipeline flow ----
 
-run-pipeline: prepare compile sim verify render
-	@echo "Pipeline complete!"
+# run-pipeline runs verify *and then* render, even when verify reports a
+# mismatch. Render is the most useful debugging artifact when something fails,
+# so we still produce it; the overall exit status is the verify status.
+run-pipeline: prepare compile sim
+	@set +e; $(MAKE) --no-print-directory verify; status=$$?; \
+	  $(MAKE) --no-print-directory render; \
+	  if [ $$status -ne 0 ]; then \
+	    echo "Pipeline finished with verify failures (render PNG written)."; \
+	    exit $$status; \
+	  fi; \
+	  echo "Pipeline complete!"
 
 # prepare writes dv/data/config.mk so that subsequent steps (sim, verify, render)
 # automatically pick up the same WIDTH/HEIGHT/FRAMES/MODE without re-specifying them.

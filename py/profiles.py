@@ -22,6 +22,7 @@ DEFAULT: ProfileT = dict(
     hflip_en=False,
     gamma_en=True,
     scaler_en=True,
+    hud_en=True,
     bbox_color=0x00_FF_00,
 )
 
@@ -43,6 +44,9 @@ NO_GAMMA_COR: ProfileT = dict(DEFAULT, gamma_en=False)
 # 2x spatial upscaler bypassed (output resolution = input resolution).
 NO_SCALER: ProfileT = dict(DEFAULT, scaler_en=False)
 
+# HUD bitmap overlay bypassed.
+NO_HUD: ProfileT = dict(DEFAULT, hud_en=False)
+
 PROFILES: dict[str, ProfileT] = {
     "default":       DEFAULT,
     "default_hflip": DEFAULT_HFLIP,
@@ -51,6 +55,7 @@ PROFILES: dict[str, ProfileT] = {
     "no_gauss":      NO_GAUSS,
     "no_gamma_cor":  NO_GAMMA_COR,
     "no_scaler":     NO_SCALER,
+    "no_hud":        NO_HUD,
 }
 
 

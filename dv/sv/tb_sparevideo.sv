@@ -54,6 +54,7 @@ module tb_sparevideo #(
         (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
         (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
         (CFG_NAME == "no_scaler")     ? sparevideo_pkg::CFG_NO_SCALER     :
+        (CFG_NAME == "no_hud")        ? sparevideo_pkg::CFG_NO_HUD        :
                                         sparevideo_pkg::CFG_DEFAULT;
 
     localparam int H_ACTIVE_OUT = CFG.scaler_en ? 2 * H_ACTIVE : H_ACTIVE;
@@ -127,7 +128,8 @@ module tb_sparevideo #(
             CFG_NAME != "no_morph"      &&
             CFG_NAME != "no_gauss"      &&
             CFG_NAME != "no_gamma_cor"  &&
-            CFG_NAME != "no_scaler")
+            CFG_NAME != "no_scaler"     &&
+            CFG_NAME != "no_hud")
             $warning("Unknown CFG_NAME '%s'; falling back to CFG_DEFAULT",
                      CFG_NAME);
     end

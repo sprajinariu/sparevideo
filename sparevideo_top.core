@@ -19,6 +19,7 @@ filesets:
       - sparevideo:ip:ccl
       - sparevideo:ip:overlay
       - sparevideo:ip:scaler
+      - sparevideo:ip:hud
 
   files_lint:
     files:

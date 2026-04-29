@@ -24,18 +24,6 @@ def render_grid(input_frames, output_frames, path, reference_frames=None,
         min_width: Target minimum width for the final image.
     """
     n = max(len(input_frames), len(output_frames))
-    h, w = input_frames[0].shape[:2]
-
-    gap = 2  # pixels between frames at native scale
-    native_w = n * w + (n - 1) * gap
-
-    # Scale factor: ensure the final image is at least min_width wide
-    scale = max(1, min_width // native_w)
-
-    sw, sh = w * scale, h * scale  # scaled frame dimensions (input row)
-    sgap = gap * scale
-
-    frames_w = n * sw + (n - 1) * sgap
 
     # Build row definitions: (label, frames_list)
     rows = [
@@ -45,13 +33,23 @@ def render_grid(input_frames, output_frames, path, reference_frames=None,
     if reference_frames is not None:
         rows.append(("REFERENCE MODEL", reference_frames))
 
-    # Per-row scaled frame dimensions — frames in different rows may have
-    # different native dims (e.g. the scaler doubles output but not input).
-    # Each row's frames are resized to fit (sw, sh) using nearest-neighbour.
-    row_dims = []
-    for _, frames_list in rows:
-        rh, rw = frames_list[0].shape[:2]
-        row_dims.append((rh, rw))
+    # Use the largest row's native dimensions as the cell size so we never
+    # downscale a frame (which would butcher 1-pixel-wide bitmap features
+    # like the 8x8 HUD glyphs). Smaller rows are upscaled with nearest-neighbour.
+    row_dims = [frames_list[0].shape[:2] for _, frames_list in rows]
+    h = max(rh for rh, _ in row_dims)
+    w = max(rw for _, rw in row_dims)
+
+    gap = 2  # pixels between frames at native scale
+    native_w = n * w + (n - 1) * gap
+
+    # Scale factor: ensure the final image is at least min_width wide
+    scale = max(1, min_width // native_w)
+
+    sw, sh = w * scale, h * scale  # scaled cell dimensions (largest row)
+    sgap = gap * scale
+
+    frames_w = n * sw + (n - 1) * sgap
 
     num_rows = len(rows)
     grid_h = num_rows * (label_height + sh)

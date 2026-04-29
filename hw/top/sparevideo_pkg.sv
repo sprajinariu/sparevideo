@@ -93,6 +93,7 @@ package sparevideo_pkg;
         logic       hflip_en;            // horizontal mirror on input
         logic       gamma_en;            // sRGB display gamma at output tail
         logic       scaler_en;           // 2x bilinear upscaler at output tail
+        logic       hud_en;              // 8x8 bitmap HUD overlay at post-scaler tail
         pixel_t     bbox_color;          // overlay colour
     } cfg_t;
 
@@ -118,6 +119,7 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
+        hud_en:            1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -133,6 +135,7 @@ package sparevideo_pkg;
         hflip_en:          1'b1,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
+        hud_en:            1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -150,6 +153,7 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
+        hud_en:            1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -165,6 +169,7 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
+        hud_en:            1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -180,6 +185,7 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b1,
+        hud_en:            1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -195,6 +201,7 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b0,
         scaler_en:         1'b1,
+        hud_en:            1'b1,
         bbox_color:        24'h00_FF_00
     };
 
@@ -212,6 +219,24 @@ package sparevideo_pkg;
         hflip_en:          1'b0,
         gamma_en:          1'b1,
         scaler_en:         1'b0,
+        hud_en:            1'b1,
+        bbox_color:        24'h00_FF_00
+    };
+
+    // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
+    // Byte-identical to CFG_DEFAULT for every pixel outside the HUD region.
+    localparam cfg_t CFG_NO_HUD = '{
+        motion_thresh:     8'd16,
+        alpha_shift:       3,
+        alpha_shift_slow:  6,
+        grace_frames:      0,
+        grace_alpha_shift: 1,
+        gauss_en:          1'b1,
+        morph_en:          1'b1,
+        hflip_en:          1'b0,
+        gamma_en:          1'b1,
+        scaler_en:         1'b1,
+        hud_en:            1'b0,
         bbox_color:        24'h00_FF_00
     };
 

@@ -7,6 +7,8 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/ip/hflip/rtl/axis_hflip.sv \
            ../../hw/ip/gamma/rtl/axis_gamma_cor.sv \
            ../../hw/ip/scaler/rtl/axis_scale2x.sv \
+           ../../hw/ip/hud/rtl/axis_hud_font_pkg.sv \
+           ../../hw/ip/hud/rtl/axis_hud.sv \
            ../../hw/ip/window/rtl/axis_window3x3.sv \
            ../../hw/ip/filters/rtl/axis_gauss3x3.sv \
            ../../hw/ip/filters/rtl/axis_morph3x3_erode.sv \
