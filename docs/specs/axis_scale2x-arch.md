@@ -170,9 +170,9 @@ s_axis ─┼────────────►│      input writer       
         └─────────────────────────────────────────────────────┘
 ```
 
-The three line buffers are held in a single indexed array `buf_mem[3][W]` of 24-bit words. Conceptually, the input writer feeds a 1:3 demux that routes each accepted pixel into exactly one of `buf[0..2]`, with select input `wr_sel_q`. The read side is more involved: the bilinear formatter needs the 2×2 source neighbourhood `(anchor[c], anchor[c+1], prev[c], prev[c+1])`, which is two row roles by two columns. Each `buf[k]` therefore exposes a *pair* of combinational reads per cycle, at addresses `src_c` and `src_cp1`. Two parallel 3:1 row muxes — selected by `anchor_sel` and `prev_sel` — pick which buffer's column-pair becomes the anchor row and which becomes the prev row. That is the "3:1 row mux × 2" block in the diagram; its four scalar outputs are `anchor_c`, `anchor_cp1`, `prev_c`, `prev_cp1`, which feed the output emitter. The rotation is visible as datapath: the demux selector picks the buffer in the **write** role, and the two read-mux selectors pick the buffers in the **anchor** and **prev** roles.
+The three line buffers live in a single array `buf_mem[3][W]` of 24-bit words. The input writer feeds a 1:3 demux selected by `wr_sel_q`; each `buf[k]` exposes a *pair* of combinational reads per cycle (at `src_c` and `src_cp1`), and two parallel 3:1 row muxes — selected by `anchor_sel` and `prev_sel` — pick which buffer's column-pair becomes the anchor row and which becomes the prev row. The four scalar outputs `anchor_c`, `anchor_cp1`, `prev_c`, `prev_cp1` feed the output emitter.
 
-The per-row buffer roles are aliases over the same array: `write_buf = buf_mem[wr_sel_q]`, `anchor_buf = buf_mem[anchor_sel]`, `prev_buf = buf_mem[prev_sel]`. A 2-bit register `wr_sel_q` selects the write target; the other two indices follow combinationally as `anchor_sel` and `prev_sel` (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the new anchor, the prior anchor becomes the new prev, and the prior prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
+The per-row buffer roles are aliases over the same array. A 2-bit register `wr_sel_q` selects the write target; `anchor_sel` and `prev_sel` follow combinationally (§5.2). At each row boundary the rotation advances `wr_sel_q` by one (mod 3): the just-filled buffer becomes the next anchor, the previous anchor becomes the next prev, and the previous prev becomes the next write target. Writer and emitter never share a buffer — they run as two independent processes synchronized only at the rotation.
 
 ### 5.2 Counters, registers, and rotation
 
@@ -300,18 +300,9 @@ s_axis.tready    = !in_done_q && !sof_blocks_input
 m_axis.tvalid    = emit_armed_q
 ```
 
-`in_done_q` is the row-boundary rate clamp. There is no per-pixel back-pressure. The mechanism is three lines of cooperation:
+`in_done_q` is the row-boundary rate clamp — there is no per-pixel back-pressure. It sets on accepted `s_axis.tlast`, holds `s_axis.tready = 0` while asserted, and clears only when the rotation fires (which requires `emit_armed_q = 0`, i.e. the in-flight pair has retired its `(4W − 1)`-th beat). The same rotation re-asserts `emit_armed_q` for the next pair.
 
-- **Set:** `in_done_q ← 1` on the cycle the row's last input beat (`s_axis.tlast`) is accepted.
-- **Hold:** while `in_done_q = 1`, `s_axis.tready = 0`, so no further input is accepted.
-- **Clear:** the rotation block clears `in_done_q` only when `emit_armed_q = 0` — i.e., when the emitter has retired the `(4W − 1)`-th beat of the current pair. The same rotation re-asserts `emit_armed_q` for the next pair, so the next row's first pixel is accepted on the cycle after `in_done_q` clears.
-
-Consequences for a faster-than-1:4 upstream:
-- *Within* a row, `s_axis.tready` stays high. The writer accepts at the upstream's full rate, even if that is faster than one pixel per four DSP cycles, and finishes its `W` writes early.
-- *At* the row boundary, the early `tlast` latches `in_done_q` and `tready` drops to 0 until the emitter completes the in-flight pair (which still takes `4W` DSP cycles).
-- *Long-term*, throughput is therefore clamped to one row per `4W` DSP cycles — exactly 1:4 — regardless of the upstream's instantaneous rate. Bursty input is absorbed; sustained over-rate is back-pressured at the boundary.
-
-Symmetric case: an upstream slower than 1:4 will let the writer's `W`-th pixel arrive *after* the emitter has finished its 4W beats. `emit_armed_q` then clears first; the rotation waits in the `in_done_q = 0`, `emit_armed_q = 0` quiescent state until `tlast` arrives, at which point the rotation fires the same cycle. In this case `tready` never drops; the emitter idles instead.
+Consequence: long-term throughput is clamped to one row per `4W` DSP cycles regardless of upstream rate. A faster-than-1:4 upstream finishes its `W` writes early and is back-pressured at the row boundary. A slower-than-1:4 upstream lets the emitter retire first; the rotation waits quiescent until `tlast` arrives. Bursty input is absorbed within a row; sustained over-rate is back-pressured at the boundary.
 
 `sof_blocks_input` is a separate, narrow stall: it defensively holds `tready` low for any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
 

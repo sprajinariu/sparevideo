@@ -126,7 +126,7 @@ sparevideo_top (top level)
 
 `H_ACTIVE` and `V_ACTIVE` set the active video region; the eight porch parameters set the surrounding blanking intervals. Together they determine the VGA frame format used by `u_vga` and the timing the input driver must mirror.
 
-`CFG` is resolved at compile time from the `CFG_NAME` string (TB plusarg / Makefile `CFG=` knob) and routed by `sparevideo_top` to the appropriate sub-module ports. The Python reference models in `py/models/` mirror the same fields via `py/profiles.py`; a parity test (`py/tests/test_profiles.py`) guards against drift. Adding a new algorithm knob costs one field in `cfg_t`, one matching key in every profile dict in `py/profiles.py`, and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. The existing profile set is `default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`, `no_scaler`, `no_hud`.
+`CFG` is resolved at compile time from a `CFG_NAME` string and routed by `sparevideo_top` to the appropriate sub-module ports. Adding a new algorithm knob costs one field in `cfg_t` and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. Named profiles (`default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`, `no_scaler`, `no_hud`) live in `sparevideo_pkg`.
 
 **Output resolution.** `H_ACTIVE_OUT/V_ACTIVE_OUT` come from `sparevideo_pkg::*_OUT_2X` when `CFG.scaler_en=1`; otherwise they equal the input dims. The VGA controller uses the OUT dims; the input AXIS, motion pipeline, gamma stage, and scaler input all stay at input dims. The TB drives input frames at input dims and captures output at output dims. Rate balance between the input and output sides is enforced by the clock-period ratio: when `CFG.scaler_en=1` the caller drives `clk_pix_in_i` at one-quarter the frequency of `clk_pix_out_i`; when `CFG.scaler_en=0` they're tied to the same clock.
 
@@ -210,35 +210,33 @@ Without this stage there is no mask. Details: [axis_motion_detect-arch.md](axis_
 
 Reads each input line into a 320-entry RGB line buffer, then emits the line in reverse column order. Latency: 1 line. Throughput: 1 pixel/cycle long-term. The stage sits before `u_fork`, so the motion mask and bbox coordinates downstream are computed on the mirrored frame — overlay rectangles land on top of the same pixels the user sees, with no axis-flip math elsewhere.
 
-Why this matters: the natural front-camera mental model is that the user's right hand should appear on the right of the image. Without this stage, that requires either a host-side flip on every consumer or a bbox-coordinate flip in the overlay. Doing the flip once at the head of the pipeline keeps every downstream stage coordinate-consistent. `CFG.hflip_en=0` (the default in `CFG_DEFAULT`) is a zero-latency combinational bypass for testing and for callers that prefer the raw input. Details: [axis_hflip-arch.md](axis_hflip-arch.md).
+Doing the flip once at the head of the pipeline keeps every downstream stage coordinate-consistent (no host-side flip on consumers, no bbox-coordinate flip in the overlay). `CFG.hflip_en=0` (the default in `CFG_DEFAULT`) is a zero-latency combinational bypass. Details: [axis_hflip-arch.md](axis_hflip-arch.md).
 
-**Backpressure note:** `axis_hflip` alternates between RX (asserts `s_axis_tready_o`) and TX (asserts `m_axis_tvalid_o`) phases over a single line buffer. During TX, upstream is stalled; the input CDC FIFO must absorb up to one line of write-clock pixels. `IN_FIFO_DEPTH = 128` is sized for `pix_clk = 25 MHz`, `dsp_clk = 100 MHz`, `H_ACTIVE = 320` (worst case ~80 entries with margin).
-
-The output CDC FIFO mirrors this concern in the opposite direction: hflip emits 320 pixels in 320 dsp_clk cycles during TX, while VGA drains at the slower pix_clk rate, so the FIFO accumulates ~3*H_ACTIVE/4 entries per line until backpressure throttles upstream. `OUT_FIFO_DEPTH = 256` is sized for H_ACTIVE = 320; the `CFG.scaler_en=1` configuration (output H_ACTIVE = 640, scaler emits 4 beats per input pixel in bursts) bumps `OUT_FIFO_DEPTH` to 1024 — see §6.1.
+**FIFO sizing note.** During hflip's TX phase, upstream is stalled — the input CDC FIFO must absorb up to one line of write-clock pixels. At `pix_clk = 25 MHz`, `dsp_clk = 100 MHz`, `H_ACTIVE = 320` the worst case is ~80 entries; `IN_FIFO_DEPTH = 128` covers it. The output CDC FIFO faces the symmetric concern: hflip emits 320 pixels in 320 dsp cycles during TX while VGA drains at the slower pix rate, accumulating ~`3·H_ACTIVE/4` entries per line. `OUT_FIFO_DEPTH = 256` covers it; `CFG.scaler_en=1` bumps `OUT_FIFO_DEPTH` to 1024 (see §6.1) because the scaler emits 4 beats per input pixel in bursts.
 
 ### 5.3 `u_morph_open` — clean up speckle in the mask
 
 Applies a 3×3 square morphological opening (erosion followed by dilation) to the raw 1-bit mask. Erosion deletes isolated foreground pixels and foreground stripes narrower than three pixels; the subsequent dilation restores the surviving blobs to approximately their original shape. The net effect is "erase salt noise and sub-3px features, keep everything else intact".
 
-Why this matters: without opening, each sensor-noise speckle that survives motion detection becomes its own connected component in `u_ccl` — either crowding out real objects from the `N_OUT` bbox list or littering the overlay with tiny rectangles. `CFG.morph_en=0` (profile `no_morph`) is a zero-latency combinational bypass so the raw vs. cleaned mask can be A/B compared. Details: [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md).
+Without opening, each sensor-noise speckle that survives motion detection becomes its own connected component in `u_ccl`, crowding real objects out of the `N_OUT` bbox list. `CFG.morph_en=0` (profile `no_morph`) is a zero-latency combinational bypass. Details: [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md).
 
 ### 5.4 `u_ccl` — group motion pixels into distinct objects
 
 Takes the cleaned 1-bit mask and, in a single raster-order pass, assigns each foreground pixel to a connected component using 8-connected streaming union-find. For every label it accumulates `{min_x, max_x, min_y, max_y, pixel_count}` on the fly. At end-of-frame — during vertical blanking — it resolves equivalence chains, drops components smaller than `CCL_MIN_COMPONENT_PIXELS`, and commits the top `CCL_N_OUT` bounding boxes into a double-buffered sideband that is stable for the entire next frame.
 
-Why this matters: a binary mask tells you "there is motion somewhere" but not "how many distinct objects, where". Without CCL the overlay would have to choose between drawing one bbox that spans every motion pixel (useless when multiple objects are present) and drawing a bbox per pixel. CCL is the stage that turns a mask into a short, stable list of object bounding boxes. Details: [axis_ccl-arch.md](axis_ccl-arch.md).
+CCL is the stage that turns a binary "is there motion somewhere" mask into a short, stable list of distinct object bounding boxes. Details: [axis_ccl-arch.md](axis_ccl-arch.md).
 
 ### 5.5 `u_overlay_bbox` — draw rectangles on the video
 
 Consumes the `N_OUT` bbox slots as a sideband and the RGB video as an AXIS stream. For each streaming pixel it computes, combinationally, whether `(col, row)` lies on any valid slot's rectangle edge; if so, the pixel is replaced with `BBOX_COLOR`, otherwise it passes through unchanged. Zero added latency, zero frame buffering.
 
-This is purely a rendering step — all detection and grouping happens upstream. The overlay has no memory of past frames and no opinion about which objects are "interesting"; it just draws what CCL committed. Details: [axis_overlay_bbox-arch.md](axis_overlay_bbox-arch.md).
+All detection and grouping happens upstream — the overlay just draws what CCL committed. Details: [axis_overlay_bbox-arch.md](axis_overlay_bbox-arch.md).
 
 ### 5.6 `u_gamma_cor` — sRGB display gamma at the post-mux tail
 
-The last AXIS stage on `clk_dsp` before the output CDC FIFO. Each of the three RGB channels is independently passed through a 33-entry sRGB encode LUT, with linear interpolation across the low 3 bits (`addr = pixel[7:3]`, `frac = pixel[2:0]`, `out = (LUT[addr]*(8-frac) + LUT[addr+1]*frac) >> 3`). 1-cycle pipeline; the LUT is baked into the SV `localparam` and is the single source of truth shared with `py/models/ops/gamma_cor.py` (a parity test guards against drift).
+The last AXIS stage on `clk_dsp` before the output CDC FIFO. Each of the three RGB channels is independently passed through a 33-entry sRGB encode LUT, with linear interpolation across the low 3 bits (`addr = pixel[7:3]`, `frac = pixel[2:0]`, `out = (LUT[addr]*(8-frac) + LUT[addr+1]*frac) >> 3`). 1-cycle pipeline; the LUT is a `localparam` baked at synthesis time.
 
-Why this matters: the upstream pipeline operates in linear-light intensity; the display expects sRGB-encoded values. Without this stage the output looks muddy in midtones. `CFG.gamma_en=0` (profile `no_gamma_cor`) is a zero-latency combinational bypass — useful both for verifying that the integration is byte-clean against pre-gamma goldens and for capturing un-encoded RGB for downstream tone-mapping experiments. Details: [axis_gamma_cor-arch.md](axis_gamma_cor-arch.md).
+The upstream pipeline operates in linear-light intensity; the display expects sRGB-encoded values. Without this stage the output looks muddy in midtones. `CFG.gamma_en=0` (profile `no_gamma_cor`) is a zero-latency combinational bypass. Details: [axis_gamma_cor-arch.md](axis_gamma_cor-arch.md).
 
 ### 5.7 `u_hud` — bitmap text HUD at the post-scaler tail
 
@@ -246,12 +244,10 @@ A small, fixed-layout 8x8 bitmap text overlay is the last stage on `clk_dsp` bef
 
 Four sideband signals feed the HUD, all generated in `sparevideo_top` on `clk_dsp_i`:
 
-- **`hud_frame_num_q`** — 16-bit counter incrementing once per HUD-input-SOF (the cycle the SOF beat is accepted at `u_hud.s_axis`). Counting at the HUD's input rather than at `u_fifo_in.m_axis` gives a 0-based frame index in lock-step with the frame currently entering the HUD.
-- **`hud_bbox_count`** — combinational popcount over `u_ccl_bboxes.valid[N_OUT_TOP]`. `axis_hud` saturates the 8-bit value to 99 internally before display. Note: `u_ccl_bboxes` is committed at the previous frame's mask EOF (CCL output is consumed by the overlay one frame later), so the count latched at frame N's HUD-SOF reflects frame N−1's bboxes — matching the same 1-frame display delay as the bboxes drawn on screen (§5.9).
-- **`ctrl_flow_tag`** — `ctrl_flow_i` is already on `clk_dsp_i` (quasi-static input) and feeds `u_hud.ctrl_flow_tag_i` directly. `axis_hud` decodes it via a 4-entry combinational ROM into glyph triples (`PAS`/`MOT`/`MSK`/`CCL`).
-- **`hud_latency_us_q`** — measured between input-SOF (at `u_fifo_in.m_axis`, captured into `t_in_q` via a free-running cycle counter) and HUD-input-SOF (at `scale2x_to_pix_out`). The cycle delta is converted to microseconds using `(delta * 41) >> 12`, an integer approximation of `delta / 100` (≤0.4 % error for `delta < 2^16` cycles), and saturated to 16 bits. The producer-side saturation is the only range management; `axis_hud` does not internally clamp the 5-cell field.
-
-Verilator simulation also writes the per-frame latency to `dv/data/hud_latency.txt` at HUD-input-SOF; the Python reference model reads this sidecar via `py/models/ops/_hud_metadata.py` so verification against `axis_hud` runs at TOLERANCE=0 without re-deriving the cycle-accurate latency in software.
+- **`hud_frame_num_q`** — 16-bit counter incrementing once per HUD-input-SOF, giving a 0-based index in lock-step with the frame currently entering the HUD.
+- **`hud_bbox_count`** — combinational popcount over `u_ccl_bboxes.valid[N_OUT_TOP]`. The CCL output is one frame behind the video, so the count latched at frame N's HUD-SOF reflects frame N−1's bboxes — matching the same 1-frame display delay as the rectangles drawn on screen (§5.9).
+- **`ctrl_flow_tag`** — `ctrl_flow_i` is already on `clk_dsp_i` and feeds `u_hud.ctrl_flow_tag_i` directly; `axis_hud` decodes it to glyph triples (`PAS`/`MOT`/`MSK`/`CCL`).
+- **`hud_latency_us_q`** — measured between input-SOF (at `u_fifo_in.m_axis`) and HUD-input-SOF (at `scale2x_to_pix_out`). The cycle delta is converted to microseconds via `(delta * 41) >> 12` (≤0.4 % error for `delta < 2^16` cycles) and saturated to 16 bits.
 
 `CFG.hud_en=0` (profile `no_hud`) routes the input pixel through the same 1-cycle skid as the enabled path but skips the overlay mux — output is data-equivalent to the input. The HUD region (rows `HUD_Y0..HUD_Y0+7`, cols `HUD_X0..HUD_X0+N_CHARS·8-1`) must fit within the active output frame; the caller is responsible for that constraint. Details: [axis_hud-arch.md](axis_hud-arch.md).
 
@@ -261,29 +257,18 @@ Verilator simulation also writes the per-frame latency to `dv/data/hud_latency.t
 
 Takes the processed RGB stream (after CDC back to `clk_pix`) and emits it with VGA-compliant timing: horizontal and vertical sync pulses, front/back porches, and blanking intervals during which RGB is gated to 0. The controller is held in reset until the first start-of-frame pixel arrives from the output FIFO, so the VGA scan always aligns to a frame boundary regardless of how long the pipeline takes to fill.
 
-Including the VGA controller inside the DUT means end-to-end simulation captures what an actual monitor would see, including blanking — which in turn catches long-term rate mismatches (output FIFO overflow) that are invisible if the downstream timing generator is mocked away. Details: [vga_controller-arch.md](vga_controller-arch.md).
+Details: [vga_controller-arch.md](vga_controller-arch.md).
 
 ### 5.9 1-frame bbox latency
 
-The bbox drawn on frame N is computed from motion observed during frame N−1. This is a deliberate architectural choice, not an accident of the implementation. A same-frame overlay is technically possible but strictly worse at this resolution:
-
-The pipeline is streaming (raster order). The bottommost motion pixel can lie on the last row, so the bbox is not fully known until EOF. But the overlay needs the bbox *while outputting pixels at the top of the frame* — which have already been streamed out long before EOF. To draw a rectangle on the same frame, the video pixels would have to be **held back** until the bbox is known, which requires a full RGB frame buffer (320×240×24 bits ≈ 225 KB) and a true dual-port RAM — roughly 3× the current total RAM budget.
-
-| | Same-frame bbox | 1-frame delayed bbox (current) |
-|---|---|---|
-| RAM cost | +225 KB (frame buffer) | 0 |
-| Visual latency | 16.7 ms (frame buffer delay) | 16.7 ms (bbox from prev frame) |
-| Perceived delay | Identical to human eye at 60 fps | Identical to human eye at 60 fps |
-| Pipeline complexity | Significantly higher | Simple streaming |
-
-At 60 fps, one frame is 16.7 ms — imperceptible. The user-visible result is indistinguishable between the two designs. Same-frame overlay would only matter at very low frame rates (e.g., 1 fps security camera) where a 1-second bbox lag would be noticeable. The current 1-frame delay is the standard approach in streaming video pipelines and is the right trade-off here.
+The bbox drawn on frame N is computed from motion observed during frame N−1. This is a deliberate architectural choice. The pipeline is streaming raster-order, so the bottommost motion pixel can lie on the last row — the bbox is not fully known until EOF. The overlay needs the bbox *while outputting pixels at the top of the frame*, which have already streamed out long before EOF. Same-frame overlay would require holding the entire video back until EOF — a full RGB frame buffer (320×240×24 bits ≈ 225 KB, ~3× the current total RAM budget). At 60 fps the 16.7 ms display lag is imperceptible, indistinguishable from the equivalent buffer delay; one-frame-delayed bbox is the standard streaming trade-off.
 
 ### 5.10 Latency and timing budget
 
 Two distinct latencies, not to be conflated:
 
 - **Pixel-pipeline latency** — cycles from input pixel to matching RGB edge at the VGA output, varies by control flow.
-- **Bbox latency** — fixed at **1 frame** by design; see §5.7.
+- **Bbox latency** — fixed at **1 frame** by design; see §5.9.
 
 End-to-end pixel-path latency per control flow (steady-state fill, `CFG_DEFAULT`: `gauss_en=1`, `morph_en=1`):
 
@@ -296,9 +281,9 @@ End-to-end pixel-path latency per control flow (steady-state fill, `CFG_DEFAULT`
 
 At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, negligible vs. a 16.7 ms frame at 60 fps. Per-stage breakdowns live in the per-module specs ([`axis_motion_detect-arch.md`](axis_motion_detect-arch.md), [`axis_morph3x3_open-arch.md`](axis_morph3x3_open-arch.md), [`axis_ccl-arch.md`](axis_ccl-arch.md)).
 
-**Video/mask asymmetry.** In motion mode the video reaches the overlay in ~5 cycles via `fork_b`, while the mask traverses `motion_detect → morph → ccl` for `3·H_ACTIVE + ~14` cycles. The mask cannot overtake the video on the way to the overlay — this is *why* the bbox lands one frame late by construction (§5.7).
+**Video/mask asymmetry.** In motion mode the video reaches the overlay in ~5 cycles via `fork_b`, while the mask traverses `motion_detect → morph → ccl` for `3·H_ACTIVE + ~14` cycles. The mask cannot overtake the video on the way to the overlay — this is *why* the bbox lands one frame late by construction (§5.9).
 
-**V-blank budget.** Blanking must absorb the cascading drains of `axis_gauss3x3` + `axis_morph3x3_open` (each ≥ `H_ACTIVE + 1` cycles, drains sequentially — does not compound) plus the `u_ccl` EOF FSM. Cycle budget detailed in [`axis_ccl-arch.md`](axis_ccl-arch.md) §6.7. TB uses 16 V-blank lines to cover the worst case at 320×240.
+**V-blank budget.** Blanking must absorb the cascading drains of `axis_gauss3x3` + `axis_morph3x3_open` (each ≥ `H_ACTIVE + 1` cycles, drained sequentially — does not compound) plus the `u_ccl` EOF FSM. Cycle budget detailed in [`axis_ccl-arch.md`](axis_ccl-arch.md) §6.7.
 
 **4:1 clock ratio.** `clk_dsp` (100 MHz) is 4× `clk_pix`, so the DSP pipeline can emit up to 4 output pixels per input pixel arriving. After fill, throughput is 1 pixel/cycle — well above the 1-pixel-per-4-cycles VGA drain. Both CDC FIFOs stay near empty; SVAs in §9 catch violations.
 
@@ -485,12 +470,12 @@ When runtime configurability is needed, the descriptor table and the `CFG` field
 
 - **Simulation-only RAM**: `ram.sv` is a behavioral model. FPGA synthesis requires a vendor BRAM primitive (e.g. Xilinx `xpm_memory_tdpram`).
 - **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box would span the full frame and the overlay would draw a border around the image edge. This is a known cosmetic artifact. `axis_ccl` suppresses bboxes for the first `CCL_PRIME_FRAMES` frames so no rectangle is drawn until the EMA background has converged.
-- **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §5.7. Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
+- **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §5.9. Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
 - **Thin-feature deletion under morph**: `u_morph_open` erases foreground features narrower than 3 pixels (single-pixel lines, far-field point targets). Profile `no_morph` (`CFG.morph_en=0`) is the escape hatch; see [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md) §4.4.
 - **No AXI-Lite control**: all algorithm parameters (motion threshold, bbox colour, EMA rates, stage enables) are compile-time fields of `CFG`. Runtime override requires synthesizing a CSR slave (see §8.1).
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
-- **Pixel-clock stability assumption (CFG.scaler_en=1)**: the design assumes the caller provides `clk_pix_out_i` at exactly 4x `clk_pix_in_i` so long-term input/output rates balance through the output FIFO. Real silicon would need either a genlocked PLL pair or a dedicated frame buffer at the output to handle independent source/display clocks; today's testbench drives the two clocks from a single integer divider, sidestepping the issue. See [axis_scale2x-arch.md](axis_scale2x-arch.md) for the rate-budget detail.
+- **Pixel-clock stability assumption (CFG.scaler_en=1)**: the design assumes the caller provides `clk_pix_out_i` at exactly 4× `clk_pix_in_i` so long-term input/output rates balance through the output FIFO. Real silicon would need either a genlocked PLL pair or a dedicated output-side frame buffer to handle independent source/display clocks. See [axis_scale2x-arch.md](axis_scale2x-arch.md) for the rate-budget detail.
 
 ---
 

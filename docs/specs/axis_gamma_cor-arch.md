@@ -121,18 +121,7 @@ The per-channel interpolation between two adjacent LUT entries is:
 out = ( GAMMA_LUT[addr] · (8 − frac)  +  GAMMA_LUT[addr+1] · frac ) >> 3
 ```
 
-This is standard 1-D linear interpolation between the two LUT samples that bracket the input pixel, expressed in integer arithmetic. Reading it step by step:
-
-- `addr` selects the **lower** of the two surrounding LUT samples — i.e. `LUT[addr]` is the curve value at the largest sampled input `≤ p`, and `LUT[addr+1]` is the curve value at the next sampled input above. Concretely, `LUT[addr]` is the curve at code `addr · 8`, and `LUT[addr+1]` is the curve at code `addr · 8 + 8`.
-- `frac` is how far `p` has progressed across that 8-code-wide segment: it ranges `0..7`, meaning "0/8, 1/8, …, 7/8 of the way from the lower sample toward the upper one". `frac = 0` lands exactly on the lower sample; `frac = 7` is 7/8 of the way to the upper sample (it never reaches the upper sample because the upper sample is itself reached when `addr` increments).
-- The two entries are blended with weights that always sum to 8: `(8 − frac)` for the lower entry, `frac` for the upper. This is the integer-arithmetic form of the textbook fractional formula
-
-  ```
-  out_real = LUT[addr] · (1 − frac/8)  +  LUT[addr+1] · (frac/8)
-  ```
-
-  Multiplying both terms by 8 to clear the fraction gives the numerator we compute. The accumulator after the multiply-add lives in the range `[0, 8 · 255] = [0, 2040]`, fitting in 11 bits.
-- `>> 3` is integer divide by 8, which restores the result to the original `[0, 255]` range. It truncates toward zero (no rounding bit is added), so the interpolation has at most ~0.5 LSB of bias relative to round-to-nearest. The mismatch is invisible at 8-bit display resolution and is matched by the Python reference model so RTL and model agree at `TOLERANCE = 0`.
+Standard 1-D linear interpolation between the two LUT samples that bracket `p`: weights `(8 − frac)` and `frac` always sum to 8, so the multiply-add lives in `[0, 8·255] = [0, 2040]` (11 bits). `>> 3` truncates toward zero, costing at most ~0.5 LSB of bias relative to round-to-nearest — invisible at 8-bit display resolution.
 
 Worked example, `p = 100`: `addr = 100 >> 3 = 12`, `frac = 100 & 7 = 4`. With `LUT[12] = 165` and `LUT[13] = 171` (the curve sampled at `p = 96` and `p = 104`):
 
@@ -283,5 +272,4 @@ On reset (`rst_n_i = 0`), `pipe_valid_q`, `tlast_q`, and `tuser_q` are synchrono
 ## 10. References
 
 - [`sparevideo-top-arch.md`](sparevideo-top-arch.md) — Top-level pipeline; placement of `axis_gamma_cor` between the control-flow mux and `u_fifo_out`.
-- `docs/plans/2026-04-23-pipeline-extensions-design.md` §3.4 — Per-block design detail (33-entry LUT, linear interpolation).
 - **IEC 61966-2-1 (1999)** — Multimedia systems and equipment — Colour measurement and management — Part 2-1: Colour management — Default RGB colour space — sRGB. Defines the transfer function implemented by this module.

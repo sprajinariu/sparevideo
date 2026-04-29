@@ -42,8 +42,6 @@
 
 `axis_ccl` is a streaming 8-connected connected-component labeler. It consumes a 1-bit-per-pixel AXI4-Stream motion mask, assigns a distinct label to each foreground region using union-find with in-frame equivalence recording, accumulates `{min_x, max_x, min_y, max_y, count}` per label, and — at end-of-frame, during vblank — resolves equivalences, folds accumulators onto their roots, applies a min-pixel-count filter, and emits up to `N_OUT` bounding boxes on a double-buffered sideband.
 
-The module replaces the earlier single-global-bbox reducer (`axis_bbox_reduce`). Two people walking in opposite corners now produce two distinct bboxes instead of one frame-spanning rectangle.
-
 It is nearly a pure sink on its AXIS port: `tready` is asserted during streaming (`PHASE_IDLE`) and deasserted only while the EOF resolution FSM is running (`PHASE_A..PHASE_SWAP`). All multi-cycle work (path compression, accumulator fold, top-N selection, reset) is scheduled during the vertical-blanking interval, and the tready deassert is both the structural invariant that makes per-pixel writes gatable on `PHASE_IDLE` and the back-pressure that stalls upstream if vblank is too short. `axis_ccl` does **not** perform morphological closing, temporal merging, or cross-frame object association; it has no dependency on the shared Y-ref RAM used by `axis_motion_detect`.
 
 > **New to this module?** §4.0 gives a plain-language walkthrough of the algorithm and defines the terms (*label*, *equivalence*, *root*, *chain*, *chase*, *fold*, *sentinel*, *prime frames*) used throughout the rest of this spec.
@@ -68,7 +66,7 @@ It is nearly a pure sink on its AXIS port: `tready` is asserted during streaming
 | `N_OUT` | 8 (from pkg) | Output bbox slots exposed on the sideband. |
 | `MIN_COMPONENT_PIXELS` | 16 (from pkg) | Minimum pixel count for a component to survive Phase C. |
 | `MAX_CHAIN_DEPTH` | 8 (from pkg) | Upper bound on Phase A per-label chase steps. |
-| `PRIME_FRAMES` | 2 (from pkg) | Number of initial frames for which PHASE_SWAP skips the front-buffer update, giving the upstream EMA background model time to converge before any bbox is reported. |
+| `PRIME_FRAMES` | 0 (from pkg) | Number of initial frames for which PHASE_SWAP skips the front-buffer update, giving the upstream EMA background model time to converge before any bbox is reported. |
 
 ### 3.2 Ports
 
@@ -137,34 +135,7 @@ Four cases:
 - **Two distinct non-zero labels appear** → the current foreground pixel is adjacent to both, so the two labels must describe the same blob. The pixel takes the smaller of the two, and we record `equiv[larger] = smaller`. Those two labels will be folded at EOF. (§4.2 shows that two is the *most* distinct non-zero labels the window can ever hold, which is why one `equiv[]` write per pixel is sufficient.)
 - Three-or-four matching neighbours is just a sub-case of the single-label path.
 
-*Local vs. global.* Two separate things happen on a merge: the current pixel is given the label `smaller` and that label is stored in `line_buf[col_d1]` (a **per-pixel** write, touching only this one field); and `equiv[larger] = smaller` is written to the **global** equivalence table (a single table shared across the whole frame). Earlier-row pixels that were already stored as `larger` are *not* rewritten — they keep their stored label, and the `equiv[]` entry carries the "these two labels describe one blob" fact forward to EOF. Phase A then chases `equiv[larger]` to a root and Phase B folds `acc[larger]` into `acc[root]`, which is how the earlier-row pixels' contributions end up accounted for under the canonical label.
-
-A raster-order invariant guarantees `{NW, N, NE, W}` can hold at most *two* distinct non-zero labels — see §4.2. That is what lets us get away with a single `equiv[]` write per pixel.
-
-**Example: a U-shape that only merges at the bottom.**
-
-```
-    col:   0  1  2  3  4
-  row 0:   .  X  .  X  .     new label 1 at (0,1); new label 2 at (0,3)
-  row 1:   .  X  .  X  .     inherit 1 at (1,1); inherit 2 at (1,3)
-  row 2:   .  X  .  X  .     inherit 1 at (2,1); inherit 2 at (2,3)
-  row 3:   .  X  X  X  .     at (3,1): N=1 → label 1
-                              at (3,2): W=1, NE=2 → pick=1, record equiv[2]=1
-                              at (3,3): W=1, N=2  → pick=1 (equiv[2]=1 already set)
-
-  Labels as stored (just before EOF):
-           .  1  .  2  .
-           .  1  .  2  .
-           .  1  .  2  .
-           .  1  1  1  .
-
-  equiv[] at EOF:    equiv[1]=1 (root), equiv[2]=1   (label 2 resolves to label 1)
-  acc_count at EOF:  [_, 5, 3, 0, …]                (label 1 owns 5 px, label 2 owns 3 px)
-
-  Phase A (compress):  both entries already point at a root → no change.
-  Phase B (fold):      acc[1] ← merge(acc[1], acc[2]); acc_count[2] ← 0.
-  Phase C (top-N):     label 1 survives with count=8; bbox = cols 1..3, rows 0..3.
-```
+A merge writes only the global `equiv[]` table; earlier-row pixels stored under the larger label are not rewritten — Phase A chases the equivalence at EOF and Phase B folds `acc[larger]` into `acc[root]`, accounting for those earlier pixels under the canonical label. The raster-order invariant in §4.2 guarantees `{NW, N, NE, W}` holds at most two distinct non-zero labels, so a single `equiv[]` write per pixel suffices.
 
 **At end-of-frame (vblank).** Four FSM phases run back-to-back, then a swap:
 1. **Phase A — path compression.** For each label, chase `equiv[]` until a root is hit, then overwrite `equiv[L]` with that root. Every label now points directly at its root.
@@ -187,8 +158,7 @@ While this FSM runs, `s_axis.tready` is deasserted: upstream pixels wait until t
                                                   │             holds frame-N bboxes)
                                                   │
                                                   └── EOF FSM: ~1,280 cycles worst
-                                                      case (§6.7). Vblank headroom
-                                                      ~5× in the TB, ~100× at real
+                                                      case (§6.7). ~100× headroom at
                                                       VGA 640×480@60 Hz.
 ```
 
@@ -325,24 +295,13 @@ Off-image neighbours are forced to background (label 0) combinationally, not sto
 
 ### 5.5 Label decision
 
-Combinational logic computes `pick_label`, `need_merge`, `merge_hi`, and `merge_lo` from the 4 edge-masked neighbours:
+Combinational logic computes `pick`, `need_merge`, `merge_hi`, and `merge_lo` from the 4 edge-masked neighbours:
 
-```
-any_above   = |{nb_nw, nb_n, nb_ne} ≠ 0
-min_above   = min(nb_nw, nb_n, nb_ne), treating 0 as absent
-any_nonzero = any_above || (nb_w ≠ 0)
+- All-zero window → `pick = next_free` (or 0 on overflow); no merge.
+- Single non-zero label (in `{NW,N,NE}` or `W` alone) → `pick = that label`; no merge.
+- Two distinct non-zero labels → `pick = min(nb_w, min_above)`, `need_merge = 1`, `merge_hi = max`, `merge_lo = min`.
 
-if !any_nonzero:                 pick = next_free, or 0 on overflow   // pick       : label to assign to current pixel
-else if !any_above:              pick = nb_w                          //              (written to line_buf, w_label, indexes acc_*)
-else if nb_w == 0:               pick = min_above
-else if nb_w == min_above:       pick = nb_w                    (single label, no merge)
-else:                            pick = min(nb_w, min_above)
-                                 need_merge = 1                       // need_merge : two distinct labels seen — record equivalence
-                                 merge_hi   = max(nb_w, min_above)    // merge_hi   : larger label (equiv[] key, child in union-find)
-                                 merge_lo   = min(nb_w, min_above)    // merge_lo   : smaller label (equiv[] value, parent/root)
-```
-
-`min_above` is computed as a chain of three comparators (not a parameterized `min`-reduction). Since `{nb_nw, nb_n, nb_ne}` can contribute at most one non-zero label (invariant §4.2), the particular tie-breaking order between them is irrelevant — at least two of the three inputs are 0 whenever any foreground is present.
+`min_above = min(nb_nw, nb_n, nb_ne)` (treating 0 as absent) is a chain of three comparators. Since `{NW, N, NE}` contributes at most one non-zero label by §4.2, tie-breaking order is irrelevant — at least two of the three inputs are 0 whenever any foreground is present.
 
 ### 5.6 Per-pixel writes
 
@@ -380,9 +339,7 @@ Sentinels ensure the first foreground pixel always wins the `<`/`>` comparators.
 
 ### 5.8 Output double-buffer
 
-**Why two buffers.** The overlay consumer reads the `N_OUT` slots continuously throughout the active region (every pixel checks "am I on the border of any valid bbox?"). If Phase C wrote directly to the visible buffer, the overlay would see a mix of new and old slots as Phase C walks through them, producing a torn frame with mixed-generation rectangles. Double-buffering decouples the two sides: Phase C writes `back_*` at its own pace during vblank; the overlay reads the stable `front_*` from the previous frame. The swap happens during vblank, when the overlay is inactive anyway, so the transition is never observed mid-rectangle.
-
-Two independent register banks: `front_*` (visible on the ports) and `back_*` (written by Phase C). At PHASE_SWAP, `front_* <= back_*` is a bulk register-to-register copy (not a memory op), so the swap is a single-cycle atomic transition from the consumer's perspective. `bbox_swap_o` is a 1-cycle strobe on the swap cycle.
+The overlay reads the `N_OUT` slots continuously throughout the active region; if Phase C wrote directly to the visible bank, the overlay would see a mix of new and old slots and produce a torn frame. Two independent register banks — `front_*` (visible on the ports) and `back_*` (written by Phase C) — decouple the two sides. At PHASE_SWAP, `front_* <= back_*` is a bulk register-to-register copy that lands as a single-cycle atomic transition. `bbox_swap_o` strobes for one cycle on the swap.
 
 Each bank is a family of 5 `N_OUT`-entry arrays — one entry per bbox slot:
 
@@ -454,48 +411,25 @@ Bounded by `MAX_CHAIN_DEPTH = 8`, which is well above the chain depth observed o
 
 *Merges each non-root's accumulator into its root and clears the non-root.*
 
-For each label `L` with `equiv[L] ≠ L` and `acc_count[L] ≠ 0`:
+For each label `L` with `equiv[L] ≠ L` and `acc_count[L] ≠ 0`, two cycles per fold cover the 1R1W latency of the accumulator arrays:
 
-```
-cycle 1 (sample):   fold_src ← acc[L]         (snapshot)
-                    fold_dst_lbl ← equiv[L]
-                    fold_wr_pending ← 1
-cycle 2 (commit):   acc[equiv[L]] ← merge(acc[equiv[L]], fold_src)
-                    acc_count[L]  ← 0
-                    fold_wr_pending ← 0
-                    advance L
-```
+- **Cycle 1 (sample):** snapshot `acc[L]` into a local register; latch `fold_dst_lbl ← equiv[L]` (already a root after Phase A).
+- **Cycle 2 (commit):** `acc[equiv[L]] ← merge(acc[equiv[L]], snapshot)`, then `acc_count[L] ← 0` and advance L.
 
-Where:
-- `fold_src` — snapshot of the non-root's accumulator tuple `(min_x, max_x, min_y, max_y, count)`, taken on cycle 1 so cycle 2 can read a different address without a structural hazard.
-- `fold_dst_lbl` — the root label that will absorb `fold_src`. Equals `equiv[L]` after Phase A (path compression guarantees all non-roots point directly to their root, so this is one read, no chase).
-- `fold_wr_pending` — 1-cycle flag marking "cycle 1 captured, commit the write on cycle 2".
-
-Two cycles per fold candidate covers the 1R1W latency of the distributed-RAM-style accumulator arrays. Non-folded labels (roots, or non-roots with count=0) advance in a single cycle.
+Non-folded labels (roots, or non-roots with count=0) advance in a single cycle.
 
 ### 6.4 Phase C — min-size filter + top-N selection
 
 *Drops components below `MIN_COMPONENT_PIXELS` and writes the largest `N_OUT` survivors into `back_*`.*
 
-For each output slot `s = 0..N_OUT-1`:
+For each output slot `s = 0..N_OUT-1`, scan all labels and pick the largest with `acc_count ≥ MIN_COMPONENT_PIXELS`:
 
-```
-best_count ← 0
-best_lbl   ← 0
-for L = 0..N_LABELS_INT-1:
-    if acc_count[L] ≥ MIN_COMPONENT_PIXELS and acc_count[L] > best_count:
-        best_count ← acc_count[L]
-        best_lbl   ← L
-if best_count ≥ MIN_COMPONENT_PIXELS:
-    back[s] ← acc[best_lbl]; back_valid[s] ← 1
-    acc_count[best_lbl] ← 0       # consumed, excluded from next slot's scan
-else:
-    back_valid[s] ← 0
-```
+- If a survivor exists, write `acc[best_lbl]` into `back[s]`, set `back_valid[s] ← 1`, and zero `acc_count[best_lbl]` so it isn't re-picked by the next slot.
+- Otherwise `back_valid[s] ← 0`.
 
-Implemented as a per-slot inner loop over all labels (one label per cycle). The terminal cycle (`scan_idx == N_LABELS_INT - 1`) must evaluate the current candidate *and* commit — the running best is registered and only visible on the following cycle, but there is no following cycle for that slot. A block-local `eff_best_count`/`eff_best_lbl` capture the current-cycle-effective value for the commit.
+Implemented as a per-slot inner loop over all labels (one label per cycle). On the terminal cycle the registered running-best is not yet visible, so a block-local `eff_best_*` captures the current-cycle effective value for the commit.
 
-Note: Label 0 is scanned — overflow-pooled pixels can produce a catch-all bbox if they exceed `MIN_COMPONENT_PIXELS`. This is the documented overflow behaviour (§4.4).
+Label 0 is scanned, so overflow-pooled pixels (§4.4) can surface as a catch-all bbox when they exceed `MIN_COMPONENT_PIXELS`.
 
 ### 6.5 Phase D — reset for next frame
 
@@ -519,7 +453,7 @@ phase ← PHASE_IDLE
 
 During the priming window, back-buffer data is computed and then *discarded* — the front buffer stays all-invalid so the overlay draws no rectangles. `bbox_swap_o` still pulses, so downstream consumers see a consistent "new frame ready, contents empty" handshake.
 
-*Why this exists.* `axis_motion_detect`'s EMA background model starts at zero. On frame 0 every pixel differs maximally from the (empty) background, so the mask is mostly foreground and CCL would report one or more frame-filling bboxes — an obvious visual artifact. The EMA converges within `~1/ALPHA` frames; with the default `ALPHA_SHIFT=2` (α=1/4), two frames is enough to suppress the worst of it.
+*Why this exists.* `axis_motion_detect`'s EMA background starts at zero, so the first few frames produce a near-full-frame mask and CCL would otherwise report frame-filling bboxes until the EMA converges. `PRIME_FRAMES` suppresses the front buffer for the chosen number of frames; `axis_motion_detect`'s frame-0 hard-init plus grace window normally make the default of 0 sufficient.
 
 ### 6.7 Cycle budget
 

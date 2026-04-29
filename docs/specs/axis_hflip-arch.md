@@ -161,7 +161,7 @@ Two states; both column counters reset to 0 and `state_q` resets to `S_RX`.
 ## 9. Known Limitations
 
 - **Single line buffer — full-line upstream stall during TX.** A ping-pong buffer (two lines, overlapping RX and TX) would eliminate the stall but is not needed at the current clock ratio. A cheaper single-buffer alternative also exists: alternate the write direction (and therefore the read direction) per row, so reader and writer sweep the buffer in the same direction in lockstep, and the writer overwrites each slot the reader just emitted. This achieves continuous 1-pix/cycle throughput after a 1-line warmup with no second line buffer, at the cost of a row-parity bit, slightly trickier address generation, and tighter back-pressure coupling (downstream stall must back-pressure upstream so the writer cannot race ahead and clobber unread data). Not implemented today because the current clock ratio already absorbs the stall.
-- **`enable_i` must be frame-stable.** The post-Task-5 RTL gates `rx_accept` with `enable_i`, so a 1→0 toggle freezes the FSM cleanly and 0→1 picks up on the next SOF; output pixels for a frame straddling the toggle are undefined.
+- **`enable_i` must be frame-stable.** `rx_accept` is gated by `enable_i`, so a 1→0 toggle freezes the FSM cleanly and 0→1 picks up on the next SOF; output pixels for a frame straddling the toggle are undefined.
 - **Line buffer not zeroed on reset.** Contents are undefined until the first RX phase completes. The framing signals are derived from FSM counters and remain correct; only pixel data could be affected, and the first RX phase always completes before the first TX beat.
 - **`V_ACTIVE` parameter is informational only.** It is provided for interface consistency with other filter modules; no internal logic depends on it.
 
@@ -170,5 +170,4 @@ Two states; both column counters reset to 0 and `state_q` resets to `S_RX`.
 ## 10. References
 
 - [`sparevideo-top-arch.md`](sparevideo-top-arch.md) — Top-level pipeline; placement of `axis_hflip` and CDC FIFO sizing.
-- `docs/plans/2026-04-23-pipeline-extensions-design.md` §3.1 — Per-block design detail and Risk B1 (stall alternation).
 - **ARM IHI0051A — AMBA AXI4-Stream Protocol Specification** — §2.2 (handshake), §2.7 (`tuser`/`tlast`).

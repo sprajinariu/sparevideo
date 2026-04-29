@@ -13,14 +13,12 @@
   - [4.2 Spatial pre-filter — 3x3 Gaussian](#42-spatial-pre-filter--3x3-gaussian)
   - [4.3 Threshold comparison — polarity-agnostic absolute difference](#43-threshold-comparison--polarity-agnostic-absolute-difference)
   - [4.4 Temporal background model — EMA](#44-temporal-background-model--ema)
-  - [4.5 Placement rationale — no incremental RAM for EMA](#45-placement-rationale--no-incremental-ram-for-ema)
-  - [4.6 Placement rationale — why the Gaussian is internal, not an external AXIS stage](#46-placement-rationale--why-the-gaussian-is-internal-not-an-external-axis-stage)
-  - [4.7 Placement rationale — why spatial filtering must be pre-threshold](#47-placement-rationale--why-spatial-filtering-must-be-pre-threshold)
+  - [4.5 Placement rationale](#45-placement-rationale)
 - [5. Internal Architecture](#5-internal-architecture)
   - [5.1 Per-pixel pipeline (overview)](#51-per-pixel-pipeline-overview)
   - [5.2 Spatial pre-filter implementation — 3x3 Gaussian](#52-spatial-pre-filter-implementation--3x3-gaussian)
-  - [5.3 Threshold comparison implementation](#53-threshold-comparison-implementation)
-  - [5.4 Temporal background model implementation — EMA](#54-temporal-background-model-implementation--ema)
+  - [5.3 Threshold comparison and EMA — `motion_core`](#53-threshold-comparison-and-ema--motion_core)
+  - [5.4 Write-back mux](#54-write-back-mux)
   - [5.5 Pixel address counter](#55-pixel-address-counter)
   - [5.6 RAM read/write discipline](#56-ram-readwrite-discipline)
   - [5.7 Pipeline stages](#57-pipeline-stages)
@@ -32,10 +30,7 @@
 - [7. Timing](#7-timing)
 - [8. Shared Types](#8-shared-types)
 - [9. Known Limitations](#9-known-limitations)
-- [10. Follow-Ups / Future Improvements](#10-follow-ups--future-improvements)
-  - [10.1 Edge-match ghost detector (Sobel-based)](#101-edge-match-ghost-detector-sobel-based)
-  - [10.2 Motion-stuck per-pixel counter (ViBe-style)](#102-motion-stuck-per-pixel-counter-vibe-style)
-- [11. References](#11-references)
+- [10. References](#10-references)
 
 ---
 
@@ -130,13 +125,14 @@ the input to `axis_overlay_bbox` independently of mask processing.
 |-----------|---------|-------------|
 | `H_ACTIVE` | 320 | Active pixels per line |
 | `V_ACTIVE` | 240 | Active lines per frame |
-| `THRESH` | 16 | Unsigned luma-difference threshold; motion detected when `diff > THRESH` |
-| `ALPHA_SHIFT` | 3 | EMA smoothing factor as a bit-shift: alpha = 1 / (1 << ALPHA_SHIFT). Default 3 → alpha = 1/8. Higher values = slower background adaptation. When 0, the EMA reduces to raw-frame write-back (bg_new = Y_cur) |
-| `ALPHA_SHIFT_SLOW` | 6 | EMA smoothing factor applied when the current pixel is flagged as motion (`raw_motion=1`). alpha = 1 / (1 << ALPHA_SHIFT_SLOW). Default 6 → alpha = 1/64. Larger than `ALPHA_SHIFT` so motion pixels barely drift the background estimate, preventing foreground bleed (trails). When a flagged pixel stays flagged (stopped object), this rate governs absorption into the background; with default 6 at 30 fps, a stopped object absorbs in ~2 s. |
-| `GAUSS_EN` | 1 | Gaussian pre-filter enable. 1 = instantiate `axis_gauss3x3` (H_ACTIVE + 2 cycle latency from rgb2ycrcb, `PIPE_STAGES = H_ACTIVE + 3`). 0 = bypass (raw Y, `PIPE_STAGES=1`). Compile-time parameter propagated via `-GGAUSS_EN=` |
-| `GRACE_FRAMES` | 8 | Number of frames after priming during which bg updates use the fast EMA rate unconditionally (ignoring raw_motion). Suppresses frame-0 hard-init ghosts. Set to 0 to disable (recover pre-grace selective-EMA behavior). |
-| `RGN_BASE` | 0 | Base byte-address of the background model region in the shared RAM |
-| `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the background model region (sanity-checked at elaboration) |
+| `THRESH` | 16 | Unsigned luma-difference threshold; mask is 1 when `\|Y_smooth − bg\| > THRESH`. |
+| `ALPHA_SHIFT` | 3 | Non-motion EMA shift: α = 1/(1<<ALPHA_SHIFT), default 1/8. `0` reduces the EMA to raw-frame write-back. |
+| `ALPHA_SHIFT_SLOW` | 6 | Motion-pixel EMA shift, default 1/64. Kept slower than `ALPHA_SHIFT` so the background barely drifts under a moving object (no trails). At 30 fps and default 6, a stopped object absorbs into bg in ~2 s. |
+| `GRACE_FRAMES` | 8 | Frames after priming during which bg updates use `GRACE_ALPHA_SHIFT` regardless of `raw_motion`. Suppresses frame-0 hard-init ghosts. `0` disables. |
+| `GRACE_ALPHA_SHIFT` | 1 | EMA shift inside the grace window (default α=1/2). |
+| `GAUSS_EN` | 1 | `1` = instantiate `axis_gauss3x3` (`PIPE_STAGES = H_ACTIVE + 3`); `0` = bypass (`PIPE_STAGES = 1`). |
+| `RGN_BASE` | 0 | Base byte-address of the bg-model region in the shared RAM. |
+| `RGN_SIZE` | `H_ACTIVE×V_ACTIVE` | Byte size of the region (sanity-checked at elaboration). |
 
 ### 3.2 Ports
 
@@ -167,12 +163,9 @@ Three algorithms are applied in sequence to each incoming pixel, after an initia
 2. **Threshold comparison** — `|Y_smooth − bg| > THRESH`. Produces the 1-bit motion mask. Polarity-agnostic.
 3. **EMA background update** — `bg ← bg + α·(Y_smooth − bg)`. Uses the same pixel's value to refine the background model for future frames.
 
-The ordering is fixed for two reasons:
+The ordering is fixed: spatial smoothing operates on continuous-valued luma (§4.5), and threshold + EMA update are co-sited rather than sequential — both need `Y_smooth` and `bg` simultaneously, the comparator drives the mask output and the EMA result drives the RAM write-back on the same cycle.
 
-- **Spatial filtering must precede thresholding.** Spatial smoothing operates on continuous-valued luma; once the signal has been quantised to a 1-bit mask, averaging 0s and 1s is neither a blur nor a morphological op. See §4.7 below.
-- **Threshold and EMA update are co-sited, not sequential stages.** Both need `Y_smooth` and `bg` simultaneously, and both fire in the same cycle: the comparison drives the mask output, and the EMA result drives the RAM write-back. See §4.5 below.
-
-The three algorithms address complementary noise and adaptation problems. The Gaussian attacks *spatial* noise (uncorrelated pixel-to-pixel jitter within one frame). The EMA attacks *temporal* noise (uncorrelated frame-to-frame jitter at one pixel) and slow illumination drift. The threshold collapses the analog difference into the binary motion decision that downstream stages consume.
+The three algorithms address complementary problems. The Gaussian attacks *spatial* noise (pixel-to-pixel jitter within one frame). The EMA attacks *temporal* noise (frame-to-frame jitter at one pixel) and slow illumination drift. The threshold collapses the analog difference into the binary motion decision.
 
 ### 4.2 Spatial pre-filter — 3x3 Gaussian
 
@@ -228,7 +221,7 @@ The background RAM is zero-initialized on reset, which would produce a multi-fra
 - `primed` latches to 1 on the last beat of frame 0 (`end_of_row && out_row == V_ACTIVE-1 && beat_done`). Frame 1's very first pixel sees `primed == 1`.
 - From frame 1 onward: normal threshold + selective-EMA compute path applies.
 
-An earlier design considered raw first-frame priming (write `y_cur` straight to bg, **but also compute mask**). That was rejected because any foreground object present in frame 0 would be committed to the background and then, when it moved, leave a departure ghost for `~1/alpha` frames. The current design avoids this by **suppressing the mask output during priming** and, more importantly, combining priming with selective EMA (next subsection) so subsequent frames do not keep rewriting the background under moving objects.
+Mask output is suppressed during priming; combined with selective EMA (next subsection), this prevents any frame-0 foreground object from leaving a departure ghost when it moves on subsequent frames.
 
 #### Selective EMA — two rates
 
@@ -277,21 +270,11 @@ suppression (PRIME_FRAMES=2) already hides the worst of the first two frames.
 Setting GRACE_FRAMES=0 disables the override: in_grace is always false, and
 behavior reverts to plain selective-EMA (preserved for regression parity).
 
-### 4.5 Placement rationale — no incremental RAM for EMA
+### 4.5 Placement rationale
 
-The EMA reuses the **same** per-pixel RAM region (`RGN_BASE`, `H_ACTIVE × V_ACTIVE` bytes) that a raw previous-frame buffer would have used. The region still holds one 8-bit value per pixel; only the interpretation of that value changes — it is now a running average rather than the last raw luma. No second region, no second port, no additional BRAM is required. Port A remains a single 1R1W access per pixel, so there is no port contention between reads and writes.
-
-### 4.6 Placement rationale — why the Gaussian is internal, not an external AXIS stage
-
-The Gaussian pre-filter (`axis_gauss3x3`) is instantiated **inside** `axis_motion_detect`, on the internal Y channel between `rgb2ycrcb` and the threshold comparison. It is not a standalone AXIS stage in `sparevideo_top`. This placement is deliberate for three reasons:
-
-1. **Y-only smoothing, not RGB smoothing.** Placing the Gaussian externally on the RGB stream would either require smoothing all three channels (3× the line-buffer cost) or splitting Y out at the top level. Smoothing inside the motion detector operates on the single Y channel after `rgb2ycrcb`, minimizing line-buffer resources.
-2. **RGB passthrough stays sharp.** The video path that reaches `axis_overlay_bbox` (via `axis_fork` at the top level) is the *original* RGB stream. Smoothing RGB upstream of the fork would blur the video the user sees on the VGA output. Keeping the Gaussian internal to the motion detector ensures only the mask-decision path is smoothed.
-3. **No changes to top-level wiring.** The external AXIS interface of `axis_motion_detect` (RGB in, 1-bit mask out, RAM ports) is unchanged whether `GAUSS_EN=0` or `GAUSS_EN=1`. `sparevideo_top` does not need to know whether spatial smoothing is present.
-
-### 4.7 Placement rationale — why spatial filtering must be pre-threshold
-
-Spatial smoothing must operate on the **continuous-valued** Y signal, not on the binary mask. Once thresholding converts the diff into a 1-bit mask, averaging 0s and 1s is neither Gaussian blur nor morphological filtering — the intensity information has been quantized away. Therefore the Gaussian is placed *before* the threshold comparison. Post-threshold binary cleanup (erode/dilate) is a separate class of operation and, when added, sits downstream of this module on the mask AXIS stream.
+- **EMA reuses the same per-pixel RAM region** that a raw previous-frame buffer would have used (`RGN_BASE`, `H_ACTIVE × V_ACTIVE` bytes); only the interpretation changes (running average vs. last raw luma). No second region or second port.
+- **Gaussian is internal, on Y, not an external RGB AXIS stage.** Smoothing only Y avoids 3× the line-buffer cost of an external RGB filter and keeps the video path that reaches `axis_overlay_bbox` (via `axis_fork`) sharp. The module's external interface is unchanged whether `GAUSS_EN=0` or `1`.
+- **Spatial filtering must precede thresholding.** Once the diff is quantised to a 1-bit mask, averaging 0s and 1s is neither blur nor morphology — the intensity information is gone. Post-threshold binary cleanup (erode/dilate) is a separate stage downstream.
 
 ---
 
@@ -342,41 +325,25 @@ gauss_consume = gauss_pixel_valid && !pipe_stall && !gauss_busy
 
 The 1-cycle register delay aligns `valid_i`/`sof_i` with `y_cur` emerging from `rgb2ycrcb`. The Gaussian's `stall_i` is wired to the module's `pipe_stall` signal, so the pre-filter's internal line-buffer state freezes during downstream backpressure. `gauss_busy` (from `u_gauss.busy_o`, 1'b0 when `GAUSS_EN=0`) indicates the Gaussian is executing a phantom cycle and cannot accept a real pixel.
 
-### 5.3 Threshold comparison implementation
+### 5.3 Threshold comparison and EMA — `motion_core`
 
-The threshold comparison lives in `motion_core` (`hw/ip/motion/rtl/`), a pure-combinational module shared with the EMA update. The mask path is three combinational operators:
+`motion_core` is pure combinational. It produces:
 
-```systemverilog
-// motion_core — mask path (gated by primed_i so frame 0 mask is always 0)
-logic [7:0] diff         = abs(y_cur_i - y_bg_i);   // 8-bit subtract + absolute value
-logic       raw_motion_o = (diff > THRESH);         // ungated threshold compare
-logic       mask_bit_o   = primed_i && raw_motion_o;
-```
+- `mask_bit_o = primed_i && (|y_cur_i − y_bg_i| > THRESH)` — gated so the frame-0 mask is forced to 0.
+- `raw_motion_o` — the ungated threshold result, exposed so the wrapper can select the EMA branch without re-evaluating the comparator.
+- `ema_update_o` and `ema_update_slow_o` — the two next-bg candidates, computed from a shared signed 9-bit subtract `(y_cur − y_bg)` followed by two arithmetic right-shifts (`>>> ALPHA_SHIFT` and `>>> ALPHA_SHIFT_SLOW`) and an 8-bit add. No multipliers; both rates share the subtractor.
 
-`y_cur_i` is driven by `y_smooth` (post-Gaussian when `GAUSS_EN=1`, raw `y_cur` otherwise). `y_bg_i` is driven directly from `mem_rd_data_i`. Evaluation happens in the pipeline stage where both values are simultaneously valid; the gated result `mask_bit_o` is registered once more as it leaves the module, aligned with the sideband `tlast`/`tuser` chain so the AXIS output stays well-formed. `raw_motion_o` is also exposed (ungated) so `axis_motion_detect` can drive the 3:1 `bg_next` write-back mux without duplicating the threshold compare.
+### 5.4 Write-back mux
 
-### 5.4 Temporal background model implementation — EMA
+The wrapper feeds `mem_wr_data_o` from a 3:1 mux:
 
-The EMA update shares the same `motion_core` instance as the threshold comparison, using signed arithmetic so the EMA step can go either direction:
+| Selector | Source |
+|---|---|
+| `!primed` | `y_smooth` (frame-0 hard init) |
+| `primed && (in_grace \|\| !raw_motion)` | `ema_update` (fast rate) |
+| `primed && raw_motion && !in_grace` | `ema_update_slow` (slow rate) |
 
-```systemverilog
-// motion_core — EMA path (shared subtract, two shifts, two adders)
-logic signed [8:0] ema_delta       = {1'b0, y_cur_i} - {1'b0, y_bg_i};   // one signed 9-bit subtract
-logic signed [8:0] ema_step_fast   = ema_delta >>> ALPHA_SHIFT;          // wire shift, α=1/(1<<ALPHA_SHIFT)
-logic signed [8:0] ema_step_slow   = ema_delta >>> ALPHA_SHIFT_SLOW;     // wire shift, α=1/(1<<ALPHA_SHIFT_SLOW)
-logic        [7:0] ema_update_o      = y_bg_i + ema_step_fast[7:0];      // non-motion branch
-logic        [7:0] ema_update_slow_o = y_bg_i + ema_step_slow[7:0];      // motion branch
-```
-
-`axis_motion_detect` selects among three write-back sources per pixel:
-
-```
-bg_next = !primed     ? y_smooth          // frame-0 hard init
-        :  raw_motion ? ema_update_slow_o // motion pixel → slow rate
-        :               ema_update_o      // non-motion pixel → fast rate
-```
-
-The selection is driven by one combinational mux feeding `mem_wr_data_o`. `raw_motion` is the unchanged threshold comparison `(|Y_smooth - bg| > THRESH)`. The mask output stream uses `mask_bit_o`, which is gated by `primed_i` inside `motion_core` so the wrapper does not re-implement the gate on the AXIS output.
+`mask_bit_o` is already `primed`-gated inside `motion_core` so the wrapper does not re-gate the AXIS output.
 
 ### 5.5 Pixel address counter
 
@@ -390,36 +357,7 @@ The RAM uses read-first semantics on port A. When motion detect reads and writes
 
 ### 5.7 Pipeline stages
 
-**`GAUSS_EN=0` (PIPE_STAGES=1):**
-
-```
-Cycle C   : pixel N accepted; rgb2ycrcb MACs computed combinationally; mem_rd_addr_o issued
-Cycle C+1 : y_cur registered; mem_rd_data_i arrives → diff computed → mask registered
-```
-
-Total latency: **1 clock cycle**.
-
-**`GAUSS_EN=1` (PIPE_STAGES = H_ACTIVE + 3):**
-
-The centered Gaussian (`axis_gauss3x3`) has H_ACTIVE + 1 cycles of fill latency (1 row + 1 column of spatial offset) plus 2 pipeline cycles, giving a total Gaussian latency of H_ACTIVE + 2 cycles from `rgb2ycrcb` output. The pixel address pipeline (`idx_pipe`) must delay the RAM read address by the same amount so that `y_smooth` and `bg[P]` meet at the comparator for the same pixel P:
-
-```
-Cycle C            : pixel N accepted; rgb2ycrcb MACs computed; gauss control signals registered
-Cycle C+1          : y_cur registered; Gaussian begins accumulating into line buffers
-Cycle C+2          : Gaussian line buffer read + column shift stage 1
-...
-Cycle C+H_ACTIVE+2 : Gaussian output stage 1 (adder tree)
-Cycle C+H_ACTIVE+3 : y_smooth registered; mem_rd_data_i arrives → diff computed → mask registered
-```
-
-Total latency: **H_ACTIVE + 3 clock cycles** (323 cycles at 320px).
-
-`PIPE_STAGES` is computed dynamically:
-
-```
-GAUSS_LATENCY = (GAUSS_EN != 0) ? (H_ACTIVE + 2) : 0
-PIPE_STAGES   = 1 + GAUSS_LATENCY   // 1 at GAUSS_EN=0; H_ACTIVE+3 at GAUSS_EN=1
-```
+`PIPE_STAGES = 1 + GAUSS_LATENCY`, where `GAUSS_LATENCY = H_ACTIVE + 2` when `GAUSS_EN=1` (one row + one column of spatial offset for the centered Gaussian, plus its 2 internal pipeline registers) and `0` when `GAUSS_EN=0`. The pixel-address shift register (`idx_pipe`) carries the RAM read address through the same number of stages so `y_smooth` and `bg[P]` meet at the comparator for the same pixel `P`. Total input-to-mask latency: **1 cycle** at `GAUSS_EN=0`, **H_ACTIVE+3** cycles at `GAUSS_EN=1` (323 at 320 px).
 
 ### 5.8 `idx_pipe` — SRL-inferred shift register
 
@@ -509,75 +447,7 @@ None from `sparevideo_pkg` directly. Frame geometry parameters (`H_ACTIVE`, `V_A
 
 ---
 
-## 10. Follow-Ups / Future Improvements
-
-### 10.1 Edge-match ghost detector (Sobel-based)
-
-If real-scene testing reveals ghosts that survive the grace window — e.g.,
-an object that was stationary throughout the first GRACE_FRAMES frames and
-then moves, or a grace window too short to let bg converge below THRESH —
-the next escalation is an edge-based ghost detector.
-
-#### Motivation
-
-A ghost region is a "phantom motion" blob with no corresponding real object.
-The defining property: the edges inside a ghost blob match the background
-model's edges (because the ghost is revealed true background), while a real
-moving object has edges that do not match the bg model (the foreground
-content differs from bg).
-
-#### Technique
-
-1. Apply a cheap edge operator (3x3 Sobel, 8-neighbor gradient magnitude) to
-   both `y_cur` and `y_bg` in parallel with the existing threshold path.
-2. For each motion pixel (raw_motion=1), compare `edge(y_cur)` and `edge(y_bg)`:
-   - If they match (within a small tolerance EDGE_MATCH_TOL), classify the
-     pixel as ghost and force `mask_bit=0` and `bg_next=ema_update` (fast
-     rate) to accelerate bg self-correction.
-   - Otherwise, normal selective-EMA rule applies.
-3. Optionally gate the ghost classifier on a blob-level statistic from CCL
-   (e.g., reject ghost-only if ≥80% of the CCL component's pixels are
-   edge-matching), to avoid false-positive ghost calls on real objects with
-   low internal texture.
-
-#### Cost estimate
-
-- One Sobel line buffer (3×H_ACTIVE × 8-bit ≈ 960 B at H=320) per image
-  (current and bg) — 2× cost shared with the existing Gaussian filter's
-  line buffers. Possibly reusable.
-- Two adder trees for gradient magnitude (|Gx| + |Gy|, not sqrt).
-- One comparator per output.
-- No change to RAM ports or data widths.
-
-#### Trigger condition
-
-Only implement this if real-scene verification reveals residual ghosts that
-tuning GRACE_FRAMES (up to ~16) cannot suppress. Synthetic `moving_box` and
-`dark_moving_box` are not expected to need it once the grace window is in
-place.
-
-#### References
-
-- Cucchiara et al., "Detecting Moving Objects, Ghosts and Shadows in Video
-  Streams," IEEE TPAMI 2003 — original object-level ghost/shadow classifier.
-- Sehairi et al., "Comparative study of motion detection methods" (arXiv:
-  1804.05459) — survey of ghost-suppression approaches.
-- MDPI Sensors 2020 — "Ghost Detection and Removal Based on Two-Layer
-  Background Model and Histogram Similarity" (more expensive, not proposed
-  here).
-
-### 10.2 Motion-stuck per-pixel counter (ViBe-style)
-
-Per-pixel counter that tracks how many consecutive frames a pixel has been
-flagged as motion. If it exceeds a threshold (e.g., 2 × GRACE_FRAMES), force
-the pixel to the fast EMA rate regardless of `raw_motion`. Cost: `log2(K)`
-bits per pixel (~4-6 bits × H×V ≈ 50-100 kbit at 320×240). Targets ghosts
-that arrive *after* the grace window. More principled than grace but more
-expensive. Consider only if grace + edge-match together still leave residuals.
-
----
-
-## 11. References
+## 10. References
 
 - [Background subtraction — Wikipedia](https://en.wikipedia.org/wiki/Background_subtraction)
 - [Exponential moving average — Wikipedia](https://en.wikipedia.org/wiki/Exponential_smoothing)

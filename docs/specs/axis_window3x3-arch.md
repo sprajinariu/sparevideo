@@ -113,7 +113,7 @@ A centered 3×3 window places the current pixel at the center. For each output p
 
 This produces an initial fill latency before the first `window_valid_o`: the first real pixel enters at cycle 0, and the first complete window appears at cycle `H_ACTIVE + 2` (one full row for the first line buffer fill, one column for the first column shift fill, plus one pipeline register). After fill, throughput is 1 pixel/cycle.
 
-This module emits the **combinational window at the d1 stage**, one register earlier than `axis_gauss3x3` did before the refactor. Each consumer closes its own pipeline with one output register, so the end-to-end consumer latency remains `H_ACTIVE + 3` for `axis_gauss3x3` (kernel `H_ACTIVE + 2` + wrapper register `+1`).
+This module emits the **combinational window at the d1 stage**. Each consumer closes its own pipeline with one output register, so the end-to-end consumer latency is `H_ACTIVE + 3` for `axis_gauss3x3` (kernel `H_ACTIVE + 2` + wrapper register `+1`).
 
 ### 4.2 Edge replication
 
@@ -215,7 +215,6 @@ In standard VGA-timed integration these phantom cycles execute during H-blank an
 | H-blank | 1 cycle per row | 1 phantom column per row |
 | V-blank | H_ACTIVE + 1 cycles total | H_ACTIVE + 1 phantom row cycles |
 
-Standard TB parameters (`H_BLANK = 16`, `V_BLANK = 6 lines`) exceed both minimums comfortably.
 
 ### 5.4 Line buffers (distributed RAM, depth = `H_ACTIVE`, width = `DATA_WIDTH`)
 
@@ -308,13 +307,13 @@ No FSM. All control is combinational gating on `valid_i`, `stall_i`, `sof_i`, an
 | Phantom cycles per row | 1 (absorbed in H-blank ≥ 1 cycle) |
 | Phantom cycles per frame (bottom-row drain) | H_ACTIVE + 1 (absorbed in V-blank ≥ H_ACTIVE + 1 cycles) |
 
-This is one cycle shorter than the pre-refactor `axis_gauss3x3` window stage because the output register now lives in each wrapper rather than inside the shared primitive.
+The output register lives in each wrapper rather than inside this shared primitive, so consumers like `axis_gauss3x3` add one cycle on top of `H_ACTIVE + 2`.
 
 ---
 
 ## 8. Consumers
 
-**`axis_gauss3x3`** (implemented, in `hw/ip/filters/rtl/`) — wraps `axis_window3x3` with `DATA_WIDTH=8`, applies the Gaussian kernel `[1 2 1; 2 4 2; 1 2 1] / 16` as a combinational adder tree (all shifts, no multipliers), and closes with a single output register. The external interface is unchanged from the pre-refactor monolithic implementation.
+**`axis_gauss3x3`** (implemented, in `hw/ip/filters/rtl/`) — wraps `axis_window3x3` with `DATA_WIDTH=8`, applies the Gaussian kernel `[1 2 1; 2 4 2; 1 2 1] / 16` as a combinational adder tree (all shifts, no multipliers), and closes with a single output register.
 
 **`axis_morph3x3_erode`** and **`axis_morph3x3_dilate`** (implemented, in `hw/ip/filters/rtl/`) — wrap `axis_window3x3` with `DATA_WIDTH=1`. Erode applies a combinational AND across the 9 window taps; dilate applies an OR. Each closes with one output register. Both are composed inside `axis_morph3x3_open` to form a 3×3 morphological opening; see [`axis_morph3x3_open-arch.md`](axis_morph3x3_open-arch.md).
 
@@ -324,11 +323,8 @@ Any future 3×3 consumer should follow the same wrapper pattern: instantiate `ax
 
 ## 9. Risks / Known Limitations
 
-**Risk C1 (addressed): factored-out primitive — consumer regressions.**
-This module was extracted from the former monolithic `axis_gauss3x3`. Any consumer that changes its semantics (e.g., by changing scan timing or edge policy) must re-gate against a saved motion-pipeline golden. The extraction refactor was verified byte-identical via the full `run-pipeline` regression across all control flows and `ALPHA_SHIFT` combinations (see `docs/plans/2026-04-23-pipeline-extensions-design.md` §5.3).
-
 **Only `EDGE_REPLICATE` is implemented.**
-The `EDGE_POLICY` parameter and enum are in place (see §3.1), but values other than `0` (`EDGE_REPLICATE`) trigger an elaboration-time `$fatal`. Reserved policies (ZERO, CONSTANT, MIRROR) can be slotted in later without breaking callers: the parameter is already on every instantiation, and new values will fail loud instead of silently falling through to REPLICATE. Each new policy must ship with a dedicated testbench case.
+The `EDGE_POLICY` parameter and enum are in place (see §3.1), but values other than `0` (`EDGE_REPLICATE`) trigger an elaboration-time `$fatal`. Reserved policies (ZERO, CONSTANT, MIRROR) can be slotted in later without breaking callers: the parameter is already on every instantiation, and new values fail loud instead of silently falling through to REPLICATE.
 
 **H_ACTIVE + 2 initial latency.**
 The first `window_valid_o` appears `H_ACTIVE + 2` cycles after the first `valid_i`. At 100 MHz this is 3.2 µs at 320px — negligible in a 60 fps pipeline. Consumers must account for this latency in any downstream alignment (e.g., `axis_motion_detect` uses `idx_pipe` to delay the pixel address by the total consumer latency).
@@ -343,7 +339,7 @@ Each line buffer is 320 × `DATA_WIDTH` bits. At 8-bit data and 320px, synthesis
 
 ## 10. References
 
-- [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) — Gaussian pre-filter architecture; describes the consumer pattern in detail and the original monolithic design from which `axis_window3x3` was extracted.
+- [`axis_gauss3x3-arch.md`](axis_gauss3x3-arch.md) — Gaussian pre-filter architecture; describes the consumer wrapper pattern in detail.
 - [`axis_motion_detect-arch.md`](axis_motion_detect-arch.md) — Motion-detection pipeline; shows how `axis_gauss3x3` (and transitively `axis_window3x3`) fits into the broader pipeline.
 - **MathWorks Vision HDL Toolbox** — `floor(K_h/2)` lines of latency, edge padding with blanking-based drain. Minimum blanking: 2·K_w cycles horizontal, K_h lines vertical. [visionhdl.ImageFilter](https://www.mathworks.com/help/visionhdl/ref/visionhdl.imagefilter-system-object.html)
 - **Xilinx Vitis Vision `Filter2D` / `Window2D`** — line buffer depth K_v−1, window buffer, centered SOP. [2D Convolution Tutorial](https://xilinx.github.io/Vitis-Tutorials/2021-1/build/html/docs/Hardware_Acceleration/Design_Tutorials/01-convolution-tutorial/lab2_conv_filter_kernel_design.html)
