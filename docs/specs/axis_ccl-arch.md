@@ -493,7 +493,7 @@ else:
     back_valid[s] ← 0
 ```
 
-Implemented as a per-slot inner loop over all labels (one label per cycle). The terminal cycle (`scan_idx == N_LABELS_INT - 1`) must evaluate the current candidate *and* commit — the NBA-scheduled running best wouldn't be observable on the next cycle because there is no next cycle for that slot. A block-local `eff_best_count`/`eff_best_lbl` capture the current-cycle-effective value for the commit.
+Implemented as a per-slot inner loop over all labels (one label per cycle). The terminal cycle (`scan_idx == N_LABELS_INT - 1`) must evaluate the current candidate *and* commit — the running best is registered and only visible on the following cycle, but there is no following cycle for that slot. A block-local `eff_best_count`/`eff_best_lbl` capture the current-cycle-effective value for the commit.
 
 Note: Label 0 is scanned — overflow-pooled pixels can produce a catch-all bbox if they exceed `MIN_COMPONENT_PIXELS`. This is the documented overflow behaviour (§4.4).
 
