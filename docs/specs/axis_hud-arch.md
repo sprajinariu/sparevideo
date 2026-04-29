@@ -143,22 +143,20 @@ Pixels outside the HUD region pass through unchanged. Inside the region, glyph f
                   ┌────────────────────────────────────────────────────────────┐
                   │                       axis_hud                             │
                   │                                                            │
-                  │  ┌────────────────┐                                        │
-   s_axis  ──────►│  │  1-cycle skid  │──────────► render mux ──────► m_axis   │
-                  │  │                │              ▲                         │
-                  │  │                │              │                         │
-                  │  └────────────────┘              │                         │
-                  │         │  (col,row)             │                         │
+                  │  ┌──────────────┐                                          │
+   s_axis  ──────►│  │     skid     │──────────► render mux ──────► m_axis     │
+                  │  └──────┬───────┘                ▲                         │
+                  │         │                        │                         │
                   │         ▼                        │                         │
-                  │   counter FSM ──► in_hud, addr ──┤                         │
+                  │    counter FSM ─────────────────►│                         │
                   │                                  │                         │
                   │  sideband ──► SOF latch ──► decimal-expand FSM             │
                   │                                  │                         │
                   │                                  ▼                         │
-                  │                           glyph_table[N_CHARS]             │
+                  │                            glyph_table                     │
                   │                                  │                         │
                   │                                  ▼                         │
-                  │                           FONT_ROM lookup ─► fg_bit ───────┘
+                  │                            FONT_ROM ───────────────────────┘
                   └────────────────────────────────────────────────────────────┘
 ```
 
@@ -172,38 +170,34 @@ Cells corresponding to static literal characters (`F`, `:`, space, `T`, `N`, `L`
 
 ### 5.3 Decimal expansion
 
-Decimal expansion of `frame_num_q[15:0]` (live `frame_num_i` is used as the seed at the SOF latch edge), `bbox_count_q[7:0]` (post-saturation to 99), and `latency_us_q[15:0]` (16-bit, no saturation needed — the value fits in 5 decimal cells natively) is performed by an iterative subtract-10 FSM. For each field, the FSM emits the digits one at a time, least-significant first, by repeatedly:
+Each numeric field (`frame_num`, `bbox_count`, `latency_us`) is reduced to its decimal digits by an iterative subtract-10 FSM. For each field the FSM walks the digits least-significant first:
 
-1. Subtracting 10 from a working register `rem` and incrementing a digit counter `cnt` until `rem < 10`. At that point `rem` is the current least-significant digit and `cnt` is the value to chew on for the next digit position.
-2. Writing `rem` into the corresponding cell of `glyph_table` (rightmost-digit cell first, walking left).
-3. Reloading the working register with `cnt` and clearing the counter, then advancing to the next digit position.
+1. Repeatedly subtract 10 from a working register `rem` and increment a digit counter `cnt` until `rem < 10`. `rem` is then the current digit; `cnt` is the next-decade dividend.
+2. Write `rem[3:0]` into the corresponding cell of `glyph_table` (rightmost-digit cell first, walking left).
+3. Reload `rem` from `cnt`, clear `cnt`, and advance to the next digit position.
 
-After the field's leftmost (most-significant) digit has been written, the FSM advances to the next field's state.
+After the field's most-significant digit has been written, the FSM advances to the next field. `frame_num_i` is sampled live at the SOF edge (the same edge on which the sideband latch fires); the other two fields are read from their latched copies (`bbox_count_q`, `latency_us_q`).
 
-`cnt` and `rem` are both `logic [15:0]`. The width must be at least as wide as the dividend: a 16-bit dividend (e.g. `latency_us_q = 65535`) needs up to 6553 subtract-10 iterations to extract the LSD, so `cnt` must be ≥ 13 bits — matching `rem`'s 16-bit width is the simplest choice and leaves room for any future widening of the field inputs.
+`rem` and `cnt` are both `logic [15:0]` so they accommodate the worst-case dividend (`latency_us_q = 65535`, which needs 6553 subtract-10 iterations to extract the LSD).
 
-The FSM walks through `4 + 2 + 5 = 11` digit positions per frame (frame number, bbox count, latency). Worst-case cost per digit is roughly `1 + 6553 = 6554` subtract-10 cycles (for the latency LSD on the largest input), so the total per-frame budget is on the order of 6600 cycles. This runs once per frame inside vertical blanking, where the available cycle budget is `V_BLANK_LINES · H_TOTAL` and must comfortably exceed this; at standard VGA timing the v-blank is ~280k cycles at 100 MHz, leaving ~40× headroom.
-
-The control-flow-tag decode (§6.3) is purely combinational off the latched 2-bit value and does not require an FSM step.
+Across all three fields the FSM walks `4 + 2 + 5 = 11` digit positions. Worst-case cost is on the order of 6600 cycles (dominated by the latency LSD), well within the v-blank budget (~280k cycles at standard VGA timing and 100 MHz `clk_dsp`).
 
 ### 5.4 Render mux
 
-The skid stage holds the most recently accepted input beat in `s_axis_data_q` (the cycle-0 skid register; companions `tlast_q`, `tuser_q`, `pipe_valid_q` carry the framing bits, and `col_pipe_q` / `row_pipe_q` carry that pixel's position — see §6.1(a)). The skid advances when the downstream is ready or the stage is empty:
+The skid stage holds the most recently accepted input beat (`s_axis_data_q`) along with its framing bits (`tlast_q`, `tuser_q`, `pipe_valid_q`) and its position (`col_pipe_q`, `row_pipe_q` — see §6.1(a)). It advances when the downstream is ready or the stage is empty:
 
 ```
 stage_advance  = m_axis.tready || !pipe_valid_q;
 s_axis.tready  = stage_advance;
 ```
 
-This is identical to the skid contract in `axis_gamma_cor`. For the pixel currently in the skid stage, `col_pipe_q` / `row_pipe_q` and the latched glyph table are evaluated combinationally to produce `fg_bit`. The render mux is purely combinational, driving `m_axis.tdata` directly from the skid register and the FONT_ROM lookup:
+The render mux is purely combinational off the registered skid stage and the registered `glyph_table`:
 
 ```
 m_axis.tdata = (enable_i && in_hud_region && fg_bit) ? 24'hFF_FF_FF : s_axis_data_q;
 ```
 
-The combinational style keeps the FONT_ROM lookup off the long input-to-output path: the lookup chain reads from registered `col_pipe_q` / `row_pipe_q` and a registered `glyph_table`, so its starting point is a flop and its endpoint is the output port. The downstream consumer registers `m_axis.tdata` on its own input edge.
-
-The sequential state in the per-pixel datapath is the 1-cycle skid register (`s_axis_data_q`), the skid-stage position (`col_pipe_q` / `row_pipe_q`), and the framing companion bits (`tlast_q` / `tuser_q` / `pipe_valid_q`). A separate input-side counter (`col_in_q` / `row_in_q` — see §6.1(a)) tracks the position of the pixel currently on `s_axis` so the skid can latch position alongside data.
+This keeps the FONT_ROM lookup between two flops — registered position and `glyph_table` on the input side, the downstream consumer's input register on the output side.
 
 ---
 
@@ -213,20 +207,18 @@ The sequential state in the per-pixel datapath is the 1-cycle skid register (`s_
 
 Three concurrent control blocks coexist:
 
-**(a) Position counters.** Two pairs of registers track pixel position. `col_in_q` / `row_in_q` reflect the position of the pixel currently being presented on `s_axis`; they update lazily on each accepted beat to point at the *next* input pixel's position so that on reset (counter = 0) the first SOF beat is correctly identified at `(0, 0)`. The skid's companion registers `col_pipe_q` / `row_pipe_q` capture `col_in_q` / `row_in_q` at the moment the pixel is latched into the skid, so they always reflect the position of the pixel currently in the skid stage and feed the render path. Both pairs reset on SOF and roll forward on EOL the same way.
+**(a) Position counters.** `col_in_q` / `row_in_q` track the position of the pixel currently on `s_axis`. After each accepted beat they update to point at the *next* input pixel; from the reset value (0,0) this naturally identifies the first SOF beat as (0,0). The skid's companions `col_pipe_q` / `row_pipe_q` snapshot `col_in_q` / `row_in_q` at the moment the pixel is latched into the skid, so they reflect the position of the pixel currently in the skid stage and feed the render path.
 
 **(b) Sideband latch.** A single set of registers `frame_num_q`, `bbox_count_q`, `ctrl_flow_tag_q`, `latency_us_q` holds the per-frame values. The latch fires when the input SOF beat is accepted (`s_axis.tvalid && s_axis.tready && s_axis.tuser`) and freezes thereafter for the rest of the frame. This is what eliminates mid-frame flicker if the producer changes its sideband mid-stream.
 
-**(c) Decimal-expand FSM.**
+**(c) Decimal-expand FSM.** Two states drive extraction of all three numeric fields. A 2-bit `field_q` selector identifies which field is currently being expanded.
 
 | State | Meaning | Transition |
 |-------|---------|------------|
-| `D_IDLE` | Awaiting next SOF | `→ D_FRAME` at the SOF edge (`beat && s_axis.tuser`). The same edge seeds `rem` from the live `frame_num_i` (the latch fires on the same edge, so the latched and live values are equal). |
-| `D_FRAME` | Extracting 4 frame-number digits via subtract-10 | `→ D_BBOX` after digit 4 written; seeds `rem <= bbox_count_q` (latched, post-saturation). |
-| `D_BBOX` | Extracting 2 bbox-count digits | `→ D_LAT` after digit 2 written; seeds `rem <= latency_us_q` (latched). |
-| `D_LAT` | Extracting 5 latency digits | `→ D_IDLE` after digit 5 written. |
+| `D_IDLE` | Awaiting next SOF | `→ D_DECODE` at the SOF edge (`beat && s_axis.tuser`). Same edge: `field_q <= F_FRAME` and `rem` is seeded from the live `frame_num_i` (the sideband latch fires on the same edge, so the latched and live values are equal). |
+| `D_DECODE` | Walking the digits of the field selected by `field_q`, least-significant first, via the subtract-10 loop in §5.3. | After the field's MSD has been written: `field_q` advances `F_FRAME → F_BBOX → F_LAT`, with `rem` reseeded from the corresponding latched sideband. After the LSD of `F_LAT` has been written, `→ D_IDLE`. |
 
-Each digit-state walks the digits of its field one at a time, least-significant first, using the iterative subtract-10 loop described in §5.3. After all digits of a field have been written into `glyph_table`, the FSM advances to the next field's state. The FSM completes well within v-blank.
+The FSM completes well within v-blank.
 
 ### 6.2 `bbox_count` saturation
 
@@ -291,6 +283,7 @@ The latency reported by `latency_us_i` is a measurement contract on the producer
 - **`enable_i` must be held frame-stable.** Toggling mid-frame yields a torn frame (top half with HUD, bottom without, or vice versa). Producers should change `enable_i` only during v-blank.
 - **Sideband validity contract.** `frame_num_i`, `bbox_count_i`, `ctrl_flow_tag_i`, and `latency_us_i` must be valid on the cycle the HUD's input SOF beat is accepted. Earlier or later updates within the same frame are ignored by the latch and have no effect until the next SOF.
 - **Latency measurement boundary.** `latency_us_i` reflects proc-clock SOF-in to HUD-input SOF only; it excludes the output-side CDC and VGA-controller delay. The full pixel-to-display latency is a few cycles greater than the displayed value.
+- **No completion flag on the digit-expand FSM.** The render mux reads `dig_frame` / `dig_bbox` / `dig_lat` combinationally while the FSM writes them in place. For typical inputs the FSM finishes well before the HUD becomes visible (row 8). For max-range inputs (e.g. `latency_us = 65535` ≈ 7k cycles to expand the LSD) the writes can land inside the visible HUD row, causing glyph tearing on that frame. A new SOF that arrives while the FSM is still busy is silently dropped — that frame renders the previous frame's digits.
 
 ---
 
@@ -298,4 +291,3 @@ The latency reported by `latency_us_i` is a measurement contract on the producer
 
 - [`sparevideo-top-arch.md`](sparevideo-top-arch.md) — Top-level pipeline; placement of `axis_hud` between `u_scale2x` and `u_fifo_out`, and the source of the four sideband signals.
 - [`axis_gamma_cor-arch.md`](axis_gamma_cor-arch.md) — Skid-pipeline pattern this module reuses (1-cycle latency, `enable_i` bypass, sideband-free pixel datapath).
-- `docs/plans/2026-04-23-pipeline-extensions-design.md` §3.6 — Original feature specification (layout string, font source, sideband latching strategy, latency measurement boundary).

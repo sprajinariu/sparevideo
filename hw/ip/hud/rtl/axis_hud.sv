@@ -46,7 +46,8 @@ module axis_hud
     localparam int COL_W = $clog2(H_ACTIVE + 1);
     localparam int ROW_W = $clog2(V_ACTIVE + 1);
 
-    typedef enum logic [1:0] { D_IDLE, D_FRAME, D_BBOX, D_LAT } d_state_e;
+    typedef enum logic [1:0] { D_IDLE, D_DECODE } d_state_e;
+    typedef enum logic [1:0] { F_FRAME, F_BBOX, F_LAT } field_e;
 
     // ---- Sideband latch (held frame-stable from SOF) ---------------
     logic [15:0]      frame_num_q;
@@ -71,7 +72,11 @@ module axis_hud
     logic [ROW_W-1:0] row_pipe_q;
 
     // ---- Decimal-expand FSM state ----------------------------------
+    // LSD slot index per field (matches dig_*[i] layout: [0]=MSD .. [N-1]=LSD)
+    localparam logic [3:0] LSD_OF [3] = '{4'd3, 4'd1, 4'd4};
+
     d_state_e         d_state;
+    field_e           field_q;
     logic [3:0]       d_idx;          // digit position within current field
     logic [15:0]      rem;            // working remainder
     // Quotient counter for the subtract-10 step. Must be at least as wide as
@@ -169,69 +174,61 @@ module axis_hud
     end
 
     // ---- Decimal-expand FSM (subtract-10 iteration, runs in v-blank) ----
+    // One D_DECODE state shared across all fields; field_q selects which digit
+    // array gets the per-step write and what the next dividend is when the
+    // current field's MSD has been written.
     always_ff @(posedge clk_i) begin
         if (!rst_n_i) begin
-            d_state <= D_IDLE;
-            d_idx   <= '0;
-            rem     <= '0;
-            cnt     <= '0;
-            for (int i = 0; i < 4; i++) dig_frame[i] <= '0;
-            for (int i = 0; i < 2; i++) dig_bbox [i] <= '0;
-            for (int i = 0; i < 5; i++) dig_lat  [i] <= '0;
+            d_state   <= D_IDLE;
+            field_q   <= F_FRAME;
+            d_idx     <= '0;
+            rem       <= '0;
+            cnt       <= '0;
+            dig_frame <= '{default: '0};
+            dig_bbox  <= '{default: '0};
+            dig_lat   <= '{default: '0};
         end else begin
             unique case (d_state)
                 D_IDLE: begin
                     if (beat && s_axis.tuser) begin
-                        d_state <= D_FRAME;
-                        d_idx   <= 4'd3;             // start at LSD
+                        d_state <= D_DECODE;
+                        field_q <= F_FRAME;
+                        d_idx   <= LSD_OF[F_FRAME];
                         rem     <= frame_num_i;      // live input; latch fires same edge
                         cnt     <= '0;
                     end
                 end
-                D_FRAME: begin
+                D_DECODE: begin
                     if (rem >= 16'd10) begin
                         rem <= rem - 16'd10;
                         cnt <= cnt + 1'b1;
                     end else begin
-                        dig_frame[d_idx[1:0]] <= rem[3:0];
-                        rem <= cnt;
+                        unique case (field_q)
+                            F_FRAME: dig_frame[d_idx[1:0]] <= rem[3:0];
+                            F_BBOX:  dig_bbox [d_idx[0]]   <= rem[3:0];
+                            F_LAT:   dig_lat  [d_idx[2:0]] <= rem[3:0];
+                            default: ;
+                        endcase
                         cnt <= '0;
-                        if (d_idx == 4'd0) begin
-                            d_state <= D_BBOX;
-                            d_idx   <= 4'd1;
-                            rem     <= {8'd0, bbox_count_q};
-                        end else begin
+                        if (d_idx != 4'd0) begin
                             d_idx <= d_idx - 1'b1;
-                        end
-                    end
-                end
-                D_BBOX: begin
-                    if (rem >= 16'd10) begin
-                        rem <= rem - 16'd10;
-                        cnt <= cnt + 1'b1;
-                    end else begin
-                        dig_bbox[d_idx[0]] <= rem[3:0];
-                        rem <= cnt;
-                        cnt <= '0;
-                        if (d_idx == 4'd0) begin
-                            d_state <= D_LAT;
-                            d_idx   <= 4'd4;
-                            rem     <= latency_us_q;
+                            rem   <= cnt;            // promote quotient to next dividend
                         end else begin
-                            d_idx <= d_idx - 1'b1;
+                            unique case (field_q)
+                                F_FRAME: begin
+                                    field_q <= F_BBOX;
+                                    d_idx   <= LSD_OF[F_BBOX];
+                                    rem     <= {8'd0, bbox_count_q};
+                                end
+                                F_BBOX: begin
+                                    field_q <= F_LAT;
+                                    d_idx   <= LSD_OF[F_LAT];
+                                    rem     <= latency_us_q;
+                                end
+                                F_LAT:   d_state <= D_IDLE;
+                                default: d_state <= D_IDLE;
+                            endcase
                         end
-                    end
-                end
-                D_LAT: begin
-                    if (rem >= 16'd10) begin
-                        rem <= rem - 16'd10;
-                        cnt <= cnt + 1'b1;
-                    end else begin
-                        dig_lat[d_idx[2:0]] <= rem[3:0];
-                        rem <= cnt;
-                        cnt <= '0;
-                        if (d_idx == 4'd0) d_state <= D_IDLE;
-                        else               d_idx   <= d_idx - 1'b1;
                     end
                 end
                 default: d_state <= D_IDLE;
@@ -299,18 +296,17 @@ module axis_hud
     // All computed combinationally from the REGISTERED skid-stage position so
     // the FONT_ROM lookup is off the long input-to-output path.
     always_comb begin
-        col_off   = col_pipe_q - COL_W'(HUD_X0);
-        row_off   = row_pipe_q - ROW_W'(HUD_Y0);
-        in_band_y = (row_pipe_q >= ROW_W'(HUD_Y0)) && (row_pipe_q < ROW_W'(HUD_Y0 + 8));
-        in_band_x = (col_pipe_q >= COL_W'(HUD_X0)) && (col_pipe_q < COL_W'(HUD_X0 + N_CHARS*8));
-        cell_idx  = 5'(col_off >> 3);
-        x_in_cell = col_off[2:0];
-        y_in_cell = row_off[2:0];
-        rom_row   = FONT_ROM[glyph_table[cell_idx]][y_in_cell];
-        fg_bit    = rom_row[7 - x_in_cell];
+        col_off       = col_pipe_q - COL_W'(HUD_X0);
+        row_off       = row_pipe_q - ROW_W'(HUD_Y0);
+        in_band_y     = (row_pipe_q >= ROW_W'(HUD_Y0)) && (row_pipe_q < ROW_W'(HUD_Y0 + 8));
+        in_band_x     = (col_pipe_q >= COL_W'(HUD_X0)) && (col_pipe_q < COL_W'(HUD_X0 + N_CHARS*8));
+        in_hud_region = in_band_y && in_band_x;
+        cell_idx      = 5'(col_off >> 3);
+        x_in_cell     = col_off[2:0];
+        y_in_cell     = row_off[2:0];
+        rom_row       = FONT_ROM[glyph_table[cell_idx]][y_in_cell];
+        fg_bit        = rom_row[7 - x_in_cell];
     end
-
-    assign in_hud_region = in_band_y && in_band_x;
 
     // ---- Output mux: drives m_axis from the registered skid stage --
     // enable_i=0 still goes through the same skid (data-equivalent passthrough,
