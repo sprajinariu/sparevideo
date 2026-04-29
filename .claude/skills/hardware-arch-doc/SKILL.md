@@ -1,6 +1,6 @@
 ---
 name: hardware-arch-doc
-description: Use when starting a new hardware stage or module before implementation begins, to produce a detailed architecture document covering module hierarchy, signal interfaces, state machines, datapath, and timing.
+description: Use when writing or editing any hardware architecture spec under `docs/specs/` (filename pattern `*-arch.md`), or before implementing a new RTL stage / module / submodule. Covers module hierarchy, signal interfaces, state machines, datapath, timing, and the spec scope/style rules (no Python/TB narrative, no prior-design refs, no simulation-scheduler vocabulary, datapath-only overview diagrams, term-before-use).
 ---
 
 # Hardware Architecture Documentation
@@ -107,6 +107,7 @@ A spec is the **design contract** for one RTL module. It describes what the modu
 - Simulator-specific framing ("Verilator only", "at sim time").
 - **Verification details of any kind**: how the module is tested, what coverage is collected, which TB drives which stimulus, "this is verified by X". The spec describes the design; the verification belongs in the TB and the verification plan. SVAs are the only exception — they formalize design invariants and ship with the RTL.
 - **References to prior implementations that no longer exist.** Phrases like "compared with the prior 2-buffer arch", "this used to use a peek window", "+50% vs. the previous version" — drop them. The reader is being asked to understand the *current* design, not its history. Refactor narrative belongs in commit messages, PR descriptions, or the plan doc, not the spec. If a rejected alternative is worth calling out, phrase it forward-looking ("any future variant must preserve raster-scan output order"), not as a backward comparison.
+- **Simulation-scheduler vocabulary.** Terms like "NBA" / "non-blocking assignment", "blocking assignment", "delta cycle", "evaluation region", "active region" describe how a SystemVerilog *simulator* schedules events, not how the hardware is structured. The spec is a design contract — talk about registers, clock-edge updates, and combinational paths instead. If the point is "this register's new value isn't visible until the next cycle," say exactly that; don't paraphrase as "NBA-scheduled" or "the NBA hasn't fired yet". A register update at a clock edge is "registered at the next clock edge" or "X updates at cycle N+1", not "the NBA fires at N".
 
 **Do include:**
 - SVA assertions — they formalize design invariants and are part of the RTL deliverable. A dedicated chapter in the top spec is appropriate.
