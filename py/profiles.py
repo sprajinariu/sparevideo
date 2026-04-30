@@ -44,6 +44,24 @@ NO_GAMMA_COR: ProfileT = dict(DEFAULT, gamma_en=False)
 # 2x spatial upscaler bypassed (output resolution = input resolution).
 NO_SCALER: ProfileT = dict(DEFAULT, scaler_en=False)
 
+# README demo profile, tuned for the synthetic + Pexels triptychs:
+#   scaler_en=False       — 320x240 panels (no 2x upscale)
+#   gamma_en=False        — sources are already sRGB-encoded
+#   alpha_shift=2         — faster fast-EMA (~4-frame recovery)
+#   alpha_shift_slow=8    — bg barely drifts under sustained motion (~1/256/frame)
+#                           so slow objects don't accumulate enough bg contamination
+#                           to leave a trailing mask after the trailing edge passes
+#   grace_frames=16       — real-clip frame 0 contains foreground (cars/pedestrians);
+#                           grace at α=1/2 for 16 frames drives bg-residual to
+#                           ~0.0015 % of d₀ — well below THRESH for any reasonable
+#                           contrast, so the slow-EMA latch at end-of-grace
+#                           doesn't bake in a ghost. Bboxes appear from frame 17
+#                           (~1.07 s @ 15 fps).
+DEMO: ProfileT = dict(
+    DEFAULT, scaler_en=False, gamma_en=False,
+    alpha_shift=2, alpha_shift_slow=8, grace_frames=16,
+)
+
 # HUD bitmap overlay bypassed.
 NO_HUD: ProfileT = dict(DEFAULT, hud_en=False)
 
@@ -55,6 +73,7 @@ PROFILES: dict[str, ProfileT] = {
     "no_gauss":      NO_GAUSS,
     "no_gamma_cor":  NO_GAMMA_COR,
     "no_scaler":     NO_SCALER,
+    "demo":          DEMO,
     "no_hud":        NO_HUD,
 }
 

@@ -173,6 +173,7 @@ Detailed task-specific guidance lives in `.claude/skills/`. Invoke the relevant 
 - Keep makefiles up-to-date
 - Keep requirements.txt up-to-date
 - Keep relevant plans/docs/*.md architecture specs up-to-date
+- Regenerate demo WebPs (`make demo`) if RTL changes affected the visual output, and commit the regenerated `media/demo/*.webp` along with the change.
 - Clean up large files (e.g. VCDs, simulation outputs, binaries), don't upload them to git
 - After implementing a plan, move it to docs/plans/old/ and put a date timestamp on it to have a history on what has been implemented.
 

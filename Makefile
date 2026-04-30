@@ -39,7 +39,8 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean
+        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean \
+        demo demo-synthetic demo-real
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -159,6 +160,51 @@ render:
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --cfg $(CFG) \
 		--render-output $(RENDER_OUT)
+
+# ---- README demo (animated WebP triptychs) ----
+
+DEMO_FRAMES ?= 45
+DEMO_WIDTH  ?= 320
+DEMO_HEIGHT ?= 240
+DEMO_FPS    ?= 15
+
+demo: demo-synthetic demo-real
+
+demo-synthetic:
+	$(MAKE) prepare SOURCE=synthetic:multi_speed_color \
+	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_FRAMES) MODE=binary CFG=demo
+	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
+	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
+	$(MAKE) compile CTRL_FLOW=motion CFG=demo
+	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
+	@mkdir -p $(CURDIR)/media/demo
+	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
+	    --input  dv/data/input.bin \
+	    --ccl    dv/data/output_ccl_bbox.bin \
+	    --motion dv/data/output_motion.bin \
+	    --out    media/demo/synthetic.webp \
+	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_FRAMES) \
+	    --fps   $(DEMO_FPS)
+
+demo-real:
+	$(MAKE) prepare SOURCE=$(CURDIR)/media/source/pexels-pedestrians-320x240.mp4 \
+	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_FRAMES) MODE=binary CFG=demo
+	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
+	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
+	$(MAKE) compile CTRL_FLOW=motion CFG=demo
+	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
+	@mkdir -p $(CURDIR)/media/demo
+	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
+	    --input  dv/data/input.bin \
+	    --ccl    dv/data/output_ccl_bbox.bin \
+	    --motion dv/data/output_motion.bin \
+	    --out    media/demo/real.webp \
+	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_FRAMES) \
+	    --fps   $(DEMO_FPS)
 
 # ---- Other targets ----
 

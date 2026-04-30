@@ -2,6 +2,22 @@
 
 Video processing pipeline with motion detection and bounding-box overlay, written in SystemVerilog and verified via Verilator with a file-based Python harness.
 
+## Demo
+
+End-to-end animated triptychs: **Input | CCL BBOX | MOTION**, each panel 320×240, ~3 s @ 15 fps, regenerable from `make demo`.
+
+### Synthetic input (`multi_speed_color`)
+
+![Synthetic demo](media/demo/synthetic.webp)
+
+Three colored objects with distinct speeds and trajectories on a tinted textured background. Used as the canonical regression-style demo: deterministic, fully regenerable, frame 0 is bg-only by construction so EMA priming starts clean.
+
+### Real video (Pexels intersection)
+
+![Real demo](media/demo/real.webp)
+
+Top-down view of an intersection (cars + pedestrians). 3 s window from a Pexels-licensed clip, pre-stabilized to remove tripod sway (the motion-detect RTL assumes a fixed camera). The first ~1 s of output frames contain no bboxes — `grace_frames=16` blanks the mask while the EMA background converges past frame-0 contamination. Source clip and prep command: [`media/source/README.md`](media/source/README.md).
+
 ## Overview
 
 `sparevideo_top` accepts an AXI4-Stream RGB888 input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable** pipeline (passthrough, motion detection + N-way bbox overlay, mask display, or mask-as-grey + CCL-bbox debug), crosses back to the pixel clock, and drives a VGA controller. A 2-bit `ctrl_flow_i` sideband selects the active path.
@@ -162,6 +178,20 @@ make compile                 # Compile only
 make test-py                 # Python unit tests (frame I/O + reference models)
 ```
 
+### Regenerating the demo
+
+After RTL changes that affect visual output, rebuild the demo WebPs and commit them with the change:
+
+```bash
+make demo                                                # regenerates both WebPs
+explorer.exe "$(wslpath -w media/demo/synthetic.webp)"   # preview animation in browser (WSL)
+grip README.md                                           # preview README at github.com fidelity
+```
+
+`grip` is an optional dev tool (`pip install grip`) that renders local markdown using GitHub's API — useful for confirming the README looks right before pushing.
+
+To swap the real-video source clip, see [`media/source/README.md`](media/source/README.md). To trim and stabilize a fresh Pexels download yourself, use the `python -m demo.stabilize` CLI.
+
 ## Options
 
 | Option | Default | Description |
@@ -188,6 +218,7 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 | `synthetic:textured_static` | Sinusoid-textured static background with per-frame sensor noise. Negative test — mask must be all-black after EMA convergence. |
 | `synthetic:entering_object` | Two soft-edged boxes entering from opposite edges, crossing the centre. Textured+noisy bg. |
 | `synthetic:multi_speed` | Three soft-edged boxes with distinct speeds and directions (fast L→R, medium T→B, slow diagonal). Textured+noisy bg. Exercises N-way CCL tracking. |
+| `synthetic:multi_speed_color` | Colored variant of `multi_speed`: red / green / cyan soft-edged boxes on a tinted RGB textured bg. Used for the README demo (`make demo-synthetic`). |
 | `synthetic:stopping_object` | Box A stops after half the frames; box B moves throughout. Textured+noisy bg. Exercises selective-EMA slow-rate absorption. |
 | `synthetic:lit_moving_object` | Two soft-edged boxes on a bg whose left↔right illumination gradient shifts ~2 luma/frame. Textured+noisy bg. |
 
