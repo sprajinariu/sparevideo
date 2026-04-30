@@ -75,11 +75,11 @@ Defaults correspond to 640×480 @ 60 Hz on a 25 MHz pixel clock.
 
 ## 4. Concept Description
 
-The VGA (Video Graphics Array) standard defines a raster-scan display protocol. A video frame is transmitted as a sequence of horizontal lines, each containing an active pixel region followed by a blanking interval (front porch, sync pulse, back porch). Vertical blanking follows the same pattern across lines. The display monitor uses the sync pulses to lock its beam position to the transmitter's timing.
+VGA is a raster-scan protocol. Each line is an active pixel region followed by blanking (front porch + sync pulse + back porch); vertical blanking follows the same pattern across lines. The display uses the sync pulses to lock its beam position.
 
-The controller implements a pair of free-running counters (horizontal and vertical) that cycle through the four timing regions of each axis. The horizontal counter advances every pixel clock; the vertical counter advances every horizontal line. The `pixel_ready_o` signal is asserted only during the intersection of the horizontal and vertical active regions, creating a natural backpressure mechanism: the upstream pipeline is stalled during blanking without explicit flow-control logic.
+The controller is two free-running counters (horizontal and vertical) cycling through the four timing regions on each axis. `pixel_ready_o` asserts only inside the intersection of both active regions — natural backpressure on the upstream pipeline during blanking, with no explicit flow-control logic.
 
-This counter-based approach is standard for VGA timing generation. The timing parameters are fully configurable, allowing the same module to drive different resolutions and refresh rates by changing the parameter set (e.g., 640x480 @ 60 Hz, 800x600 @ 72 Hz, 1024x768 @ 60 Hz).
+The timing parameters are fully configurable; the same module drives any resolution by changing the parameter set (640×480@60 Hz, 800×600@72 Hz, etc.).
 
 ---
 

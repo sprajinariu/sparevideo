@@ -64,13 +64,11 @@
 
 ## 4. Concept Description
 
-A dual-port RAM provides two independent access ports sharing a common memory array. This architecture enables concurrent read/write operations from different pipeline stages without arbitration delays — one client can read while another writes, or both can read simultaneously.
+A dual-port RAM has two independent ports sharing a common backing store. Concurrent read/write from different pipeline stages happens without arbitration — one client can read while another writes.
 
-In the sparevideo pipeline, port A serves the motion detection module's per-pixel background model, requiring one read and one write per pixel clock. Port B is reserved for future clients (debug dump, fixed-pattern-noise reference, host CPU access). The dual-port topology allows a future port B client to access the memory without stalling the motion detection pipeline.
+In sparevideo, port A serves `axis_motion_detect`'s per-pixel EMA background model (one read + one write per pixel). Port B is reserved for future clients (debug dump, FPN reference, host CPU access).
 
-The module implements **read-first** semantics: when a port reads and writes the same address in the same cycle, the read returns the old (pre-write) value. This is the discipline required by the EMA background update in `axis_motion_detect`, which reads the current background estimate and writes the EMA-updated estimate at the same address in the same cycle, needing the old value for the difference computation.
-
-The RAM is zero-initialized, which means the background model starts at 0 for all pixels. The EMA converges from zero toward the actual scene luma over the first `~1/alpha` frames rather than being primed from the first frame (see `axis_motion_detect-arch.md` §4 for the rationale).
+The module uses **read-first** semantics: a same-cycle read+write to the same address returns the old value. This matches the EMA discipline — read the current `bg`, compute `bg + α(y − bg)`, write the new value back at the same address. The RAM is zero-initialized; `axis_motion_detect`'s frame-0 hard-init then seeds the per-pixel `bg` from the first frame's luma (see `axis_motion_detect-arch.md` §4).
 
 ---
 

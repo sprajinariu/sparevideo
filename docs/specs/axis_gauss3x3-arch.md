@@ -69,7 +69,7 @@ All scan state, line buffers, phantom drain, and edge handling live in `axis_win
 | `y_o` | output | 8 | Smoothed luma (registered) |
 | `valid_o` | output | 1 | Output valid — follows `valid_i` with `H_ACTIVE + 3` cycle latency during initial fill; 1 pixel/cycle steady-state throughput thereafter |
 
-No `tready` output — the module never back-pressures; stall control is external. The interface is unchanged from the pre-refactor monolithic implementation.
+No `tready` output — the module never back-pressures; stall control is external.
 
 ---
 
@@ -190,7 +190,6 @@ Blanking requirements come from `axis_window3x3` — see [`axis_window3x3-arch.m
 - H-blank: ≥ 1 cycle per row (absorbs the per-row phantom column).
 - V-blank: ≥ `H_ACTIVE + 1` cycles (absorbs the bottom-row phantom-row drain).
 
-Standard VGA-timed TB (`H_BLANK = 16`, `V_BLANK = 6 lines`) exceeds both comfortably.
 
 ---
 

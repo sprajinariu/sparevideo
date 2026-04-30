@@ -1,12 +1,12 @@
 # sparevideo
 
-Video processing pipeline with motion detection and bounding-box overlay, verified via Verilator with a file-based Python harness.
+Video processing pipeline with motion detection and bounding-box overlay, written in SystemVerilog and verified via Verilator with a file-based Python harness.
 
 ## Overview
 
-A video processing pipeline written in SystemVerilog. The top-level design (`sparevideo_top`) accepts an **AXI4-Stream** video input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable processing pipeline** (passthrough, motion detection + N-way bounding-box overlay via connected-component labeling, mask display, or mask-as-grey + CCL-bbox debug), crosses back to the pixel clock, and drives a VGA controller. A top-level 2-bit `ctrl_flow_i` sideband signal selects the active path.
+`sparevideo_top` accepts an AXI4-Stream RGB888 input on a 25 MHz pixel clock, crosses into a 100 MHz DSP clock domain, runs a **control-flow-selectable** pipeline (passthrough, motion detection + N-way bbox overlay, mask display, or mask-as-grey + CCL-bbox debug), crosses back to the pixel clock, and drives a VGA controller. A 2-bit `ctrl_flow_i` sideband selects the active path.
 
-Architecture details, module interfaces, and design decisions are documented in [`docs/specs/`](docs/specs/):
+Per-module architecture and design decisions live in [`docs/specs/`](docs/specs/):
 
 | Document | Module |
 |----------|--------|
@@ -27,130 +27,33 @@ Architecture details, module interfaces, and design decisions are documented in 
 
 ## Project Structure
 
-### RTL
-
 ```
-hw/top/
-├── sparevideo_top.sv          Top-level: AXI4-Stream → CDC → pipeline mux → CDC → VGA
-├── sparevideo_pkg.sv          Package: shared parameters, types, control flow constants
-└── ram.sv                     Generic true-dual-port byte RAM (behavioral, sim-only)
+hw/
+├── top/                       sparevideo_top.sv, sparevideo_pkg.sv, ram.sv (sim-only)
+├── ip/<block>/rtl/            Per-IP RTL: rgb2ycrcb, axis (fork), hflip, window, filters
+│                              (gauss3x3, morph3x3_*), gamma, scaler, hud, motion, ccl,
+│                              overlay, vga
+├── ip/<block>/tb/             Per-IP unit testbenches (Verilator)
+└── lint/                      Verilator waivers (project + third-party)
 
-hw/ip/rgb2ycrcb/rtl/
-└── rgb2ycrcb.sv               RGB888 → YCrCb converter (Rec.601, 8-bit fixed-point)
+dv/
+├── sv/                        Top-level integration testbench + DPI-C helpers
+├── sim/                       Makefile (sim + test-ip targets)
+└── data/                      Generated I/O scratch (gitignored)
 
-hw/ip/axis/rtl/
-└── axis_fork.sv               Zero-latency AXI4-Stream 1-to-2 broadcast fork with per-output acceptance tracking
-
-hw/ip/hflip/rtl/
-└── axis_hflip.sv             Horizontal mirror (selfie-cam) — single line buffer, RECV/XMIT FSM, enable_i bypass
-
-hw/ip/window/rtl/
-└── axis_window3x3.sv          Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; EDGE_POLICY parameter)
-
-hw/ip/filters/rtl/
-├── axis_gauss3x3.sv           3x3 Gaussian pre-filter on Y channel (wraps axis_window3x3 + adder tree)
-├── axis_morph3x3_erode.sv        3x3 morphological erosion on 1-bit mask (wraps axis_window3x3 + 9-way AND)
-├── axis_morph3x3_dilate.sv       3x3 morphological dilation on 1-bit mask (wraps axis_window3x3 + 9-way OR)
-└── axis_morph3x3_open.sv         3x3 opening composite: axis_morph3x3_erode → axis_morph3x3_dilate
-
-hw/ip/gamma/rtl/
-└── axis_gamma_cor.sv          Per-channel sRGB gamma correction (33-entry LUT, linear interp, 1-cycle skid, enable_i bypass)
-
-hw/ip/scaler/rtl/
-└── axis_scale2x.sv            2x spatial upscaler (NN or bilinear); instantiated under CFG.scaler_en generate gate
-
-hw/ip/hud/rtl/
-├── axis_hud.sv                8x8 bitmap text overlay at post-scaler tail (1-cycle skid, runtime CFG.hud_en bypass)
-└── axis_hud_font_pkg.sv       Auto-generated font ROM: 38 glyphs (digits + A-Z + ':' + ' '), one source-of-truth in py/gen_hud_font.py
-
-hw/ip/motion/rtl/
-├── axis_motion_detect.sv      Motion detector: mask-only producer (rgb2ycrcb + EMA core + memory)
-└── motion_core.sv             Pure-combinational: abs-diff threshold + EMA background update
-
-hw/ip/ccl/rtl/
-└── axis_ccl.sv                Streaming 8-connected CCL + EOF FSM + top-N bbox double-buffer
-
-hw/ip/overlay/rtl/
-└── axis_overlay_bbox.sv       N_OUT-wide bounding-box rectangle overlay on RGB video
-
-hw/ip/vga/rtl/
-├── vga_controller.sv          VGA timing generator (instantiated in top)
-└── pattern_gen.sv             Test pattern generator (retained, unused)
-
-hw/lint/
-├── verilator_waiver.vlt       Project lint waivers
-└── third_party_waiver.vlt     Third-party lint waivers
-
-third_party/verilog-axis/rtl/  Vendored alexforencich/verilog-axis (MIT)
-```
-
-### Verification — SystemVerilog
-
-```
-hw/ip/rgb2ycrcb/tb/
-└── tb_rgb2ycrcb.sv            18 vectors, corner cases, exact-match
-
-hw/ip/hflip/tb/
-└── tb_axis_hflip.sv          5 tests: gradient mirror, multi-frame SOF, downstream stall, in-row tvalid bubble, enable_i passthrough
-
-hw/ip/window/tb/
-└── tb_axis_window3x3.sv       6 tests: window ordering, top/left/right/bottom edge replication, no-blanking busy_o
-
-hw/ip/filters/tb/
-├── tb_axis_gauss3x3.sv        11 tests: uniform/impulse/gradient/checker/stall/SOF + centered alignment, edge replication, latency, busy_o fallback, min-blanking
-├── tb_axis_morph3x3_erode.sv     10 tests: salt removal, thin-stripe erasure, enable_i bypass, stall, SOF reset, framing (tlast EOL / tuser SOF)
-├── tb_axis_morph3x3_dilate.sv    9 tests: mirror of erode with OR reduction (stripe thickening, corner replication)
-└── tb_axis_morph3x3_open.sv      10 tests: composite erode→dilate (salt removal, thin-stripe Risk D1, 5×5 idempotence, latency 2*(H+3))
-
-hw/ip/gamma/tb/
-└── tb_axis_gamma_cor.sv      4 tests: sRGB endpoint, ramp interpolation, mid-line tready stall, enable_i passthrough
-
-hw/ip/motion/tb/
-└── tb_axis_motion_detect.sv   6-frame golden model, threshold boundary, symmetric + asymmetric stall
-
-hw/ip/ccl/tb/
-└── tb_axis_ccl.sv             9 tests: single blob, hollow, disjoint, U-merge, min-size filter, overflow, back-to-back, mid-frame gaps, priming
-
-hw/ip/overlay/tb/
-└── tb_axis_overlay_bbox.sv    8 tests: empty/full/single-pixel, backpressure
-
-dv/sv/
-├── tb_sparevideo.sv           Unified top-level testbench (RTL sim + SW dry-run)
-└── tb_utils.c                 DPI-C wall-clock helper (Verilator)
-
-dv/sim/
-└── Makefile                   Simulation and test-ip targets
-
-dv/data/                       Generated simulator input/output scratch files (gitignored)
-                               Includes `hud_latency.txt`: per-frame µs latency written by sparevideo_top
-                               at HUD-input-SOF, consumed by py/models/ops/_hud_metadata.py for
-                               bit-accurate model parity in `make verify`.
-renders/                       PNG comparison grids from `make render` (gitignored)
-```
-
-### Verification — Python
-
-```
 py/
 ├── harness.py                 Pipeline CLI: prepare / verify / render
-├── profiles.py                Algorithm profile definitions (Python mirror of cfg_t and named profiles in sparevideo_pkg.sv)
-├── frames/
-│   ├── frame_io.py            Read/write text and binary frame files
-│   └── video_source.py        Load video from MP4/PNG/synthetic sources
-├── models/
-│   ├── __init__.py            Model dispatch (run_model → per-control-flow model)
-│   ├── passthrough.py         Passthrough model (identity)
-│   ├── motion.py              Motion pipeline model (luma, mask, CCL bboxes, overlay)
-│   ├── mask.py                Mask display model (luma, mask, B/W expansion)
-│   ├── ccl.py                 Streaming CCL reference model (matches RTL bit-for-bit)
-│   └── ccl_bbox.py            ccl_bbox debug composition (mask-as-grey + bboxes)
-├── viz/
-│   └── render.py              Render input/output comparison image grid
-└── tests/
-    ├── test_frame_io.py       Frame I/O round-trip tests
-    ├── test_models.py         Reference model unit tests
-    └── test_profiles.py       Parity test: Python profile dicts vs. cfg_t fields in sparevideo_pkg.sv
+├── profiles.py                Algorithm profile definitions (mirrors cfg_t in sparevideo_pkg.sv)
+├── frames/                    Frame I/O + video source loaders
+├── models/                    Per-control-flow reference models (passthrough, motion, mask, ccl, ccl_bbox)
+├── viz/                       Comparison-grid renderer
+└── tests/                     Frame I/O / model / profile-parity unit tests
+
+renders/                       PNG comparison grids from `make render` (gitignored)
+third_party/verilog-axis/      Vendored alexforencich/verilog-axis (MIT)
 ```
+
+Each IP has its own architecture spec under `docs/specs/` (linked above) and its own unit testbench under `hw/ip/<block>/tb/`. The integration testbench (`dv/sv/tb_sparevideo.sv`) drives full-pipeline simulation; `make run-pipeline` orchestrates Python prepare → Verilator sim → Python verify/render.
 
 ## Prerequisites
 
@@ -250,15 +153,9 @@ make render
 ```bash
 # Other targets
 make lint                    # Verilator lint
-make test-ip                 # All per-block IP unit testbenches (Verilator)
-make test-ip-rgb2ycrcb       # rgb2ycrcb: 18 vectors, exact-match golden model
-make test-ip-hflip           # axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough
-make test-ip-gamma-cor       # axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough
-make test-ip-window          # axis_window3x3: 6 tests, window ordering + edge replication + busy_o fallback
-make test-ip-gauss3x3        # axis_gauss3x3: 11 tests, centered Gaussian + latency + busy_o fallback
-make test-ip-motion-detect   # axis_motion_detect: 6-frame golden model, threshold boundary, symmetric + asymmetric stall
-make test-ip-ccl             # axis_ccl: 7 tests, single/hollow/disjoint/U-merge/overflow/back-to-back
-make test-ip-overlay-bbox    # axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure
+make test-ip                 # All per-block IP unit testbenches
+make test-ip-<block>         # Single-block unit testbench (rgb2ycrcb, hflip, gamma-cor, window,
+                             #   gauss3x3, motion-detect, ccl, overlay-bbox, ...)
 make sw-dry-run              # Bypass RTL — file loopback, zero sim time
 make sim-waves               # RTL sim + open GTKWave
 make compile                 # Compile only
@@ -298,15 +195,9 @@ Motion patterns are best tested with `FRAMES=8` or higher for meaningful multi-f
 
 ### Motion detection threshold (`motion_thresh`)
 
-The luma-difference threshold lives in the `motion_thresh` field of `cfg_t` (default `16` in `CFG_DEFAULT`, ≈6.25% intensity). To use a different threshold, define a new profile in `hw/top/sparevideo_pkg.sv` (and mirror it in `py/profiles.py`), then select it at compile time:
+A pixel is flagged as motion when `|Y − bg| > CFG.motion_thresh`, where `bg` is the per-pixel EMA background model. Default is `16` (≈6.25% of full scale). To change it, add a new profile to `hw/top/sparevideo_pkg.sv` (mirror it in `py/profiles.py`) and run `make run-pipeline CFG=<your_profile>`. See [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) for the full algorithm (polarity-agnostic mask, two-rate EMA, frame-0 hard-init).
 
-```bash
-make run-pipeline CFG=<your_profile>
-```
-
-A pixel is classified as motion when `|Y_cur - bg| > CFG.motion_thresh`, where `bg` is the per-pixel EMA background model (adaptation rate controlled by `alpha_shift` / `alpha_shift_slow` fields in `cfg_t`). The mask is polarity-agnostic — both arrival and departure pixels are flagged, so the bounding box works for bright-on-dark, dark-on-bright, and colour scenes. The bbox is slightly larger than the object by approximately one frame of displacement. Frame 0 is a priming pass (mask forced to 0 while the bg RAM is seeded per-pixel), and the first real detection frame is frame 1. The CCL suppresses bboxes for the first 2 frames as an additional safety margin so any transient on the very first compare cycle cannot produce a spurious bbox.
-
-For the `mask` control flow, the verify step also reports motion pixel counts per frame (`motion=N/total`), which is useful for diagnosing false positives.
+For the `mask` control flow, `make verify` also reports per-frame motion-pixel counts — useful for diagnosing false positives.
 
 ### File Formats
 

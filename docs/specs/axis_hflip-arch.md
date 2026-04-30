@@ -103,13 +103,13 @@ SOF arriving on an accepted RX beat is latched and re-emitted on the first TX be
 
 ### 5.2 RX/TX phases
 
-**RX (`state_q == S_RX`):** `s_axis_tready_o = 1`. On each accepted beat (`tvalid && tready && enable_i`), write `line_buf[wr_col] <= tdata` and increment `wr_col`. If `tuser=1` on the beat, write `line_buf[0]` instead, set `sof_pending`, and set `wr_col` to 1. On the accepted beat with `tlast=1`, reset `wr_col` to 0 and transition to TX.
+In **RX**, the module accepts input pixels (`tready=1`, `tvalid=0` on the output) and writes each accepted beat to `line_buf[wr_col]`. SOF is latched into `sof_pending`. On the accepted beat carrying `tlast` the FSM transitions to TX.
 
-**TX (`state_q == S_TX`):** `m_axis_tvalid_o = 1`. The output drives `tdata = line_buf[H_ACTIVE − 1 − rd_col]`, `tuser = sof_pending && (rd_col == 0)`, `tlast = (rd_col == H_ACTIVE − 1)`. On each accepted output beat, increment `rd_col`. On the accepted beat with `rd_col == H_ACTIVE − 1`, clear `sof_pending`, reset `rd_col` to 0, and transition back to RX.
+In **TX**, the module replays the buffer in reverse (`tvalid=1`, `tready=0` on the input). The output drives `tdata = line_buf[H_ACTIVE − 1 − rd_col]`, regenerates `tuser` from `sof_pending` on the first output beat, and asserts `tlast` on the last column. On that final accepted beat the FSM clears `sof_pending` and returns to RX.
 
 ### 5.3 `enable_i` bypass
 
-When `enable_i = 0`, the always_comb mux drives all five output signals combinationally from the corresponding inputs (`tdata`, `tvalid`, `tlast`, `tuser` direct; `s_axis_tready_o = m_axis_tready_i`). The FSM is held idle (`rx_accept` is gated by `enable_i`), the line buffer is neither read nor written, and zero latency is added. `enable_i` must be held stable across a frame.
+When `enable_i = 0`, an `always_comb` mux drives all five outputs combinationally from the corresponding inputs (`tready` mirrors downstream). The FSM is held idle and the line buffer is neither read nor written — zero added latency. `enable_i` must be frame-stable.
 
 ### 5.4 Resource cost summary
 
@@ -160,15 +160,14 @@ Two states; both column counters reset to 0 and `state_q` resets to `S_RX`.
 
 ## 9. Known Limitations
 
-- **Single line buffer — full-line upstream stall during TX.** A ping-pong buffer (two lines, overlapping RX and TX) would eliminate the stall but is not needed at the current clock ratio. A cheaper single-buffer alternative also exists: alternate the write direction (and therefore the read direction) per row, so reader and writer sweep the buffer in the same direction in lockstep, and the writer overwrites each slot the reader just emitted. This achieves continuous 1-pix/cycle throughput after a 1-line warmup with no second line buffer, at the cost of a row-parity bit, slightly trickier address generation, and tighter back-pressure coupling (downstream stall must back-pressure upstream so the writer cannot race ahead and clobber unread data). Not implemented today because the current clock ratio already absorbs the stall.
-- **`enable_i` must be frame-stable.** The post-Task-5 RTL gates `rx_accept` with `enable_i`, so a 1→0 toggle freezes the FSM cleanly and 0→1 picks up on the next SOF; output pixels for a frame straddling the toggle are undefined.
-- **Line buffer not zeroed on reset.** Contents are undefined until the first RX phase completes. The framing signals are derived from FSM counters and remain correct; only pixel data could be affected, and the first RX phase always completes before the first TX beat.
-- **`V_ACTIVE` parameter is informational only.** It is provided for interface consistency with other filter modules; no internal logic depends on it.
+- **Single line buffer — full-line upstream stall during TX.** A ping-pong buffer would remove the stall but isn't needed at the current 4:1 dsp/pix ratio (the input CDC FIFO absorbs ~80 entries; see top spec).
+- **`enable_i` must be frame-stable.** Output for a frame straddling the toggle is undefined.
+- **Line buffer not zeroed on reset.** Contents are undefined until the first RX phase completes; the first TX always sees a fully-filled buffer because RX must complete before TX starts.
+- **`V_ACTIVE` is informational only.** Provided for interface consistency; no internal logic depends on it.
 
 ---
 
 ## 10. References
 
 - [`sparevideo-top-arch.md`](sparevideo-top-arch.md) — Top-level pipeline; placement of `axis_hflip` and CDC FIFO sizing.
-- `docs/plans/2026-04-23-pipeline-extensions-design.md` §3.1 — Per-block design detail and Risk B1 (stall alternation).
 - **ARM IHI0051A — AMBA AXI4-Stream Protocol Specification** — §2.2 (handshake), §2.7 (`tuser`/`tlast`).

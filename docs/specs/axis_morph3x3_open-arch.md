@@ -12,15 +12,13 @@
   - [4.1 Morphological erosion and dilation](#41-morphological-erosion-and-dilation)
   - [4.2 Morphological opening](#42-morphological-opening)
   - [4.3 Edge replication](#43-edge-replication)
-  - [4.4 Risk D1 — thin-feature deletion](#44-risk-d1--thin-feature-deletion)
-    - [4.4.1 Interaction with `axis_motion_detect`'s Gaussian pre-filter](#441-interaction-with-axis_motion_detects-gaussian-pre-filter)
+  - [4.4 Thin-feature deletion](#44-thin-feature-deletion)
 - [5. Internal Architecture](#5-internal-architecture)
   - [5.1 Block diagram](#51-block-diagram)
-  - [5.2 `axis_morph3x3_erode` datapath](#52-axis_morph3x3_erode-datapath)
-  - [5.3 `axis_morph3x3_dilate` datapath](#53-axis_morph3x3_dilate-datapath)
-  - [5.4 `axis_morph3x3_open` composite](#54-axis_morph3x3_open-composite)
-  - [5.5 `enable_i` bypass semantics](#55-enable_i-bypass-semantics)
-  - [5.6 Resource cost summary](#56-resource-cost-summary)
+  - [5.2 Sub-module datapath](#52-sub-module-datapath)
+  - [5.3 `axis_morph3x3_open` composite](#53-axis_morph3x3_open-composite)
+  - [5.4 `enable_i` bypass semantics](#54-enable_i-bypass-semantics)
+  - [5.5 Resource cost summary](#55-resource-cost-summary)
 - [6. Control Logic and State Machines](#6-control-logic-and-state-machines)
 - [7. Timing](#7-timing)
   - [7.1 Latency](#71-latency)
@@ -107,79 +105,39 @@ Both modules expose identical ports. The table below applies to each of them ind
 
 ### 4.1 Morphological erosion and dilation
 
-**Erosion** replaces each pixel with the minimum over its neighborhood:
+For a 1-bit mask with a 3×3 square structuring element:
 
-```
-erode[r, c] = AND { mask[r+dr, c+dc]  for dr, dc ∈ {−1, 0, +1} }
-```
+- **Erosion** = 9-input AND over the window: output is 1 only when all 9 taps (including the centre) are 1. Any background pixel pulls the output to 0.
+- **Dilation** = 9-input OR over the window: output is 1 when at least one tap is 1. A foreground pixel expands into all 8 neighbours.
 
-For a 1-bit mask and a 3×3 square structuring element, erosion is a 9-input AND: the output is 1 (foreground) only when all 9 neighbors (including the pixel itself) are 1. Any background pixel in the neighborhood pulls the output to 0.
-
-**Dilation** replaces each pixel with the maximum over its neighborhood:
-
-```
-dilate[r, c] = OR { mask[r+dr, c+dc]  for dr, dc ∈ {−1, 0, +1} }
-```
-
-For a 1-bit mask and a 3×3 square structuring element, dilation is a 9-input OR: the output is 1 when at least one neighbor is 1. A foreground pixel expands into all 8 of its neighbors.
-
-Both operations are purely combinational 9-way reductions over the 3×3 window taps. The actual storage and alignment infrastructure (line buffers, column shift registers, edge muxing) is owned by `axis_window3x3`.
+Both are combinational reductions over the window taps; storage and alignment (line buffers, shift registers, edge muxing) are owned by `axis_window3x3`.
 
 ### 4.2 Morphological opening
 
-Opening = erosion followed by dilation with the same structuring element:
+Opening is `dilate(erode(mask))`. Key properties of a 3×3 square opening:
 
-```
-open[r, c] = dilate( erode( mask ) )[r, c]
-```
-
-Properties of 3×3 square opening:
-
-- **Idempotent:** opening an already-opened mask produces the same result — `open(open(M)) = open(M)`.
-- **Anti-extensive:** the output is a subset of the input — `open(M) ⊆ M`.
-- **Removes features smaller than the structuring element:** any connected foreground region that cannot fit a 3×3 square is erased. For a convex blob of width W and height H, the blob survives iff `W ≥ 3` and `H ≥ 3`.
-- **Approximates original size for survivors:** after dilation, surviving regions return to approximately their pre-erosion area. The approximation is exact for blobs that fit the structuring element with no boundary contact; blobs touching the frame border may be slightly asymmetric due to edge replication.
+- **Idempotent:** `open(open(M)) = open(M)`.
+- **Anti-extensive:** `open(M) ⊆ M`.
+- **Removes sub-3×3 features:** a convex blob of width W, height H survives only if W ≥ 3 and H ≥ 3.
+- **Preserves survivor size:** the dilation restores survivors to approximately their pre-erosion area; blobs touching the frame edge may be slightly asymmetric due to edge replication.
 
 ### 4.3 Edge replication
 
-At all four frame borders, off-frame window taps are filled by replicating the nearest in-frame pixel (`EDGE_REPLICATE` policy, inherited from `axis_window3x3`). This means:
+Off-frame window taps replicate the nearest in-frame pixel (`EDGE_REPLICATE`, inherited from `axis_window3x3`). One consequence for erosion: a foreground pixel at a corner has its three off-frame neighbours replicated from itself, so the AND over the 9-tap window only depends on the in-frame 2×2 region. A 2×2 corner block therefore survives erosion (and is partially restored by dilation).
 
-- **Top border** (row 0): the virtual row above replicates row 0.
-- **Bottom border** (row V−1): the virtual row below replicates row V−1.
-- **Left border** (col 0): the virtual column to the left replicates col 0.
-- **Right border** (col H−1): the virtual column to the right replicates col H−1.
+### 4.4 Thin-feature deletion
 
-For erosion, a foreground pixel at a corner (e.g., row 0, col 0) has its three off-frame neighbors replicated from itself. If the pixel is 1, the replicated neighbors are also 1, and the AND over the 9-tap window depends only on the 2×2 in-frame region. This means that a 2×2 foreground block at a corner survives erosion (and is then partially restored by dilation), because the corner pixel's out-of-frame neighbors are 1 (replicated from itself).
+A 3×3 square opening deletes any foreground feature narrower than 3 pixels in the **mask** — single pixels, 1-pixel stripes, and 2-pixel-wide bars are all erased. The effective minimum *input-image* feature size depends on the upstream pipeline.
 
-### 4.4 Risk D1 — thin-feature deletion
+When `axis_motion_detect.GAUSS_EN=1` (default), the 3×3 Gaussian on luma widens every above-threshold feature by one pixel on each side, so a 1-px line in the input RGB becomes a 3-px mask — exactly the minimum that opening preserves.
 
-A 3×3 square opening deletes **any foreground feature narrower than 3 pixels in the mask**. Examples (on the mask, not on the input image):
+| Input feature width | Mask width (`GAUSS_EN=0`) | Mask width (`GAUSS_EN=1`) | After opening |
+|---------------------|---------------------------|---------------------------|---------------|
+| 1 px | 1 px | 3 px | `GAUSS=0`: erased / `GAUSS=1`: preserved |
+| 2 px | 2 px | 4 px | `GAUSS=0`: erased / `GAUSS=1`: preserved |
+| ≥ 3 px | ≥ 3 px | ≥ 5 px | preserved in both |
 
-- A single isolated foreground pixel: eroded to nothing, not restored.
-- A 1-pixel-wide horizontal stripe (all columns, one row): every pixel has a background neighbor above or below, AND → 0, entire stripe erased.
-- A 2-pixel-wide vertical bar: border-adjacent columns can survive due to replication, but interior columns with only 2-high support do not.
-
-This is the intended behavior for salt-noise removal, but the effective minimum feature size on the **input image** depends on the upstream pipeline.
-
-#### 4.4.1 Interaction with `axis_motion_detect`'s Gaussian pre-filter
-
-When `axis_motion_detect` is configured with `GAUSS_EN=1` (the default), a 3×3 Gaussian `[1 2 1; 2 4 2; 1 2 1]/16` is applied to the luma Y **before** frame-difference thresholding. This spatial blur widens every bright feature by one pixel on each side in the above-threshold diff, so a 1-pixel-wide line in the input RGB becomes a 3-row-thick mask — which is precisely the minimum size that a 3×3 opening preserves.
-
-Consequence for the full pipeline (`axis_motion_detect` → `axis_morph3x3_open` → consumers):
-
-| Input feature width/height | `GAUSS_EN=0` mask thickness | `GAUSS_EN=1` mask thickness | Opening result |
-|----------------------------|-----------------------------|-----------------------------|----------------|
-| 1 px                       | 1 px                        | 3 px (after blur)           | `GAUSS_EN=0`: **erased**; `GAUSS_EN=1`: **preserved** |
-| 2 px                       | 2 px                        | 4 px                        | `GAUSS_EN=0`: erased; `GAUSS_EN=1`: preserved |
-| ≥ 3 px                     | ≥ 3 px                      | ≥ 5 px                      | preserved in both cases |
-
-So the input-image minimum-feature-size deletion threshold is:
-- `GAUSS_EN=0`: features < 3 px wide/tall are deleted by opening.
-- `GAUSS_EN=1`: features < 1 px (i.e., only single isolated pixels) are deleted by opening; 1- and 2-px-wide features survive because the Gauss blurs them above the morphological threshold.
-
-To exercise Risk D1 end-to-end, use `GAUSS_EN=0` in combination with the `thin_moving_line` synthetic source. With `GAUSS_EN=1` the difference between `MORPH=0` and `MORPH=1` on a 1-px feature is dominated by the Gauss widening upstream and is not visible.
-
-For salt-noise suppression (the primary design intent), `GAUSS_EN=1` is fully compatible: isolated-pixel noise in the input still produces isolated-pixel diffs above threshold (the Gauss averages the noise down in amplitude, and whatever single-pixel speckles remain in the mask are still erased by opening).
+Salt-noise suppression (the primary design intent) is unaffected: an isolated-pixel speckle produces a single-pixel mask hit even after the Gaussian, so it is still erased.
 
 ---
 
@@ -189,7 +147,7 @@ For salt-noise suppression (the primary design intent), `GAUSS_EN=1` is fully co
 
 ```
 s_axis_*  ──►  ┌─────────────────────┐  mid_*  ┌──────────────────────┐  ──►  m_axis_*
-               │   axis_morph3x3_erode  │ ──────► │  axis_morph3x3_dilate   │
+               │ axis_morph3x3_erode │ ──────► │ axis_morph3x3_dilate │
                │                     │         │                      │
                │  axis_window3x3<1>  │         │  axis_window3x3<1>   │
                │  (DATA_WIDTH=1)     │         │  (DATA_WIDTH=1)      │
@@ -199,98 +157,38 @@ s_axis_*  ──►  ┌──────────────────�
                └─────────────────────┘         └──────────────────────┘
 ```
 
-The internal AXIS link (`mid_tdata`, `mid_tvalid`, `mid_tready`, `mid_tlast`, `mid_tuser`) connects the erode output to the dilate input. `mid_tready` is driven by `u_dilate.s_axis_tready_o` back to `u_erode.m_axis_tready_i`.
+The internal AXIS link `mid_*` between erode and dilate uses the standard `tdata/tvalid/tready/tlast/tuser` set; `tready` propagates from dilate back to erode.
 
-### 5.2 `axis_morph3x3_erode` datapath
+### 5.2 Sub-module datapath
 
-```
-s_axis_tdata_i ──► axis_window3x3 ──► window_o[9]
-                   (DATA_WIDTH=1)        │
-                                         ▼
-                               erode_bit = window[0] & window[1] & ... & window[8]
-                               (always_comb, 9-input AND)
-                                         │
-                                         ▼
-                               ┌──────────────────┐
-                               │  output register  │  (always_ff, gated by !stall)
-                               │  m_axis_tdata_o   │
-                               │  m_axis_tvalid_o  │
-                               │  m_axis_tlast_o   │  ← regenerated from out_col/out_row
-                               │  m_axis_tuser_o   │  ← regenerated from out_col/out_row
-                               └──────────────────┘
-```
+Each sub-module wraps one `axis_window3x3<DATA_WIDTH=1, EDGE_REPLICATE>`, applies a combinational 9-input reduction over the window taps (AND for erode, OR for dilate), and registers the result. `tlast`/`tuser` are regenerated from a local `(out_col, out_row)` counter advancing on each output beat. Downstream stall (`!m_axis_tready_i`) freezes every register including the inner window primitive; upstream `tready` deasserts only during phantom cycles.
 
-`tlast` and `tuser` on the output are regenerated by a local `(out_col, out_row)` counter that advances on each `window_valid && !stall` beat:
-- `m_axis_tuser_o` asserts when `out_col == 0 && out_row == 0` (first pixel of the frame, SOF).
-- `m_axis_tlast_o` asserts when `out_col == H_ACTIVE-1` (last pixel of each row, EOL).
+### 5.3 `axis_morph3x3_open` composite
 
-The `stall` signal is derived directly from the downstream ready: `stall = !m_axis_tready_i`.
+A thin wrapper: instantiates `u_erode` and `u_dilate`, wires the internal AXIS link, and routes `enable_i` to both. No additional logic at this level.
 
-`s_axis_tready_o` is deasserted only during a phantom cycle (`busy_o` from `axis_window3x3`); otherwise it follows `!stall`.
+### 5.4 `enable_i` bypass
 
-### 5.3 `axis_morph3x3_dilate` datapath
+With `enable_i = 0` each sub-module's reduction is muxed out and the input forwards combinationally to the output. The line buffers stay instantiated but their output is unused. `enable_i` must be frame-stable; toggling mid-frame leaves the line buffers and output counter inconsistent.
 
-Structurally identical to `axis_morph3x3_erode` with the combinational reduction changed from AND to OR:
+### 5.5 Resource cost summary
 
-```
-dilate_bit = window[0] | window[1] | ... | window[8]
-```
-
-All other elements — `axis_window3x3` instantiation, output register, `tlast`/`tuser` regeneration, stall and ready handling — are identical.
-
-### 5.4 `axis_morph3x3_open` composite
-
-`axis_morph3x3_open` is a thin wrapper. It instantiates `u_erode` and `u_dilate`, wires the internal AXIS link between them, and routes `enable_i` to both. No combinational logic or state is added at this level beyond the wiring.
-
-The internal AXIS link (`mid_tdata`, `mid_tvalid`, `mid_tready`, `mid_tlast`, `mid_tuser`) connects `u_erode`'s output ports to `u_dilate`'s input ports. `u_erode` sources the composite's `s_axis_tready_o`; `u_dilate` drives the composite's `m_axis_*` outputs. All port connections follow the names in §3.2 and §3.3 exactly.
-
-### 5.5 `enable_i` bypass semantics
-
-When `enable_i = 0`, the combinational reduction is bypassed in both sub-modules. Each sub-module forwards `s_axis_*` directly to `m_axis_*`:
-
-- `m_axis_tdata_o  = s_axis_tdata_i`
-- `m_axis_tvalid_o = s_axis_tvalid_i`
-- `m_axis_tlast_o  = s_axis_tlast_i`
-- `m_axis_tuser_o  = s_axis_tuser_i`
-- `s_axis_tready_o = m_axis_tready_i`
-
-The line buffers inside `axis_window3x3` are still present (no generate block), but their output is muxed out. The bypass is purely combinational: zero additional latency is added to the pipeline when `enable_i = 0`.
-
-`enable_i` must be held stable across a complete frame. Toggling `enable_i` mid-frame is undefined behavior — the line buffers and output counter will be in an inconsistent state.
-
-### 5.6 Resource cost summary
-
-Per sub-module (`axis_morph3x3_erode` or `axis_morph3x3_dilate`), at `H_ACTIVE=320`, `V_ACTIVE=240`:
+Per sub-module at `H_ACTIVE=320`:
 
 | Resource | Count |
 |----------|-------|
-| Line buffer memory | 2 × H_ACTIVE × 1 bit = 640 bits (80 bytes) per sub-module |
-| Column shift register FFs | 6 × 1 = 6 bits per sub-module |
-| d1 pipeline registers (inherited from `axis_window3x3`) | 1 (data_d1) + COL_W (col_d1) + ROW_W (row_d1) + 1 (valid_d1) |
-| Output counter FFs | COL_W (out_col) + ROW_W (out_row) |
-| Output register | 1 (tdata) + 1 (tvalid) + 1 (tlast) + 1 (tuser) = 4 bits |
-| Combinational reduction | 9-input AND or OR gate tree |
-| Multipliers | 0 |
+| Line buffer | 2 × `H_ACTIVE` × 1 bit (640 bits) |
+| Column shift FFs | 6 |
+| d1 pipeline + output counter FFs | `1 + COL_W + ROW_W + 1` + `COL_W + ROW_W` |
+| Output register | 4 bits (tdata + tvalid + tlast + tuser) |
 
-For `axis_morph3x3_open` (two sub-modules combined):
-
-| Resource | Count |
-|----------|-------|
-| Total line buffer | 4 × H_ACTIVE × 1 bit = 1,280 bits (160 bytes) |
-| Total FFs (excluding line buffer) | ~2 × (6 + COL_W + ROW_W + 4 + COL_W + ROW_W) |
+The composite uses two such instances, so totals double.
 
 ---
 
 ## 6. Control Logic and State Machines
 
-No FSM in any of the three modules. All control is combinational gating based on `window_valid`, `stall_i`, and `sof_i`. The only registered control state is the `(out_col, out_row)` output pixel counter (per sub-module) and the counters inside `axis_window3x3`.
-
-| Signal | Condition | Effect |
-|--------|-----------|--------|
-| `sof_i` | `valid_i && !stall_i` on the window input | `axis_window3x3` counters reset; output counter resets at the next SOF-aligned output beat |
-| `stall_i` | `!m_axis_tready_i` | All FFs frozen: line buffers, shift registers, d1 stage, output register, output counter |
-| `window_valid` | combinational from `axis_window3x3` | Output register enabled; output counter advances |
-| `busy_o` | `valid_i && at_phantom` inside `axis_window3x3` | Parent deasserts upstream `tready` for the phantom cycle; not propagated by `axis_morph3x3_open` |
+No FSM in any of the three modules. Control is combinational gating on `window_valid`, `stall_i`, `sof_i`. The only registered state local to these modules is the `(out_col, out_row)` output counter; the `axis_window3x3` instance owns its own counters. Downstream stall freezes everything; the composite swallows the inner `busy_o` since standard VGA timing keeps it low.
 
 ---
 
@@ -300,26 +198,16 @@ No FSM in any of the three modules. All control is combinational gating based on
 
 | Stage | Latency |
 |-------|---------|
-| `axis_window3x3` (shared primitive) | H_ACTIVE + 2 cycles from first `valid_i` to first `window_valid_o` |
-| Sub-module output register | +1 cycle |
-| **Per sub-module (`axis_morph3x3_erode` or `axis_morph3x3_dilate`) end-to-end** | **H_ACTIVE + 3 cycles** |
-| **`axis_morph3x3_open` end-to-end (both sub-modules)** | **2 × (H_ACTIVE + 3) cycles** |
-| Steady-state throughput | 1 pixel / cycle (after fill, when `!stall_i`) |
+| Per sub-module (`axis_window3x3` + output register) | `H_ACTIVE + 3` cycles |
+| `axis_morph3x3_open` end-to-end | `2 × (H_ACTIVE + 3)` cycles |
+| `enable_i = 0` | 0 cycles (combinational) |
+| Steady-state throughput | 1 pixel / cycle |
 
-At `H_ACTIVE = 320` and a 100 MHz DSP clock, the end-to-end opening latency is `2 × 323 = 646` cycles = 6.46 µs. This is a one-time fill cost at the start of each frame and is invisible in a 60 fps pipeline.
-
-**`enable_i = 0` latency:** 0 additional cycles. Both sub-modules forward their input directly to output.
+At `H_ACTIVE=320`/100 MHz this is ~6.5 µs — a one-time fill cost, invisible in a 60 fps pipeline.
 
 ### 7.2 Blanking requirements
 
-The blanking requirements for a single `axis_window3x3` instance are:
-
-| Blanking type | Minimum | Absorbs |
-|---------------|---------|---------|
-| H-blank | 1 cycle per row | 1 phantom column per row |
-| V-blank | H_ACTIVE + 1 cycles total | H_ACTIVE + 1 phantom row cycles |
-
-For `axis_morph3x3_open` (erode → dilate in series), the blanking budget the upstream source must provide is the same as a single `axis_window3x3` instance. Each stage drains its own phantom cycles independently; the two drains do not run concurrently on the same clock edge because dilate's drain starts only after erode's drain has completed (erode's phantom outputs are dilate's inputs). Standard VGA-timed integration (`H_BLANK ≥ H_ACTIVE/20`, `V_BLANK ≥ 1 line`) satisfies this with large margin.
+Same as a single `axis_window3x3` instance: H-blank ≥ 1 cycle per row, V-blank ≥ `H_ACTIVE + 1` cycles. Each stage drains its phantom cycles sequentially (dilate's drain starts only after erode's), so the two do not compound. Standard VGA timing has large margin.
 
 ---
 
@@ -332,7 +220,7 @@ None from `sparevideo_pkg`. Frame geometry parameters (`H_ACTIVE`, `V_ACTIVE`) m
 ## 9. Known Limitations
 
 - **3×3 fixed kernel only.** The structuring element is a 3×3 square and cannot be parameterized at runtime. A larger kernel (5×5, disk) would require additional line buffers and is a separate module.
-- **Thin-feature deletion (Risk D1).** Any foreground feature narrower than 3 pixels in either dimension is removed. This is the intended noise-suppression effect but also deletes thin real objects. See §4.4.
+- **Thin-feature deletion.** Any foreground feature narrower than 3 pixels in either dimension is removed. Intended for noise suppression, but also deletes thin real objects. See §4.4.
 - **`enable_i` must be frame-stable.** Toggling `enable_i` mid-frame produces undefined output because the line buffers and output counter hold state from the partially processed frame.
 - **SOF does not flush line buffers.** As with `axis_window3x3`, a `sof_i` resets the row/col counters but does not zero the line buffer contents. The first two rows refill the buffers via the cascade, identical to `axis_gauss3x3` behavior. See [`axis_window3x3-arch.md`](axis_window3x3-arch.md) §9 for details.
 - **Distributed RAM at 320 px.** At wider resolutions, synthesis should infer BRAM for the line buffers. No synthesis pragmas are applied.
