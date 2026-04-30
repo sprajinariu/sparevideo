@@ -8,10 +8,9 @@
   - [3.1 Parameters](#31-parameters)
   - [3.2 Ports](#32-ports)
 - [4. Concept Description](#4-concept-description)
-  - [4.1 Two domains: normalised intensity vs. 8-bit code](#41-two-domains-normalised-intensity-vs-8-bit-code)
-  - [4.2 sRGB transfer function (normalised form)](#42-srgb-transfer-function-normalised-form)
-  - [4.3 LUT-based approximation](#43-lut-based-approximation)
-  - [4.4 Visual shape of the transfer function](#44-visual-shape-of-the-transfer-function)
+  - [4.1 sRGB transfer function](#41-srgb-transfer-function)
+  - [4.2 LUT-based approximation](#42-lut-based-approximation)
+  - [4.3 Visual shape of the transfer function](#43-visual-shape-of-the-transfer-function)
 - [5. Internal Architecture](#5-internal-architecture)
   - [5.1 Data flow overview](#51-data-flow-overview)
   - [5.2 Pipeline stages](#52-pipeline-stages)
@@ -68,76 +67,51 @@ None. The sRGB LUT is a `localparam` baked into the module body (33 × 8 bits); 
 
 Standard display panels follow the IEC 61966-2-1 sRGB electro-optical transfer function. Linear light values rendered without gamma encoding appear too dark on these panels because the panel's native response applies an inverse curve. Gamma correction encodes linear light through the sRGB curve so that the net light emitted by the display is perceptually proportional to the signal level.
 
-### 4.1 Two domains: normalised intensity vs. 8-bit code
+### 4.1 sRGB transfer function
 
-The IEC standard defines the sRGB transfer function as a continuous mapping on **normalised** real-valued intensity `u ∈ [0.0, 1.0]`, where `u = 0.0` is "no light" and `u = 1.0` is peak white. The numerical constants that appear in the formula below — `12.92`, `0.0031308`, `1.055`, `0.055`, `1/2.4` — are dimensionless and live in this normalised space. They are *not* 8-bit pixel codes and have no direct meaning in 8-bit space on their own; for example, `12.92` is the *slope of `sRGB(u)` near `u = 0`*, not a number that ever appears in an 8-bit code value.
-
-This module operates on **8-bit integer pixel codes** `p ∈ {0, 1, …, 255}`. The bridge between the two domains is the standard right-aligned full-scale convention:
+The IEC standard defines sRGB on a normalised real-valued intensity `u ∈ [0, 1]`:
 
 ```
-u   =  p / 255          (8-bit code → normalised intensity)
-out =  round(v · 255)   (normalised result v ∈ [0,1] → 8-bit code, clamped to 255)
+sRGB(u) =  12.92 · u                  if u ≤ 0.0031308    (linear segment)
+sRGB(u) =  1.055 · u^(1/2.4) − 0.055  otherwise            (power segment)
 ```
 
-Composing both bridges with the sRGB function gives the function this module realises in 8-bit space:
+The linear segment exists to keep the slope finite at `u = 0`. Its threshold `u = 0.0031308` corresponds to `p ≈ 0.80` in 8-bit codes, so only `p = 0` lands on it (and yields 0 either way) — every `p ∈ [1, 255]` uses the power segment.
+
+This module operates on 8-bit codes `p ∈ [0, 255]` via the standard full-scale convention:
 
 ```
-out(p) = round( sRGB( p / 255 ) · 255 )       for p ∈ [0, 255]
+u = p / 255            (in)
+out = round(v · 255)   (out, clamped to 255)
 ```
 
-So whenever the constants below appear (`12.92`, `1/2.4`, …), read them as operating on the intermediate `u = p / 255`, not on `p` itself.
+The function it realises is `out(p) = round(sRGB(p / 255) · 255)`. The sRGB constants (`12.92`, `1/2.4`, …) live in the normalised domain — they are not 8-bit values.
 
-### 4.2 sRGB transfer function (normalised form)
+### 4.2 LUT-based approximation
 
-For `u ∈ [0, 1]`:
-
-```
-sRGB(u) =  12.92 · u                          if u ≤ 0.0031308    (linear segment)
-sRGB(u) =  1.055 · u^(1/2.4) − 0.055          otherwise            (power segment)
-```
-
-The linear segment exists to keep the slope finite at `u = 0` (a pure power curve has infinite slope there). For 8-bit integer inputs, this segment is barely reachable: the threshold `u = 0.0031308` corresponds to `p = 0.0031308 · 255 ≈ 0.80`, so the only integer pixel value on the linear segment is `p = 0` (which yields `out = 0` either way). Every input `p ∈ [1, 255]` falls on the power segment. In other words, the `12.92 · u` branch is a property of the continuous sRGB definition, not a code path that actually runs at 8-bit precision.
-
-### 4.3 LUT-based approximation
-
-Computing `u^(1/2.4)` per pixel in hardware is expensive. The module replaces it with a 33-entry LUT plus per-pixel linear interpolation. The LUT samples `out(p)` at every 8th input code (so 32 segments span the full `p ∈ [0, 256]` range, with one extra sentinel point at the top):
+Per-pixel `u^(1/2.4)` is expensive in hardware. The module replaces it with a 33-entry LUT plus linear interpolation. The LUT samples `out(p)` at every 8th input code; entry 32 is the upper sentinel (representing `p = 256`, clamped to 255) and is only read as `LUT[addr+1]` when `addr = 31`:
 
 ```
-GAMMA_LUT[i] = round( sRGB( (i · 8) / 255 ) · 255 )    for i = 0, 1, …, 32
+GAMMA_LUT[i] = round(sRGB((i · 8) / 255) · 255)    for i ∈ [0, 32]
 ```
 
-`i = 32` is the upper sentinel: it represents the pixel value `p = 256` (one past full scale), clamped to `out = 255`. It is read as `LUT[addr+1]` only when `addr = 31` (i.e. when `p ∈ [248, 255]`).
-
-For an input pixel `p`, decompose into integer and fractional parts:
+The input splits into `addr = p[7:3]` (5 bits, LUT index) and `frac = p[2:0]` (3 bits, weight). Per-channel interpolation:
 
 ```
-addr = p[7:3]        (5 bits, selects the LUT entry: 0 ≤ addr ≤ 31)
-frac = p[2:0]        (3 bits, weight for interpolation: 0 ≤ frac ≤ 7)
+out = (GAMMA_LUT[addr] · (8 − frac) + GAMMA_LUT[addr+1] · frac) >> 3
 ```
 
-The per-channel interpolation between two adjacent LUT entries is:
+Weights `(8 − frac)` and `frac` always sum to 8, so the multiply-add fits in 11 bits. `>> 3` truncates toward zero (≤ 0.5 LSB bias vs. round-to-nearest — invisible at 8-bit). All three channels use the same LUT and formula independently.
+
+Worked example, `p = 100`: `addr = 12`, `frac = 4`. With `LUT[12] = 165` and `LUT[13] = 171`:
 
 ```
-out = ( GAMMA_LUT[addr] · (8 − frac)  +  GAMMA_LUT[addr+1] · frac ) >> 3
+out = (165 · 4 + 171 · 4) >> 3 = 1344 >> 3 = 168
 ```
 
-Standard 1-D linear interpolation between the two LUT samples that bracket `p`: weights `(8 − frac)` and `frac` always sum to 8, so the multiply-add lives in `[0, 8·255] = [0, 2040]` (11 bits). `>> 3` truncates toward zero, costing at most ~0.5 LSB of bias relative to round-to-nearest — invisible at 8-bit display resolution.
+`frac = 4` puts `p` halfway between samples, so the result is the midpoint `(165 + 171) / 2`.
 
-Worked example, `p = 100`: `addr = 100 >> 3 = 12`, `frac = 100 & 7 = 4`. With `LUT[12] = 165` and `LUT[13] = 171` (the curve sampled at `p = 96` and `p = 104`):
-
-```
-out = (165 · (8 − 4)  +  171 · 4) >> 3
-    = (165 · 4  +  171 · 4)       >> 3
-    = (  660    +    684)         >> 3
-    =  1344                       >> 3
-    =  168
-```
-
-`frac = 4` puts `p = 100` exactly halfway between the two sample points, so the result is the midpoint of `LUT[12]` and `LUT[13]`: `(165 + 171) / 2 = 168`. Correct.
-
-All three channels (R, G, B) apply the same LUT and the same formula independently.
-
-### 4.4 Visual shape of the transfer function
+### 4.3 Visual shape of the transfer function
 
 ```
  out

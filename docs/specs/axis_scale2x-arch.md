@@ -176,98 +176,39 @@ The per-row buffer roles are aliases over the same array. A 2-bit register `wr_s
 
 ### 5.2 Counters, registers, and rotation
 
-The control logic is two independent counters plus boolean flags. There is no FSM in the conventional sense.
+Two independent processes — the **writer** (filling the next buffer with input pixels) and the **emitter** (reading two buffers to produce the output pair) — synchronize only at row boundaries. Control reduces to two counters and a few boolean flags; there is no FSM.
 
 | Signal | Width | Role |
 |---|---|---|
-| `wr_sel_q` | 2 b | Index of the buffer being **written** for the current input row, in `{0, 1, 2}`. Advances by 1 mod 3 at each rotation (defined below). Reset to 0 on `rst_n_i`; not affected by SOF. |
-| `in_col_q` | `$clog2(W+1)` | Source column where the next accepted input pixel lands. Resets to 0 on input `tlast`. |
-| `out_beat_q` | `$clog2(4W+1)` | Output beat counter, 0..4W−1. Wraps to 0 when the `(4W−1)`-th beat retires. |
-| `in_done_q` | 1 b | Asserted between input `tlast` accept and the next rotation. While high, `s_axis.tready = 0`. |
-| `emit_armed_q` | 1 b | Asserted while emitting a pair; pulled into `m_axis.tvalid`. Cleared by the end-of-pair retirement; the next rotation re-asserts it. |
-| `first_pair_q` | 1 b | Asserted while emitting pair 0 of a frame. Causes the input writer to also write each accepted pixel into `anchor_buf` (top-edge replicate seed). Cleared at the first rotation of the frame. |
-| `sof_pending_q` | 1 b | Latched on accepted `s_axis.tuser`; cleared on emitted `m_axis.tuser`. |
+| `wr_sel_q` | 2 b | Buffer index being written for the current input row. Advances mod 3 at each rotation. |
+| `in_col_q` | `$clog2(W+1)` | Source column where the next accepted pixel lands; resets on `tlast`. |
+| `out_beat_q` | `$clog2(4W+1)` | Output beat counter, 0..4W−1; wraps at retirement. |
+| `in_done_q` | 1 b | High between accepted `tlast` and the next rotation; deasserts `s_axis.tready`. |
+| `emit_armed_q` | 1 b | High while a pair is emitting; gates `m_axis.tvalid`. Cleared at end-of-pair, re-asserted at the next rotation. |
+| `first_pair_q` | 1 b | High during pair 0 of a frame; tells the writer to also seed `anchor_buf` (top-edge replicate). Cleared at the first rotation. |
+| `sof_pending_q` | 1 b | Latches on accepted input SOF; clears on emitted output SOF. |
 
 #### 5.2.1 Buffer role assignment
 
-`anchor_sel` and `prev_sel` are derived combinationally from `wr_sel_q` so that the three roles (write, anchor, prev) always pick three different buffers:
+The three buffer roles (write, anchor, prev) always pick three different buffers, so the writer and emitter never share one. Roles are derived from `wr_sel_q`: `anchor_sel = (wr_sel_q − 1) mod 3`, `prev_sel = (wr_sel_q − 2) mod 3`. The anchor holds the source row currently being emitted as a pair; the prev buffer holds the source row immediately above it.
 
-```
-case (wr_sel_q)
-    2'd0: { anchor_sel, prev_sel } = { 2'd2, 2'd1 }
-    2'd1: { anchor_sel, prev_sel } = { 2'd0, 2'd2 }
-    2'd2: { anchor_sel, prev_sel } = { 2'd1, 2'd0 }
-endcase
-```
+#### 5.2.2 SOF same-cycle seed
 
-Equivalently `anchor_sel = (wr_sel_q − 1) mod 3` and `prev_sel = (wr_sel_q − 2) mod 3`. The anchor buffer holds the source row that is the anchor of the pair currently being emitted; the prev buffer holds the source row immediately above it.
-
-#### 5.2.2 SOF same-cycle override
-
-When a SOF input beat is accepted, the seed write to `anchor_buf` must fire on the *same* clock edge — but `first_pair_q` is updated through a register, so its new value only takes effect on the following clock. To avoid losing the SOF column's seed, the buffer-write logic consults a combinational override instead of `first_pair_q` directly:
-
-```
-do_accept            = s_axis.tvalid && s_axis.tready
-is_sof_pixel         = do_accept && s_axis.tuser
-effective_first_pair = first_pair_q || is_sof_pixel
-```
-
-`effective_first_pair` equals `first_pair_q` everywhere except on the SOF cycle, where it is forced high so the seed write fires immediately. It is used by the buffer-write policy in §5.4.
+`first_pair_q` is registered, so on the SOF cycle its new value isn't visible yet. To make the SOF column's seed land on the same edge as the SOF accept, the buffer-write logic uses a combinational override that forces the seed-write condition true on any accepted input SOF, regardless of the registered flag. After that one cycle, the registered flag takes over normally.
 
 #### 5.2.3 Beat-to-address decode
 
-The output beat counter is decoded combinationally into a phase, a source column index, and a parity bit. The output formatter (§5.3) and the right-edge clamp consume these:
-
-```
-in_bot_phase = (out_beat_q >= 2W)
-phase_col    = in_bot_phase ? (out_beat_q − 2W) : out_beat_q     // 0..2W-1
-src_c        = phase_col >> 1                                     // 0..W-1
-src_cp1      = (src_c == W − 1) ? src_c : src_c + 1               // right-edge clamp
-beat_is_odd  = out_beat_q[0]
-```
+`out_beat_q` is decoded combinationally into a phase (top vs. bot row of the pair), a source column index `src_c = (out_beat_q mod 2W) >> 1`, and an odd/even parity bit. `src_c+1` is clamped at `W−1` to give the right-edge replicate. The output formatter and the buffer-read addresses consume these directly.
 
 #### 5.2.4 Rotation and boundary synchronization
 
-A "**rotation**" advances `wr_sel_q` by 1 mod 3 and re-arms the emitter for the next pair. It fires when the input writer and the output emitter have both completed their work:
+A **rotation** advances `wr_sel_q` mod 3 and re-arms the emitter for the next pair. It fires when both processes are done with the current row: the writer has accepted `tlast` (sets `in_done_q`) and the emitter has retired its `(4W−1)`-th beat (clears `emit_armed_q`). When both conditions hold, the rotation increments `wr_sel_q`, clears `in_done_q`, sets `emit_armed_q`, and clears `first_pair_q`.
 
-- **Input row complete** (accepted `s_axis.tlast`): `in_col_q ← 0`, `in_done_q ← 1`.
-- **Output pair complete** (`out_beat_q == 4W−1` retires): `out_beat_q ← 0`, `emit_armed_q ← 0`.
-
-When both events are visible in the same cycle (`in_done_q && !emit_armed_q`), the rotation triggers:
-
-```
-wr_sel_q     ← (wr_sel_q == 2) ? 0 : (wr_sel_q + 1)
-in_done_q    ← 0
-emit_armed_q ← 1
-first_pair_q ← 0
-```
-
-A new frame (accepted `s_axis.tuser`) re-arms `first_pair_q ← 1`. `wr_sel_q` is **not** reset — the rotation is invariant under starting offset, and seeding to `anchor_sel` (rather than to a fixed buffer index) keeps pair 0's `prev_sel` aligned with the seed regardless of where the rotation cycle is when the new frame begins.
+A new frame's accepted SOF re-arms `first_pair_q`. `wr_sel_q` is **not** reset — seeding to `anchor_sel` (not to a fixed index) keeps pair 0's `prev_sel` aligned with the seed regardless of where the rotation cycle stands.
 
 #### 5.2.5 Per-row timing
 
-The writer and emitter run as two independent processes synchronized only at the rotation. Under a sustained 1:4 input-to-DSP rate ratio (the project's nominal rate balance — see §8), the writer's `W` input cycles and the emitter's `4W` DSP cycles complete simultaneously and the rotation is seamless. If the upstream FIFO holds up the input, the emitter idles after its last beat (`emit_armed_q = 0`) until the input row finishes. If the downstream stalls the output, the writer idles after its last input (`in_done_q = 1`, `s_axis.tready = 0`) until the emitter catches up. Either way, the rotation waits for both.
-
-Conceptual schedule for one steady-state pair, with `wr_sel_q = m` held for the whole row:
-
-```
-                                                    rotation
-                                                      ▼
-DSP cyc:   0   1   2   3   4   5  ...  4W-3 4W-2 4W-1 │ 4W  4W+1 4W+2 ...
-
-Writer:    W   ·   ·   ·   W   ·  ...   ·    ·    W   │  ·    W    ·  ...
-                                                  ▲
-                                                  tlast → in_done_q ← 1
-
-Emitter:   E   E   E   E   E   E  ...   E    E    E   │  ░    E    E  ...
-                                                  ▲      ▲
-                                          emit_armed_q ← 0│
-                                                         1-cyc bubble before
-                                                         next pair (rotation
-                                                         updates as in §5.2.4)
-```
-
-`W` = accepted input beat, `·` = idle DSP cycle, `E` = emit beat, `░` = bubble.
+Under the nominal 1:4 input-to-DSP rate ratio (§8), the writer's `W` input cycles and the emitter's `4W` DSP cycles complete simultaneously and the rotation is seamless. If upstream stalls, the emitter idles after its last beat until input finishes. If downstream stalls, the writer idles after `tlast` (with `tready` low) until the emitter catches up. Either way, the rotation waits for both.
 
 ### 5.3 Output beat formatter
 
@@ -292,23 +233,15 @@ Sideband signals on `m_axis`:
 
 ### 5.4 Backpressure and buffer-write policy
 
-**Backpressure.**
+`s_axis.tready` is gated by `in_done_q` — the writer accepts pixels until `tlast`, then `tready` goes low until the rotation fires. There is no per-pixel back-pressure. `m_axis.tvalid` follows `emit_armed_q`, which is cleared at end-of-pair and re-asserted at the rotation.
 
-```
-sof_blocks_input = s_axis.tvalid && s_axis.tuser && emit_armed_q
-s_axis.tready    = !in_done_q && !sof_blocks_input
-m_axis.tvalid    = emit_armed_q
-```
+Long-term throughput is therefore clamped to one input row per `4W` DSP cycles. A faster-than-1:4 upstream finishes early and is held at the row boundary; a slower upstream lets the emitter retire first, then the rotation waits for `tlast`. Bursty input is absorbed within a row.
 
-`in_done_q` is the row-boundary rate clamp — there is no per-pixel back-pressure. It sets on accepted `s_axis.tlast`, holds `s_axis.tready = 0` while asserted, and clears only when the rotation fires (which requires `emit_armed_q = 0`, i.e. the in-flight pair has retired its `(4W − 1)`-th beat). The same rotation re-asserts `emit_armed_q` for the next pair.
+A narrow defensive stall additionally holds `tready` low if an input SOF arrives while a pair is still emitting, so the new frame's seed cannot clobber the `anchor_buf` the in-flight pair is still reading. Under nominal V_BLANK timing this never fires.
 
-Consequence: long-term throughput is clamped to one row per `4W` DSP cycles regardless of upstream rate. A faster-than-1:4 upstream finishes its `W` writes early and is back-pressured at the row boundary. A slower-than-1:4 upstream lets the emitter retire first; the rotation waits quiescent until `tlast` arrives. Bursty input is absorbed within a row; sustained over-rate is back-pressured at the boundary.
+**Buffer writes.** Each accepted pixel is written to `write_buf[in_col_q]`. During pair 0 of every frame the same pixel is *also* written to `anchor_buf[in_col_q]` — that's the top-edge replicate seed, placed where pair 0's `prev_sel` will read it after the next rotation. `anchor_buf` is not read during pair-0 intake, so there is no conflict.
 
-`sof_blocks_input` is a separate, narrow stall: it defensively holds `tready` low for any beat carrying `tuser = 1` while a pair is still emitting, so the seed write triggered by the new SOF cannot clobber the `anchor_buf` being read by the in-flight pair. In well-formed AXI streams `tuser = 1` only on the SOF beat, so this is equivalent to a SOF-stall; under nominal V_BLANK timing it is a no-op.
-
-**Buffer writes.** A pixel accepted while `s_axis.tready = 1` is always written to `write_buf[in_col_q]`. When `effective_first_pair = 1` (defined in §5.2.2), the same pixel is *also* written to `anchor_buf[in_col_q]`. The seed lands where pair 0's `prev_sel` will read it after the next rotation, so pair 0's bot row reads `prev == anchor` (top-edge replicate). `anchor_buf` is unused for *reads* during row 0 intake (`emit_armed_q = 0` during the latency phase), so the seed write to `anchor_sel` doesn't conflict with anything.
-
-**Frame entry.** Accepted `s_axis.tuser` re-arms `first_pair_q ← 1`. `wr_sel_q` continues rotating from wherever the previous frame left it; the seed-to-`anchor_sel` rule keeps the rotation invariant under starting offset.
+**Frame entry.** Accepted SOF re-arms `first_pair_q`; `wr_sel_q` continues rotating from wherever the previous frame left it.
 
 ### 5.5 Resource cost summary
 

@@ -53,11 +53,11 @@ No `tvalid`/`tready` — the module has no flow control; it always produces an o
 
 ## 4. Concept Description
 
-Color space conversion from RGB to YCrCb separates a pixel's brightness (luma, Y) from its color information (chrominance, Cb and Cr). This separation is fundamental to video processing because many algorithms — motion detection, edge detection, compression — operate primarily on brightness and benefit from ignoring chrominance.
+RGB→YCrCb separates a pixel's brightness (luma Y) from its colour (chrominance Cb, Cr). Many video algorithms — motion detection, edge detection, compression — operate primarily on brightness, so the conversion lets downstream stages ignore the colour channels.
 
-The ITU-R BT.601 standard defines the conversion as a weighted linear combination of R, G, and B channels. The luma weights (0.299R + 0.587G + 0.114B) reflect human visual sensitivity: green contributes most to perceived brightness, then red, then blue. The chrominance components Cb and Cr represent the blue-difference and red-difference signals respectively, centered at 128 for unsigned representation.
+ITU-R BT.601 defines the conversion as a weighted linear combination of R, G, B. The luma weights `0.299R + 0.587G + 0.114B` reflect human visual sensitivity (green dominant, then red, then blue). Cb and Cr are the blue- and red-difference signals, centred at 128.
 
-In this design, the Rec.601 floating-point coefficients are approximated as 8-bit integers (77, 150, 29 for Y) and the multiply-accumulate is performed in 17-bit unsigned arithmetic. A constant offset of 32768 (= 128 << 8) is added to Cb and Cr before the divide-by-256, ensuring all intermediate values remain non-negative and eliminating the need for signed arithmetic or saturation logic.
+This module approximates the Rec.601 coefficients as 8-bit integers (77, 150, 29 for Y) and performs the multiply-accumulate in 17-bit unsigned arithmetic. A constant `+32768 = 128 << 8` is added to Cb and Cr before the divide, keeping all intermediates non-negative — no signed arithmetic or saturation needed.
 
 ---
 
@@ -75,19 +75,11 @@ The `+32768` offset for Cb/Cr keeps intermediate sums non-negative for all valid
 
 ### 5.2 Pipeline
 
-**Cycle C (combinational)**:
-- `y_sum_c  = 17'(77·R) + 17'(150·G) + 17'(29·B)` — result ∈ [0, 65280]
-- `cb_sum_c = 17'(32768) − 17'(43·R) − 17'(85·G) + 17'(128·B)` — result ∈ [128, 65408]
-- `cr_sum_c = 17'(32768) + 17'(128·R) − 17'(107·G) − 17'(21·B)` — result ∈ [128, 65408]
-
-**Cycle C+1 (registered)**:
-- `y_o  <= y_sum_c[15:8]`
-- `cb_o <= cb_sum_c[15:8]`
-- `cr_o <= cr_sum_c[15:8]`
+The three sums in §5.1 are computed combinationally in cycle C; the top byte of each sum (`sum[15:8]`) is registered into `y_o`/`cb_o`/`cr_o` on cycle C+1. The Y sum lies in [0, 65280] and the Cb/Cr sums in [128, 65408], so the top byte never overflows.
 
 ### 5.3 Resource cost
 
-The module uses 9 constant-coefficient multiplications (3 channels × 3 outputs). A synthesis tool typically infers these as DSP block primitives or optimized LUT-based multipliers. No RAM is consumed. The single pipeline register stage adds 24 flip-flops (3 × 8-bit outputs).
+9 constant-coefficient multiplications (3 channels × 3 outputs); synthesis typically maps them to DSP blocks or LUT-based multipliers. 24 FFs for the registered outputs. No RAM.
 
 ### 5.4 Design corner cases
 
