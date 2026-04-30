@@ -16,9 +16,10 @@
   - [5.4 `u_ccl` — group motion pixels into distinct objects](#54-u_ccl--group-motion-pixels-into-distinct-objects)
   - [5.5 `u_overlay_bbox` — draw rectangles on the video](#55-u_overlay_bbox--draw-rectangles-on-the-video)
   - [5.6 `u_gamma_cor` — sRGB display gamma at the post-mux tail](#56-u_gamma_cor--srgb-display-gamma-at-the-post-mux-tail)
-  - [5.7 `u_vga` — drive the display with proper timing](#57-u_vga--drive-the-display-with-proper-timing)
-  - [5.8 1-frame bbox latency](#58-1-frame-bbox-latency)
-  - [5.9 Latency and timing budget](#59-latency-and-timing-budget)
+  - [5.7 `u_hud` — bitmap text HUD at the post-scaler tail](#57-u_hud--bitmap-text-hud-at-the-post-scaler-tail)
+  - [5.8 `u_vga` — drive the display with proper timing](#58-u_vga--drive-the-display-with-proper-timing)
+  - [5.9 1-frame bbox latency](#59-1-frame-bbox-latency)
+  - [5.10 Latency and timing budget](#510-latency-and-timing-budget)
 - [6. Internal Architecture](#6-internal-architecture)
   - [6.1 Plumbing and glue](#61-plumbing-and-glue)
   - [6.2 AXI4-Stream protocol](#62-axi4-stream-protocol)
@@ -63,6 +64,7 @@ sparevideo_top (top level)
 ├── axis_overlay_bbox  (u_overlay_bbox)  — draw N_OUT-wide bbox rectangles on RGB video
 ├── axis_gamma_cor     (u_gamma_cor)     — per-channel sRGB gamma correction; runtime bypassable
 ├── axis_scale2x       (u_scale2x)       — 2x spatial upscaler (NN or bilinear); compile-time gate (CFG.scaler_en)
+├── axis_hud           (u_hud)           — 8x8 bitmap text overlay at the post-scaler tail; runtime bypassable (CFG.hud_en)
 ├── axis_async_fifo    (u_fifo_out)      — CDC clk_dsp → clk_pix_out, vendored verilog-axis
 └── vga_controller     (u_vga)          — streaming pixel → VGA timing + RGB output
 ```
@@ -114,6 +116,7 @@ sparevideo_top (top level)
 | `CFG.hflip_en` | `logic` | `0` | Enable the horizontal mirror (`u_hflip`) at the head of the proc-clock pipeline. `0` passes the input through unchanged. |
 | `CFG.gamma_en` | `logic` | `1` | Enable the sRGB gamma-correction stage (`u_gamma_cor`) at the post-mux tail. `0` bypasses (linear-light pixels reach the output FIFO). |
 | `CFG.scaler_en` | `logic` | `1` | Enable the 2x bilinear spatial upscaler (`u_scale2x`) before the output FIFO. `0` bypasses (output resolution equals input resolution). |
+| `CFG.hud_en` | `logic` | `1` | Enable the bitmap text HUD overlay (`u_hud`) at the post-scaler tail. `0` bypasses (data-equivalent passthrough through the same 1-cycle skid). |
 | `CFG.bbox_color` | `pixel_t` (24-bit RGB) | `0x00_FF_00` (green) | RGB triple drawn by `u_overlay_bbox` for every bounding-box edge pixel. Driven into `u_overlay_bbox.BBOX_COLOR`. |
 | `CCL_N_LABELS_INT` | `int` | pkg (64) | Internal label-table size in `u_ccl`. Cap on the number of distinct provisional labels tracked in one frame before a label-exhaust fallback (merge into label 0). |
 | `CCL_N_OUT` | `int` | pkg (8) | Number of per-component bounding-box output slots exposed from `u_ccl` to `u_overlay_bbox`. |
@@ -123,7 +126,7 @@ sparevideo_top (top level)
 
 `H_ACTIVE` and `V_ACTIVE` set the active video region; the eight porch parameters set the surrounding blanking intervals. Together they determine the VGA frame format used by `u_vga` and the timing the input driver must mirror.
 
-`CFG` is resolved at compile time from the `CFG_NAME` string (TB plusarg / Makefile `CFG=` knob) and routed by `sparevideo_top` to the appropriate sub-module ports. The Python reference models in `py/models/` mirror the same fields via `py/profiles.py`; a parity test (`py/tests/test_profiles.py`) guards against drift. Adding a new algorithm knob costs one field in `cfg_t`, one matching key in every profile dict in `py/profiles.py`, and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. The existing profile set is `default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`, `no_scaler`.
+`CFG` is resolved at compile time from the `CFG_NAME` string (TB plusarg / Makefile `CFG=` knob) and routed by `sparevideo_top` to the appropriate sub-module ports. The Python reference models in `py/models/` mirror the same fields via `py/profiles.py`; a parity test (`py/tests/test_profiles.py`) guards against drift. Adding a new algorithm knob costs one field in `cfg_t`, one matching key in every profile dict in `py/profiles.py`, and one wire in `sparevideo_top` from `CFG.<new_field>` to the consuming module. The existing profile set is `default`, `default_hflip`, `no_ema`, `no_morph`, `no_gauss`, `no_gamma_cor`, `no_scaler`, `no_hud`.
 
 **Output resolution.** `H_ACTIVE_OUT/V_ACTIVE_OUT` come from `sparevideo_pkg::*_OUT_2X` when `CFG.scaler_en=1`; otherwise they equal the input dims. The VGA controller uses the OUT dims; the input AXIS, motion pipeline, gamma stage, and scaler input all stay at input dims. The TB drives input frames at input dims and captures output at output dims. Rate balance between the input and output sides is enforced by the clock-period ratio: when `CFG.scaler_en=1` the caller drives `clk_pix_in_i` at one-quarter the frequency of `clk_pix_out_i`; when `CFG.scaler_en=0` they're tied to the same clock.
 
@@ -237,13 +240,30 @@ The last AXIS stage on `clk_dsp` before the output CDC FIFO. Each of the three R
 
 Why this matters: the upstream pipeline operates in linear-light intensity; the display expects sRGB-encoded values. Without this stage the output looks muddy in midtones. `CFG.gamma_en=0` (profile `no_gamma_cor`) is a zero-latency combinational bypass — useful both for verifying that the integration is byte-clean against pre-gamma goldens and for capturing un-encoded RGB for downstream tone-mapping experiments. Details: [axis_gamma_cor-arch.md](axis_gamma_cor-arch.md).
 
-### 5.7 `u_vga` — drive the display with proper timing
+### 5.7 `u_hud` — bitmap text HUD at the post-scaler tail
+
+A small, fixed-layout 8x8 bitmap text overlay is the last stage on `clk_dsp` before the output CDC FIFO, sitting between `u_scale2x.m_axis` and `u_fifo_out.s_axis`. The overlay draws `F:####  T:XXX  N:##  L:#####US` at output coordinates `(8, 8)` — frame number, control-flow tag, CCL bbox count, end-to-end latency in microseconds. The block runs at output resolution (post-scaler) so glyph edges are pixel-crisp regardless of the upstream bilinear interpolation.
+
+Four sideband signals feed the HUD, all generated in `sparevideo_top` on `clk_dsp_i`:
+
+- **`hud_frame_num_q`** — 16-bit counter incrementing once per HUD-input-SOF (the cycle the SOF beat is accepted at `u_hud.s_axis`). Counting at the HUD's input rather than at `u_fifo_in.m_axis` gives a 0-based frame index in lock-step with the frame currently entering the HUD.
+- **`hud_bbox_count`** — combinational popcount over `u_ccl_bboxes.valid[N_OUT_TOP]`. `axis_hud` saturates the 8-bit value to 99 internally before display. Note: `u_ccl_bboxes` is committed at the previous frame's mask EOF (CCL output is consumed by the overlay one frame later), so the count latched at frame N's HUD-SOF reflects frame N−1's bboxes — matching the same 1-frame display delay as the bboxes drawn on screen (§5.9).
+- **`ctrl_flow_tag`** — `ctrl_flow_i` is already on `clk_dsp_i` (quasi-static input) and feeds `u_hud.ctrl_flow_tag_i` directly. `axis_hud` decodes it via a 4-entry combinational ROM into glyph triples (`PAS`/`MOT`/`MSK`/`CCL`).
+- **`hud_latency_us_q`** — measured between input-SOF (at `u_fifo_in.m_axis`, captured into `t_in_q` via a free-running cycle counter) and HUD-input-SOF (at `scale2x_to_pix_out`). The cycle delta is converted to microseconds using `(delta * 41) >> 12`, an integer approximation of `delta / 100` (≤0.4 % error for `delta < 2^16` cycles), and saturated to 16 bits. The producer-side saturation is the only range management; `axis_hud` does not internally clamp the 5-cell field.
+
+Verilator simulation also writes the per-frame latency to `dv/data/hud_latency.txt` at HUD-input-SOF; the Python reference model reads this sidecar via `py/models/ops/_hud_metadata.py` so verification against `axis_hud` runs at TOLERANCE=0 without re-deriving the cycle-accurate latency in software.
+
+`CFG.hud_en=0` (profile `no_hud`) routes the input pixel through the same 1-cycle skid as the enabled path but skips the overlay mux — output is data-equivalent to the input. The HUD region (rows `HUD_Y0..HUD_Y0+7`, cols `HUD_X0..HUD_X0+N_CHARS·8-1`) must fit within the active output frame; the caller is responsible for that constraint. Details: [axis_hud-arch.md](axis_hud-arch.md).
+
+**Latency boundary.** The displayed `LAT` value covers proc-clock SOF-in to HUD-input SOF; it does **not** include the output-side CDC FIFO drain or the VGA controller's startup hold-off. The full pixel-to-display latency is a few cycles greater than the displayed value.
+
+### 5.8 `u_vga` — drive the display with proper timing
 
 Takes the processed RGB stream (after CDC back to `clk_pix`) and emits it with VGA-compliant timing: horizontal and vertical sync pulses, front/back porches, and blanking intervals during which RGB is gated to 0. The controller is held in reset until the first start-of-frame pixel arrives from the output FIFO, so the VGA scan always aligns to a frame boundary regardless of how long the pipeline takes to fill.
 
 Including the VGA controller inside the DUT means end-to-end simulation captures what an actual monitor would see, including blanking — which in turn catches long-term rate mismatches (output FIFO overflow) that are invisible if the downstream timing generator is mocked away. Details: [vga_controller-arch.md](vga_controller-arch.md).
 
-### 5.8 1-frame bbox latency
+### 5.9 1-frame bbox latency
 
 The bbox drawn on frame N is computed from motion observed during frame N−1. This is a deliberate architectural choice, not an accident of the implementation. A same-frame overlay is technically possible but strictly worse at this resolution:
 
@@ -258,7 +278,7 @@ The pipeline is streaming (raster order). The bottommost motion pixel can lie on
 
 At 60 fps, one frame is 16.7 ms — imperceptible. The user-visible result is indistinguishable between the two designs. Same-frame overlay would only matter at very low frame rates (e.g., 1 fps security camera) where a 1-second bbox lag would be noticeable. The current 1-frame delay is the standard approach in streaming video pipelines and is the right trade-off here.
 
-### 5.9 Latency and timing budget
+### 5.10 Latency and timing budget
 
 Two distinct latencies, not to be conflated:
 
@@ -364,6 +384,12 @@ At `H_ACTIVE = 320` the long paths are ~980 cycles at 100 MHz ≈ **10 µs**, ne
   │                 │  u_scale2x   │  flat bridge when CFG.scaler_en=0            │
   │                 └──────┬───────┘                                             │
   │                        │  scale2x_to_pix_out (axis_if: RGB + tlast + tuser)  │
+  │                        ▼                                                     │
+  │                 ┌──────────────┐  bitmap text overlay (CFG.hud_en bypass);   │
+  │                 │    u_hud     │  sidebands: frame#, ctrl-flow, bbox count,  │
+  │                 │              │  latency µs (all sourced in sparevideo_top)  │
+  │                 └──────┬───────┘                                             │
+  │                        │  hud_to_pix_out (axis_if: RGB + tlast + tuser)      │
   │                        ▼                                                     │
   │                 ┌──────────────┐  CDC: clk_dsp → clk_pix_out                 │
   │                 │  u_fifo_out  │  (DEPTH = 1024 when CFG.scaler_en=1,        │

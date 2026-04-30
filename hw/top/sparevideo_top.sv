@@ -442,9 +442,80 @@ module sparevideo_top
     // gamma_to_pix_out: u_gamma_cor.m_axis -> (scale2x or fifo_out).s_axis.
     axis_if #(.DATA_W(24), .USER_W(1)) gamma_to_pix_out ();
 
-    // scale2x_to_pix_out: drives u_fifo_out.s_axis whether the scaler is
+    // scale2x_to_pix_out: drives u_hud.s_axis whether the scaler is
     // present (CFG.scaler_en=1) or bypassed (CFG.scaler_en=0).
     axis_if #(.DATA_W(24), .USER_W(1)) scale2x_to_pix_out ();
+
+    // Tail bundle between u_hud.m_axis and u_fifo_out.s_axis.
+    axis_if #(.DATA_W(24), .USER_W(1)) hud_to_pix_out ();
+
+    // ---- HUD sideband sources (clk_dsp domain) --------------------
+    // SOF detectors: at the input boundary of the clk_dsp pipeline, and at
+    // the input boundary of the HUD itself. The latency measurement uses
+    // the former; frame_num counts at the latter so the value latched by
+    // axis_hud matches the Python model's 0-based frame index.
+    logic in_sof_seen;
+    logic hud_in_sof_seen;
+    assign in_sof_seen      = pix_in_to_hflip.tvalid && pix_in_to_hflip.tready
+                           && pix_in_to_hflip.tuser;
+    assign hud_in_sof_seen  = scale2x_to_pix_out.tvalid && scale2x_to_pix_out.tready
+                           && scale2x_to_pix_out.tuser;
+
+    // (a) frame_num: 0 on the first HUD-input-SOF after reset; increments
+    //     after each HUD-input-SOF beat is accepted. Latched by axis_hud the
+    //     same edge — the latch sees the pre-increment value (frame N).
+    logic [15:0] hud_frame_num_q;
+    always_ff @(posedge clk_dsp_i) begin
+        if (!rst_dsp_n_i) hud_frame_num_q <= '0;
+        else if (hud_in_sof_seen) hud_frame_num_q <= hud_frame_num_q + 1'b1;
+    end
+
+    // (b) bbox_count: popcount over u_ccl_bboxes.valid lanes. axis_hud
+    //     saturates to 99 internally before display.
+    logic [7:0] hud_bbox_count;
+    always_comb begin : p_bbox_popcount
+        int unsigned acc;
+        acc = 0;
+        for (int i = 0; i < N_OUT_TOP; i++)
+            if (u_ccl_bboxes.valid[i]) acc = acc + 1;
+        hud_bbox_count = 8'(acc);
+    end
+
+    // (c) ctrl_flow_tag: ctrl_flow_i is already on clk_dsp domain
+    //     (quasi-static input). Pass through directly to u_hud.
+
+    // (d) latency_us: cycles from input-SOF (at u_fifo_in.m_axis) to
+    //     HUD-input-SOF (at scale2x_to_pix_out, i.e. u_hud.s_axis), all
+    //     on clk_dsp_i. Per-frame measurement; 32-bit counter scaled to
+    //     microseconds via `delta * 41 >> 12` ≈ delta / 100. Error <0.4%
+    //     for delta <2^16 cycles.
+    logic [31:0] cyc_counter;
+    always_ff @(posedge clk_dsp_i) begin
+        if (!rst_dsp_n_i) cyc_counter <= '0;
+        else              cyc_counter <= cyc_counter + 1'b1;
+    end
+
+    logic [31:0] t_in_q;
+    always_ff @(posedge clk_dsp_i) begin
+        if (!rst_dsp_n_i) t_in_q <= '0;
+        else if (in_sof_seen) t_in_q <= cyc_counter;
+    end
+
+    // hud_in_sof_seen is declared above with the other SOF detectors.
+    logic [15:0] hud_latency_us_q;
+    always_ff @(posedge clk_dsp_i) begin : p_latency_us
+        logic [31:0] delta;
+        logic [31:0] us;
+        if (!rst_dsp_n_i) begin
+            hud_latency_us_q <= '0;
+        end else if (hud_in_sof_seen) begin
+            // 10 ns per cycle / 1000 = /100 -> approximate by *41>>12.
+            // delta < 2^16 cycles keeps the product within 32 bits.
+            delta = cyc_counter - t_in_q;
+            us    = (delta * 32'd41) >> 12;
+            hud_latency_us_q <= (us > 32'd65535) ? 16'hFFFF : us[15:0];
+        end
+    end
 
     // sRGB display gamma correction at the post-mux tail. enable_i=0 is a
     // zero-latency combinational passthrough.
@@ -493,6 +564,45 @@ module sparevideo_top
     assign pix_out_axis.tready = pix_out_tready;
     // pix_out_axis.tlast is not consumed by VGA (m_axis_tlast was unconnected).
 
+    axis_hud #(
+        .H_ACTIVE (H_ACTIVE_OUT),
+        .V_ACTIVE (V_ACTIVE_OUT),
+        .HUD_X0   (8),
+        .HUD_Y0   (8),
+        .N_CHARS  (30)
+    ) u_hud (
+        .clk_i           (clk_dsp_i),
+        .rst_n_i         (rst_dsp_n_i),
+        .enable_i        (CFG.hud_en),
+        .frame_num_i     (hud_frame_num_q),
+        .bbox_count_i    (hud_bbox_count),
+        .ctrl_flow_tag_i (ctrl_flow_i),
+        .latency_us_i    (hud_latency_us_q),
+        .s_axis          (scale2x_to_pix_out),
+        .m_axis          (hud_to_pix_out)
+    );
+
+`ifdef VERILATOR
+    // Per-frame latency log consumed by py/models/ops/_hud_metadata.py.
+    // Written at HUD-input-SOF; one line per frame with the latched µs value.
+    int hud_latency_fd;
+    initial begin
+        // Path relative to the simulator's cwd (dv/sim/) so the resulting
+        // file lands at <repo_root>/dv/data/hud_latency.txt — the location
+        // py/models/ops/_hud_metadata.py reads from.
+        hud_latency_fd = $fopen("../data/hud_latency.txt", "w");
+        if (hud_latency_fd == 0)
+            $display("WARN: could not open ../data/hud_latency.txt for writing");
+    end
+
+    always_ff @(posedge clk_dsp_i) begin
+        if (rst_dsp_n_i && hud_in_sof_seen && hud_latency_fd != 0)
+            $fwrite(hud_latency_fd, "%0d\n", hud_latency_us_q);
+    end
+
+    final if (hud_latency_fd != 0) $fclose(hud_latency_fd);
+`endif
+
     axis_async_fifo_ifc #(
         .DEPTH  (OUT_FIFO_DEPTH),
         .DATA_W (24),
@@ -502,7 +612,7 @@ module sparevideo_top
         .s_rst_n          (rst_dsp_n_i),
         .m_clk            (clk_pix_out_i),
         .m_rst_n          (rst_pix_out_n_i),
-        .s_axis           (scale2x_to_pix_out),
+        .s_axis           (hud_to_pix_out),
         .m_axis           (pix_out_axis),
         .s_status_depth   (fifo_out_depth),
         .s_status_overflow(fifo_out_overflow),

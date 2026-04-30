@@ -57,6 +57,7 @@ make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencin
 make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
+make run-pipeline CFG=no_hud                 # bitmap HUD overlay bypassed
 
 # Upscaler profile selection
 make run-pipeline CFG=default                       # 640x480 output, bilinear (default, 2x scaler enabled)
@@ -95,6 +96,7 @@ make setup                   # One-time setup (install deps)
 - `hw/ip/overlay/rtl/` — Generic rectangle overlay on RGB video (axis_overlay_bbox)
 - `hw/ip/gamma/rtl/` — Per-channel sRGB gamma correction at output tail (axis_gamma_cor: 33-entry LUT + linear interp, 1-cycle skid, enable_i bypass; enabled via `gamma_en` field of `cfg_t`)
 - `hw/ip/scaler/rtl/` — 2x spatial upscaler (axis_scale2x: NN + bilinear modes; instantiated under CFG.scaler_en generate gate; OUT_FIFO_DEPTH bumps to 1024 in scaled mode)
+- `hw/ip/hud/rtl/` — 8x8 bitmap text overlay at the post-scaler tail (axis_hud + axis_hud_font_pkg). Renders `F:####  T:XXX  N:##  L:#####US` at output coords (8,8). Sidebands (frame#, ctrl-flow tag, bbox count, latency µs) are produced at sparevideo_top, latched at HUD-input-SOF inside axis_hud. 1-cycle skid pipeline; runtime bypass via `hud_en` field of `cfg_t`. Font ROM is auto-generated from `py/gen_hud_font.py` so the SV ROM and the Python mirror (`py/models/ops/hud_font.py`) cannot drift.
 - `hw/ip/vga/rtl/` — VGA controller (instantiated in top) and pattern generator (retained, unused)
 - `hw/lint/` — Verilator waiver files (project + third-party)
 - `third_party/verilog-axis/` — Vendored alexforencich/verilog-axis (MIT) AXI4-Stream library

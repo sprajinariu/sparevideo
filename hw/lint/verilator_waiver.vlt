@@ -62,3 +62,22 @@ lint_off -rule PINMISSING      -file "*axis_async_fifo_ifc.sv"
 lint_off -rule PINCONNECTEMPTY -file "*axis_async_fifo_ifc.sv"
 // axis_async_fifo_ifc has no `timescale directive; harmless mismatch vs vendored files.
 lint_off -rule TIMESCALEMOD    -file "*axis_async_fifo_ifc.sv"
+// axis_hud_font_pkg exposes the full A-Z/0-9 glyph index table as a library
+// API, but the current HUD render string ("F:####  T:XXX  N:##  L:#####us")
+// only references a subset (digits + F/T/N/L/U/S/M/O/A/K/C/P/colon/space).
+// The remaining glyph constants are kept available for future strings.
+lint_off -rule UNUSEDPARAM     -file "*axis_hud_font_pkg.sv"
+lint_off -rule TIMESCALEMOD    -file "*axis_hud_font_pkg.sv"
+// axis_hud has no `timescale directive; harmless mismatch vs vendored files.
+lint_off -rule TIMESCALEMOD    -file "*axis_hud.sv"
+// axis_hud parameters H_ACTIVE/V_ACTIVE intentionally shadow sparevideo_pkg
+// localparams of the same name (default values come from the package).
+lint_off -rule VARHIDDEN       -file "*axis_hud.sv"
+// frame_num_q is latched and routed indirectly via the decimal-expand FSM
+// (rem <= frame_num_i on SOF, then digits in dig_frame). The register itself
+// is read indirectly through the latch chain; lint can't track the data flow.
+// row_off upper bits are intentionally unused — the in_band_y check restricts
+// row_pipe_q to [HUD_Y0, HUD_Y0+8), so only row_off[2:0] is meaningful for
+// the y_in_cell glyph row index.
+lint_off -rule UNUSEDSIGNAL    -file "*axis_hud.sv" -match "*frame_num_q*"
+lint_off -rule UNUSEDSIGNAL    -file "*axis_hud.sv" -match "*row_off*"

@@ -157,6 +157,42 @@ def _run_bg_trace(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6,
     return trace
 
 
+def compute_motion_masks(frames, *, motion_thresh=16, alpha_shift=3,
+                         alpha_shift_slow=6, grace_frames=0,
+                         grace_alpha_shift=1, gauss_en=True):
+    """Per-frame raw motion masks (pre-morph) using the same EMA/grace/priming
+    rules as run(). Frame 0 is hard-init priming → mask is all-zero. Frames
+    inside the grace window are also gated to zero (matches the data that
+    reaches CCL). Returns a list of boolean numpy arrays, one per input frame.
+    """
+    if not frames:
+        return []
+    h, w = frames[0].shape[:2]
+    y_bg = np.zeros((h, w), dtype=np.uint8)
+    primed = False
+    grace_cnt = 0
+    masks = []
+    for frame in frames:
+        y_cur = _rgb_to_y(frame)
+        y_cur_filt = _gauss3x3(y_cur) if gauss_en else y_cur
+        if not primed:
+            mask = np.zeros((h, w), dtype=bool)
+            y_bg = y_cur_filt.copy()
+            primed = True
+        else:
+            raw_mask = _compute_mask(y_cur_filt, y_bg, motion_thresh)
+            in_grace = grace_cnt < grace_frames
+            mask = np.zeros_like(raw_mask) if in_grace else raw_mask
+            if in_grace:
+                y_bg = _ema_update(y_cur_filt, y_bg, grace_alpha_shift)
+                grace_cnt += 1
+            else:
+                y_bg = _selective_ema_update(y_cur_filt, y_bg, raw_mask,
+                                              alpha_shift, alpha_shift_slow)
+        masks.append(mask)
+    return masks
+
+
 def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
         grace_alpha_shift=1, gauss_en=True, morph_en=True, **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).

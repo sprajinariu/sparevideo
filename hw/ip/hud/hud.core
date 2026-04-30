@@ -1,0 +1,17 @@
+CAPI=2:
+name: "sparevideo:ip:hud"
+description: "8x8 bitmap text overlay (frame#/ctrl-flow/bbox-count/latency µs); 1-cycle latency, runtime bypass"
+
+filesets:
+  files_rtl:
+    files:
+      - rtl/axis_hud_font_pkg.sv
+      - rtl/axis_hud.sv
+    file_type: systemVerilogSource
+    depend:
+      - sparevideo:pkg:common
+
+targets:
+  default:
+    filesets:
+      - files_rtl
