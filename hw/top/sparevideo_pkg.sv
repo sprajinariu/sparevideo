@@ -223,6 +223,36 @@ package sparevideo_pkg;
         bbox_color:        24'h00_FF_00
     };
 
+    // CFG_DEMO: tuned for the README demo. Differences from CFG_DEFAULT:
+    //   scaler_en=0          — 320x240 panels for the triptych
+    //   gamma_en=0           — sources are already sRGB-encoded
+    //   alpha_shift=2        — faster fast-EMA (~4-frame recovery)
+    //   alpha_shift_slow=8   — bg barely drifts under sustained motion (~1/256
+    //                          per frame) so slow objects don't accumulate
+    //                          enough bg contamination to leave a trailing
+    //                          mask after the trailing edge passes (safe here:
+    //                          the 3 s demo has no stationary objects long
+    //                          enough to need bg-absorption protection)
+    //   grace_frames=0       — synthetic source renders frame 0 as bg-only
+    //                          (boxes start off-frame), so EMA hard-init has
+    //                          no foreground to bake in; the real clip relies
+    //                          on PRIME_FRAMES + the EMA's natural convergence
+    //                          rather than a forced grace window.
+    localparam cfg_t CFG_DEMO = '{
+        motion_thresh:     8'd16,
+        alpha_shift:       2,
+        alpha_shift_slow:  8,
+        grace_frames:      0,
+        grace_alpha_shift: 1,
+        gauss_en:          1'b1,
+        morph_en:          1'b1,
+        hflip_en:          1'b0,
+        gamma_en:          1'b0,
+        scaler_en:         1'b0,
+        hud_en:            1'b1,
+        bbox_color:        24'h00_FF_00
+    };
+
     // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
     // Byte-identical to CFG_DEFAULT for every pixel outside the HUD region.
     localparam cfg_t CFG_NO_HUD = '{

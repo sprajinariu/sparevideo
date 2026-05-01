@@ -6,7 +6,7 @@ Supported sources:
   - "synthetic:<pattern>" where pattern is one of:
       moving_box, dark_moving_box, two_boxes, noisy_moving_box,
       lighting_ramp, textured_static, entering_object, multi_speed,
-      stopping_object, lit_moving_object, thin_moving_line
+      multi_speed_color, stopping_object, lit_moving_object, thin_moving_line
 
 All synthetic patterns with moving objects render frame 0 as background-only
 (no foreground). Moving objects appear from frame 1 onward. This avoids
@@ -115,6 +115,7 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "textured_static": _gen_textured_static,
         "entering_object": _gen_entering_object,
         "multi_speed": _gen_multi_speed,
+        "multi_speed_color": _gen_multi_speed_color,
         "stopping_object": _gen_stopping_object,
         "lit_moving_object": _gen_lit_moving_object,
         "thin_moving_line": _gen_thin_moving_line,
@@ -126,12 +127,19 @@ def _generate_synthetic(pattern, width, height, num_frames):
     return generators[pattern](width, height, num_frames)
 
 
+# Public alias — synthetic pattern dispatch for tests and external callers.
+generate_synthetic = _generate_synthetic
+
+
 # ---- Shared helpers for textured/noisy synthetic patterns ----
 
-def _make_bg_texture(width, height, base_luma=100, amp=20, seed=0xBE1F):
+def _make_bg_texture(width, height, base_luma=100, amp=20, seed=0xBE1F, tint=None):
     """Static multi-frequency sinusoid luma texture clipped to ~[base-amp, base+amp].
 
     Returns a (height, width) uint8 array. Deterministic given `seed`.
+
+    If `tint=(R,G,B)` is provided, returns a (height, width, 3) uint8 RGB array
+    where each channel is the greyscale texture scaled by `tint[c] / 255.0`.
     """
     rng = np.random.default_rng(seed)
     yy, xx = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
@@ -146,7 +154,13 @@ def _make_bg_texture(width, height, base_luma=100, amp=20, seed=0xBE1F):
         tex += np.sin(freq * (xx * np.cos(angle) + yy * np.sin(angle)) + phi)
     tex /= len(components)                       # normalise to ~[-1, 1]
     tex = base_luma + amp * tex                  # shift into luma window
-    return np.clip(tex, 0, 255).astype(np.uint8)
+    grey = np.clip(tex, 0, 255).astype(np.uint8)
+    if tint is None:
+        return grey
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    for c in range(3):
+        rgb[..., c] = (grey.astype(np.float32) * (tint[c] / 255.0)).clip(0, 255).astype(np.uint8)
+    return rgb
 
 
 def _add_frame_noise(bg, rng, noise_amp=8):
@@ -162,12 +176,13 @@ def _add_frame_noise(bg, rng, noise_amp=8):
 
 
 def _place_object(rgb_frame, x0, y0, box_w, box_h, luma,
-                  sigma=2.0, kernel=5):
+                  sigma=2.0, kernel=5, rgb=None):
     """Composite a Gaussian-blurred soft-edged box at (x0, y0) onto rgb_frame, in-place.
 
-    The object is greyscale (R=G=B=luma). Box regions partially outside the
-    frame are clipped cleanly; the function is a no-op if the box is fully
-    off-screen.
+    By default the object is greyscale (R=G=B=luma). If `rgb=(R,G,B)` is provided,
+    it overrides the greyscale path and the box renders in that color. Box regions
+    partially outside the frame are clipped cleanly; the function is a no-op if the
+    box is fully off-screen.
     """
     H, W = rgb_frame.shape[:2]
     pad = kernel  # margin so the blur kernel never reads outside the padded canvas
@@ -189,7 +204,13 @@ def _place_object(rgb_frame, x0, y0, box_w, box_h, luma,
     soft = blurred[pad:pad + H, pad:pad + W]     # crop back to the frame
 
     alpha = soft[..., None]                      # (H, W, 1)
-    fg = np.full_like(rgb_frame, luma)
+    if rgb is None:
+        fg = np.full_like(rgb_frame, luma)
+    else:
+        fg = np.zeros_like(rgb_frame)
+        fg[..., 0] = rgb[0]
+        fg[..., 1] = rgb[1]
+        fg[..., 2] = rgb[2]
     out = rgb_frame.astype(np.float32) * (1.0 - alpha) + fg.astype(np.float32) * alpha
     rgb_frame[:] = np.clip(out, 0, 255).astype(np.uint8)
 
@@ -269,6 +290,52 @@ def _gen_multi_speed(width, height, num_frames):
             cx = int(t_c * (width - box_w))
             cy = int((1.0 - t_c) * (height - box_h))
             _place_object(rgb, cx, cy, box_w, box_h, luma=200)
+
+        frames.append(rgb)
+    return frames
+
+
+def _gen_multi_speed_color(width, height, num_frames):
+    """Three colored soft-edged boxes with distinct speeds and directions.
+
+    Box A (fast, L→R, red): enters from off-left, exits off-right.
+    Box B (medium, T→B, green): enters from off-top, exits off-bottom.
+    Box C (slow, BL→TR diagonal, cyan): enters from off-BL, sweeps toward TR.
+
+    Background is a tinted RGB textured field. Frame 0 is bg-only — boxes are
+    positioned fully off-frame so the EMA hard-init sees clean bg; from frame 1
+    onward they sweep into the visible area from offscreen at their respective
+    speeds. End positions are also offscreen for the fast/medium boxes so the
+    bg can recover before each clip end.
+    """
+    bg = _make_bg_texture(width, height, tint=(180, 200, 180))
+    rng = np.random.default_rng(seed=11)
+    box_w, box_h = max(width // 6, 1), max(height // 6, 1)
+    frames = []
+    for i in range(num_frames):
+        rgb = bg.copy()
+        # Per-frame additive noise on each channel (independent)
+        noise = rng.integers(-4, 5, size=rgb.shape, dtype=np.int16)
+        rgb = np.clip(rgb.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+
+        if i > 0:
+            # Box A: fast L→R, top band, red — enters from off-left, exits off-right
+            t_a = i / max(num_frames - 1, 1)
+            ax = int(-box_w + t_a * (width + box_w))
+            ay = height // 8
+            _place_object(rgb, ax, ay, box_w, box_h, luma=0, rgb=(255, 80, 80))
+
+            # Box B: medium T→B, vertical centreline, green — enters from off-top
+            t_b = i / max(2 * num_frames - 1, 1)
+            bx = (width - box_w) // 2
+            by = int(-box_h + t_b * (height + box_h))
+            _place_object(rgb, bx, by, box_w, box_h, luma=0, rgb=(80, 220, 80))
+
+            # Box C: slow diagonal BL→TR, cyan — enters from off-BL toward TR
+            t_c = i / max(4 * num_frames - 1, 1)
+            cx = int(-box_w + t_c * (width + box_w))
+            cy = int(height - t_c * (height + box_h))
+            _place_object(rgb, cx, cy, box_w, box_h, luma=0, rgb=(80, 220, 220))
 
         frames.append(rgb)
     return frames

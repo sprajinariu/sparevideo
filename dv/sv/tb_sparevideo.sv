@@ -15,7 +15,7 @@
 //   +DUMP_VCD          Dump waveforms to VCD
 //
 // Compile-time -G overrides:
-//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler)
+//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler|demo|no_hud)
 //   -GH_ACTIVE / -GV_ACTIVE Resolution overrides
 
 `timescale 1ns / 1ps
@@ -54,6 +54,7 @@ module tb_sparevideo #(
         (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
         (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
         (CFG_NAME == "no_scaler")     ? sparevideo_pkg::CFG_NO_SCALER     :
+        (CFG_NAME == "demo")          ? sparevideo_pkg::CFG_DEMO          :
         (CFG_NAME == "no_hud")        ? sparevideo_pkg::CFG_NO_HUD        :
                                         sparevideo_pkg::CFG_DEFAULT;
 
@@ -129,6 +130,7 @@ module tb_sparevideo #(
             CFG_NAME != "no_gauss"      &&
             CFG_NAME != "no_gamma_cor"  &&
             CFG_NAME != "no_scaler"     &&
+            CFG_NAME != "demo"          &&
             CFG_NAME != "no_hud")
             $warning("Unknown CFG_NAME '%s'; falling back to CFG_DEFAULT",
                      CFG_NAME);

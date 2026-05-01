@@ -39,7 +39,8 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean
+        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean \
+        demo demo-synthetic demo-real demo-publish
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -59,6 +60,12 @@ help:
 	@echo "  Additional targets:"
 	@echo "    sim-waves             RTL sim + open GTKWave"
 	@echo "    sw-dry-run            Bypass RTL (file loopback, zero sim time)"
+	@echo "    demo                  Build both demo WebPs into media/demo-draft/ (gitignored)"
+	@echo "    demo-synthetic        Build media/demo-draft/synthetic.webp from synthetic:multi_speed_color"
+	@echo "    demo-real             Build media/demo-draft/real.webp from media/source/pexels-pedestrians-320x240.mp4"
+	@echo "                          (real-clip prep: see media/source/README.md and py/demo/stabilize.py)"
+	@echo "    demo-publish          Promote media/demo-draft/*.webp to media/demo/ (README-referenced)"
+	@echo "                          Override: WHICH=both|synthetic|real (default both)"
 	@echo "    test-py               Run Python unit tests"
 	@echo "    test-ip               All per-block IP unit testbenches (Verilator)"
 	@echo "    test-ip-rgb2ycrcb          rgb2ycrcb: 18 vectors, exact-match golden model"
@@ -159,6 +166,86 @@ render:
 		--input $(CURDIR)/$(PIPE_INFILE) --output $(CURDIR)/$(PIPE_OUTFILE) \
 		--mode $(MODE) --ctrl-flow $(CTRL_FLOW) --cfg $(CFG) \
 		--render-output $(RENDER_OUT)
+
+# ---- README demo (animated WebP triptychs) ----
+# Two-stage workflow:
+#   1. `make demo[-synthetic|-real]` writes WebPs to $(DEMO_DRAFT_DIR) (gitignored).
+#      Iterate freely without dirtying the tree.
+#   2. `make demo-publish` promotes them to $(DEMO_PUBLISH_DIR) — the path
+#      referenced by the README.
+
+DEMO_FRAMES      ?= 45
+DEMO_WIDTH       ?= 320
+DEMO_HEIGHT      ?= 240
+DEMO_FPS         ?= 15
+DEMO_DRAFT_DIR   ?= $(CURDIR)/media/demo-draft
+DEMO_PUBLISH_DIR ?= $(CURDIR)/media/demo
+
+demo: demo-synthetic demo-real
+
+demo-synthetic:
+	$(MAKE) prepare SOURCE=synthetic:multi_speed_color \
+	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_FRAMES) MODE=binary CFG=demo
+	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
+	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
+	$(MAKE) compile CTRL_FLOW=motion CFG=demo
+	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
+	@mkdir -p $(DEMO_DRAFT_DIR)
+	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
+	    --input  dv/data/input.bin \
+	    --ccl    dv/data/output_ccl_bbox.bin \
+	    --motion dv/data/output_motion.bin \
+	    --out    $(DEMO_DRAFT_DIR)/synthetic.webp \
+	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_FRAMES) \
+	    --fps   $(DEMO_FPS)
+	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/synthetic.webp — run 'make demo-publish' to promote."
+
+demo-real:
+	$(MAKE) prepare SOURCE=$(CURDIR)/media/source/pexels-pedestrians-320x240.mp4 \
+	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_FRAMES) MODE=binary CFG=demo
+	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
+	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
+	$(MAKE) compile CTRL_FLOW=motion CFG=demo
+	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
+	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
+	@mkdir -p $(DEMO_DRAFT_DIR)
+	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
+	    --input  dv/data/input.bin \
+	    --ccl    dv/data/output_ccl_bbox.bin \
+	    --motion dv/data/output_motion.bin \
+	    --out    $(DEMO_DRAFT_DIR)/real.webp \
+	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_FRAMES) \
+	    --fps   $(DEMO_FPS)
+	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/real.webp — run 'make demo-publish' to promote."
+
+# Promote draft WebPs to the README-referenced media/demo/ dir. WHICH=both|synthetic|real
+# selects which panels to publish; default both.
+WHICH ?= both
+demo-publish:
+	@mkdir -p $(DEMO_PUBLISH_DIR)
+	@published=0; \
+	for name in synthetic real; do \
+	    case "$(WHICH)" in \
+	        both|$$name) ;; \
+	        *) continue ;; \
+	    esac; \
+	    src=$(DEMO_DRAFT_DIR)/$$name.webp; \
+	    dst=$(DEMO_PUBLISH_DIR)/$$name.webp; \
+	    if [ ! -f "$$src" ]; then \
+	        echo "skip $$name: $$src not found (run 'make demo-$$name' first)"; \
+	        continue; \
+	    fi; \
+	    cp "$$src" "$$dst"; \
+	    echo "published $$src -> $$dst"; \
+	    published=$$((published+1)); \
+	done; \
+	if [ $$published -eq 0 ]; then \
+	    echo "Nothing published. Run 'make demo' or 'make demo-synthetic'/'make demo-real' first."; \
+	    exit 1; \
+	fi
 
 # ---- Other targets ----
 

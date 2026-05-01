@@ -317,7 +317,7 @@ module axis_hud
         m_axis.tlast  = tlast_q;
         m_axis.tuser  = tuser_q;
         if (enable_i) begin
-            m_axis.tdata = (in_hud_region && fg_bit) ? 24'hFF_FF_FF
+            m_axis.tdata = (in_hud_region && fg_bit) ? 24'hFF_00_FF
                                                      : s_axis_data_q;
         end else begin
             m_axis.tdata = s_axis_data_q;

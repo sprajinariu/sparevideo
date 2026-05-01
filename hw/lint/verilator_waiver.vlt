@@ -49,6 +49,7 @@ lint_off -rule TIMESCALEMOD   -file "*sparevideo_pkg.sv"
 // file list (or once the TB is moved into the FuseSoC core's lint target).
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_DEFAULT_HFLIP*"
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_NO_*"
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_DEMO*"
 // sparevideo_if.sv declares two interfaces (axis_if + bbox_if) in one file —
 // intentional one-file pattern mirroring sparevideo_pkg.sv. Suppresses the
 // DECLFILENAME warning. Also no `timescale directive, like sparevideo_pkg.sv.
