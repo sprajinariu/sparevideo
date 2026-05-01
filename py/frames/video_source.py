@@ -298,13 +298,15 @@ def _gen_multi_speed(width, height, num_frames):
 def _gen_multi_speed_color(width, height, num_frames):
     """Three colored soft-edged boxes with distinct speeds and directions.
 
-    Box A (fast, L→R, red): crosses width in num_frames frames.
-    Box B (medium, T→B, green): crosses height in 2*num_frames frames.
-    Box C (slow, BL→TR diagonal, cyan): crosses diagonal in 4*num_frames frames.
+    Box A (fast, L→R, red): enters from off-left, exits off-right.
+    Box B (medium, T→B, green): enters from off-top, exits off-bottom.
+    Box C (slow, BL→TR diagonal, cyan): enters from off-BL, sweeps toward TR.
 
-    Background is a tinted RGB textured field. Frame 0 is bg-only — objects appear
-    from frame 1 onward, matching the convention of every other moving-object
-    synthetic source so the EMA hard-init at frame 0 sees clean bg.
+    Background is a tinted RGB textured field. Frame 0 is bg-only — boxes are
+    positioned fully off-frame so the EMA hard-init sees clean bg; from frame 1
+    onward they sweep into the visible area from offscreen at their respective
+    speeds. End positions are also offscreen for the fast/medium boxes so the
+    bg can recover before each clip end.
     """
     bg = _make_bg_texture(width, height, tint=(180, 200, 180))
     rng = np.random.default_rng(seed=11)
@@ -317,22 +319,22 @@ def _gen_multi_speed_color(width, height, num_frames):
         rgb = np.clip(rgb.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
         if i > 0:
-            # Box A: fast L→R, top band, red
+            # Box A: fast L→R, top band, red — enters from off-left, exits off-right
             t_a = i / max(num_frames - 1, 1)
-            ax = int(t_a * (width - box_w))
+            ax = int(-box_w + t_a * (width + box_w))
             ay = height // 8
             _place_object(rgb, ax, ay, box_w, box_h, luma=0, rgb=(255, 80, 80))
 
-            # Box B: medium T→B, vertical centreline, green
+            # Box B: medium T→B, vertical centreline, green — enters from off-top
             t_b = i / max(2 * num_frames - 1, 1)
             bx = (width - box_w) // 2
-            by = int(t_b * (height - box_h))
+            by = int(-box_h + t_b * (height + box_h))
             _place_object(rgb, bx, by, box_w, box_h, luma=0, rgb=(80, 220, 80))
 
-            # Box C: slow diagonal BL→TR, cyan
+            # Box C: slow diagonal BL→TR, cyan — enters from off-BL toward TR
             t_c = i / max(4 * num_frames - 1, 1)
-            cx = int(t_c * (width - box_w))
-            cy = int((1.0 - t_c) * (height - box_h))
+            cx = int(-box_w + t_c * (width + box_w))
+            cy = int(height - t_c * (height + box_h))
             _place_object(rgb, cx, cy, box_w, box_h, luma=0, rgb=(80, 220, 220))
 
         frames.append(rgb)

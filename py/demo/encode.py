@@ -9,7 +9,7 @@ def write_webp(
     frames: List[Image.Image],
     path: Union[str, Path],
     fps: int = 15,
-    quality: int = 80,
+    quality: int = 95,
 ) -> None:
     """Write `frames` as an animated WebP that loops forever.
 

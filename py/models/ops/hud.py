@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from models.ops.hud_font import FONT_ROM, GLYPH_IDX
 
-FG = np.array([255, 255, 255], dtype=np.uint8)
+FG = np.array([255, 0, 255], dtype=np.uint8)
 
 CTRL_TAG_MAP = {
     "passthrough": "PAS",

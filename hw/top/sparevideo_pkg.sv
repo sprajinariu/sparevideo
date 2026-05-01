@@ -233,20 +233,16 @@ package sparevideo_pkg;
     //                          mask after the trailing edge passes (safe here:
     //                          the 3 s demo has no stationary objects long
     //                          enough to need bg-absorption protection)
-    //   grace_frames=16      — real-clip frame 0 contains foreground (cars,
-    //                          pedestrians). Grace uses grace_alpha_shift=1
-    //                          (α=1/2) and force-zeroes the mask output, so
-    //                          bg converges silently. With 16 frames at α=1/2
-    //                          the residual at the cliff is ~0.0015 % of the
-    //                          original delta — well below THRESH for any
-    //                          reasonable contrast, so the slow-EMA latch at
-    //                          end-of-grace doesn't bake in a ghost. Bboxes
-    //                          appear from frame 17 (~1.07 s @ 15 fps).
+    //   grace_frames=0       — synthetic source renders frame 0 as bg-only
+    //                          (boxes start off-frame), so EMA hard-init has
+    //                          no foreground to bake in; the real clip relies
+    //                          on PRIME_FRAMES + the EMA's natural convergence
+    //                          rather than a forced grace window.
     localparam cfg_t CFG_DEMO = '{
         motion_thresh:     8'd16,
         alpha_shift:       2,
         alpha_shift_slow:  8,
-        grace_frames:      16,
+        grace_frames:      0,
         grace_alpha_shift: 1,
         gauss_en:          1'b1,
         morph_en:          1'b1,

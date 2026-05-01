@@ -15,6 +15,10 @@ renders/
 dv/data/config.mk
 dv/data/real_video/*
 
+# Demo working dir — outputs of `make demo[-synthetic|-real]` land here.
+# `make demo-publish` promotes them to media/demo/ for the README.
+media/demo-draft/
+
 # FuseSoC build
 build/
 

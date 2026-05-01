@@ -180,17 +180,25 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 
 ### Regenerating the demo
 
-After RTL changes that affect visual output, rebuild the demo WebPs and commit them with the change:
+Two-stage workflow: build to a gitignored draft dir, preview, then publish to the README-referenced dir when happy.
 
 ```bash
-make demo                                                # regenerates both WebPs
-explorer.exe "$(wslpath -w media/demo/synthetic.webp)"   # preview animation in browser (WSL)
-grip README.md                                           # preview README at github.com fidelity
+make demo                                                      # build both WebPs into media/demo-draft/
+make demo-synthetic                                            # just media/demo-draft/synthetic.webp
+make demo-real                                                 # just media/demo-draft/real.webp
+explorer.exe "$(wslpath -w media/demo-draft/synthetic.webp)"   # preview the draft (WSL)
+make demo-publish                                              # promote media/demo-draft/*.webp → media/demo/
+make demo-publish WHICH=synthetic                              # promote one panel only (or WHICH=real)
+grip README.md                                                 # preview README at github.com fidelity
 ```
 
-`grip` is an optional dev tool (`pip install grip`) that renders local markdown using GitHub's API — useful for confirming the README looks right before pushing.
+`media/demo-draft/` is gitignored — iterate freely. `media/demo/` is what the README points at; commit the published WebPs alongside the RTL change that produced them.
 
-To swap the real-video source clip, see [`media/source/README.md`](media/source/README.md). To trim and stabilize a fresh Pexels download yourself, use the `python -m demo.stabilize` CLI.
+Knobs: `DEMO_FRAMES=45 DEMO_WIDTH=320 DEMO_HEIGHT=240 DEMO_FPS=15`. Each build target runs `prepare → compile → sim` twice (once for `ccl_bbox`, once for `motion`) under `CFG=demo`, then assembles the triptych via `python -m demo`.
+
+`make demo-real` reads `media/source/pexels-pedestrians-320x240.mp4` (committed in-tree). To swap or re-prepare the real-video source clip — including the exact `python -m demo.stabilize` command, the Pexels source URL, and the trim/resize/stabilize parameters — see [`media/source/README.md`](media/source/README.md).
+
+`grip` is an optional dev tool (`pip install grip`) that renders local markdown using GitHub's API — useful for confirming the README looks right before pushing.
 
 ## Options
 

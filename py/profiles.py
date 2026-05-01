@@ -51,15 +51,11 @@ NO_SCALER: ProfileT = dict(DEFAULT, scaler_en=False)
 #   alpha_shift_slow=8    — bg barely drifts under sustained motion (~1/256/frame)
 #                           so slow objects don't accumulate enough bg contamination
 #                           to leave a trailing mask after the trailing edge passes
-#   grace_frames=16       — real-clip frame 0 contains foreground (cars/pedestrians);
-#                           grace at α=1/2 for 16 frames drives bg-residual to
-#                           ~0.0015 % of d₀ — well below THRESH for any reasonable
-#                           contrast, so the slow-EMA latch at end-of-grace
-#                           doesn't bake in a ghost. Bboxes appear from frame 17
-#                           (~1.07 s @ 15 fps).
+#   grace_frames=0        — synthetic source renders frame 0 as bg-only (boxes start
+#                           off-frame), so EMA hard-init has no foreground to bake in.
 DEMO: ProfileT = dict(
     DEFAULT, scaler_en=False, gamma_en=False,
-    alpha_shift=2, alpha_shift_slow=8, grace_frames=16,
+    alpha_shift=2, alpha_shift_slow=8, grace_frames=0,
 )
 
 # HUD bitmap overlay bypassed.
