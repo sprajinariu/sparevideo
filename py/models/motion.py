@@ -15,7 +15,8 @@ RTL is wrong.
 import numpy as np
 
 from models.ccl import run_ccl
-from models.ops.morph_open import morph_open
+from models.ops.morph_open  import morph_open
+from models.ops.morph_close import morph_close
 
 # Project-specific coefficients from rgb2ycrcb.sv:
 #   y_sum_c = 77*R + 150*G + 29*B;  output = y_sum_c[15:8]
@@ -194,7 +195,9 @@ def compute_motion_masks(frames, *, motion_thresh=16, alpha_shift=3,
 
 
 def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frames=0,
-        grace_alpha_shift=1, gauss_en=True, morph_en=True, **kwargs):
+        grace_alpha_shift=1, gauss_en=True,
+        morph_open_en=True, morph_close_en=True, morph_close_kernel=3,
+        **kwargs):
     """Motion pipeline reference model (CCL-based, multi-bbox).
 
     Frame 0: priming — bg[px] = Y_smooth(frame_0[px]), mask forced to 0.
@@ -205,10 +208,14 @@ def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frame
     Frames > grace_frames: selective EMA — motion pixels drift at slow rate,
     non-motion at fast rate; mask reflects real motion.
 
-    morph_en (default True): apply 3x3 morphological opening to the mask
-    before CCL. The EMA still consumes the raw (pre-morph) mask so it matches
-    the RTL's datapath (axis_motion_detect drives EMA; axis_morph3x3_open runs
-    downstream on its way to CCL).
+    morph_open_en (default True): apply 3x3 morphological opening to the mask
+    before CCL.
+    morph_close_en (default True): apply morphological closing (dilate then
+    erode) after the open, with kernel size controlled by morph_close_kernel.
+    morph_close_kernel (default 3): 3 or 5. Kernel side length for the close.
+    Both operations run on the post-mask path; the EMA still consumes the
+    raw (pre-morph) mask to match the RTL datapath (axis_motion_detect drives
+    EMA; axis_morph_clean runs downstream on its way to CCL).
     """
     if not frames:
         return []
@@ -241,7 +248,11 @@ def run(frames, motion_thresh=16, alpha_shift=3, alpha_shift_slow=6, grace_frame
             raw_mask = _compute_mask(y_cur_filt, y_bg, motion_thresh)
             # Morph opening cleans the mask for downstream (CCL) only; EMA
             # always uses raw_mask to match the RTL datapath.
-            clean_mask = morph_open(raw_mask) if morph_en else raw_mask
+            clean_mask = raw_mask
+            if morph_open_en:
+                clean_mask = morph_open(clean_mask)
+            if morph_close_en:
+                clean_mask = morph_close(clean_mask, kernel=morph_close_kernel)
             in_grace = grace_cnt < grace_frames
             # Mask is gated to 0 during the grace window so the ghost region
             # does not reach CCL. bg update still runs (fast rate) so it

@@ -18,7 +18,9 @@ DEFAULT: ProfileT = dict(
     grace_frames=0,
     grace_alpha_shift=1,
     gauss_en=True,
-    morph_en=True,
+    morph_open_en=True,
+    morph_close_en=True,
+    morph_close_kernel=3,
     hflip_en=False,
     gamma_en=True,
     scaler_en=True,
@@ -32,8 +34,8 @@ DEFAULT_HFLIP: ProfileT = dict(DEFAULT, hflip_en=True)
 # EMA disabled (alpha=1 → raw frame differencing).
 NO_EMA: ProfileT = dict(DEFAULT, alpha_shift=0, alpha_shift_slow=0)
 
-# 3x3 mask opening bypassed.
-NO_MORPH: ProfileT = dict(DEFAULT, morph_en=False)
+# 3x3 mask opening AND closing bypassed (full mask-cleanup bypass).
+NO_MORPH: ProfileT = dict(DEFAULT, morph_open_en=False, morph_close_en=False)
 
 # 3x3 Gaussian pre-filter bypassed.
 NO_GAUSS: ProfileT = dict(DEFAULT, gauss_en=False)

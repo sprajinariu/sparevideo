@@ -1,6 +1,6 @@
 """3x3 morphological opening (erode then dilate) with edge replication.
 
-Matches axis_morph3x3_open RTL: 3x3 square structuring element, EDGE_REPLICATE
+Matches axis_morph3x3_erode/axis_morph3x3_dilate RTL (sub-stages of axis_morph_clean): 3x3 square structuring element, EDGE_REPLICATE
 border policy at all four borders, single pass.
 """
 

@@ -52,7 +52,8 @@ def test_dispatcher_applies_hud_when_enabled(monkeypatch, tmp_path):
     out = run_model("passthrough", frames,
                     motion_thresh=16, alpha_shift=3, alpha_shift_slow=6,
                     grace_frames=0, grace_alpha_shift=1,
-                    gauss_en=True, morph_en=True, hflip_en=False,
+                    gauss_en=True, morph_open_en=True, morph_close_en=False,
+                    morph_close_kernel=3, hflip_en=False,
                     gamma_en=False, scaler_en=False, hud_en=True,
                     bbox_color=0x00FF00)
     # HUD region (rows 8..15) must contain at least one white pixel from the 'F' glyph.

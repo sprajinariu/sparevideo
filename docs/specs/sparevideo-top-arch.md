@@ -12,7 +12,7 @@
 - [5. Design Rationale](#5-design-rationale)
   - [5.1 `u_motion_detect` — which pixels look different?](#51-u_motion_detect--which-pixels-look-different)
   - [5.2 `u_hflip` — present a "selfie-cam" view to the user](#52-u_hflip--present-a-selfie-cam-view-to-the-user)
-  - [5.3 `u_morph_open` — clean up speckle in the mask](#53-u_morph_open--clean-up-speckle-in-the-mask)
+  - [5.3 `u_morph_clean` — clean up speckle in the mask](#53-u_morph_clean--clean-up-speckle-in-the-mask)
   - [5.4 `u_ccl` — group motion pixels into distinct objects](#54-u_ccl--group-motion-pixels-into-distinct-objects)
   - [5.5 `u_overlay_bbox` — draw rectangles on the video](#55-u_overlay_bbox--draw-rectangles-on-the-video)
   - [5.6 `u_gamma_cor` — sRGB display gamma at the post-mux tail](#56-u_gamma_cor--srgb-display-gamma-at-the-post-mux-tail)
@@ -48,7 +48,7 @@ A 2-bit `ctrl_flow_i` sideband selects the path. Motion is the production flow; 
 
 Motion, mask, and ccl_bbox all activate the motion-detect + morph + CCL front-end. In passthrough the fork's input `tvalid` is gated to 0 and the overlay output `tready` is tied to 1.
 
-Out of scope: camera input (MIPI CSI-2), AXI-Lite registers, independent `clk_pix` sources, and any processing beyond luma-difference motion detection, 3×3 morphological opening, 8-connected CCL, and N-way bbox overlay.
+Out of scope: camera input (MIPI CSI-2), AXI-Lite registers, independent `clk_pix` sources, and any processing beyond luma-difference motion detection, 3×3 morphological opening + closing, 8-connected CCL, and N-way bbox overlay.
 
 ---
 
@@ -62,7 +62,7 @@ sparevideo_top (top level)
 ├── axis_fork          (u_fork)          — 1-to-2 broadcast: fork_a → motion detect, fork_b → overlay
 ├── axis_motion_detect (u_motion_detect) — mask-only producer
 │   └── rgb2ycrcb      (u_rgb2ycrcb)    — RGB888 → Y8 (1-cycle pipeline)
-├── axis_morph3x3_open    (u_morph_open)    — 3×3 opening (erode → dilate) on the mask; runtime bypassable
+├── axis_morph_clean      (u_morph_clean)   — 3×3 opening + parametrizable 3×3/5×5 closing on the mask; runtime bypassable
 ├── axis_ccl           (u_ccl)           — cleaned mask → N_OUT × {min_x,max_x,min_y,max_y,valid}
 ├── axis_overlay_bbox  (u_overlay_bbox)  — draw N_OUT-wide bbox rectangles on RGB video
 ├── axis_gamma_cor     (u_gamma_cor)     — per-channel sRGB gamma correction; runtime bypassable
@@ -115,7 +115,9 @@ sparevideo_top (top level)
 | `CFG.grace_frames` | `int` | `0` | Number of frames after priming during which both EMA rates are forced to `grace_alpha_shift` (faster convergence, suppresses frame-0 ghost). `0` disables the grace window — appropriate for synthetic sources whose frame 0 is bg-only. |
 | `CFG.grace_alpha_shift` | `int` | `1` | EMA shift used during the grace window (typically aggressive — `1` means α=1/2). |
 | `CFG.gauss_en` | `logic` | `1` | Enable the 3×3 Gaussian pre-filter on the luma stream inside `u_motion_detect`. `0` bypasses the filter. |
-| `CFG.morph_en` | `logic` | `1` | Enable the 3×3 morphological opening (`u_morph_open`) on the mask. `0` bypasses (raw mask flows downstream). |
+| `CFG.morph_open_en` | `logic` | `1` | Enable the 3×3 morphological opening stage in `u_morph_clean`. `0` bypasses (raw mask flows through open stage unchanged). |
+| `CFG.morph_close_en` | `logic` | `1` | Enable the morphological closing stage in `u_morph_clean`. `0` bypasses (mask flows through close stage unchanged). |
+| `CFG.morph_close_kernel` | `int` | `3` | Closing structuring-element size: `3` for 3×3, `5` for 5×5 (two cascaded 3×3 passes). Compile-time only. |
 | `CFG.hflip_en` | `logic` | `0` | Enable the horizontal mirror (`u_hflip`) at the head of the proc-clock pipeline. `0` passes the input through unchanged. |
 | `CFG.gamma_en` | `logic` | `1` | Enable the sRGB gamma-correction stage (`u_gamma_cor`) at the post-mux tail. `0` bypasses (linear-light pixels reach the output FIFO). |
 | `CFG.scaler_en` | `logic` | `1` | Enable the 2x bilinear spatial upscaler (`u_scale2x`) before the output FIFO. `0` bypasses (output resolution equals input resolution). |
@@ -150,7 +152,7 @@ Before the fork, `axis_hflip` (`u_hflip`) optionally mirrors each input line hor
 In motion/mask modes, the pipeline processes two parallel streams forked from the same input video. A top-level `axis_fork` (`u_fork`) broadcasts the DSP-domain input to two consumers:
 
 1. **Video path (RGB, 24-bit per pixel, `fork_b`):** The original RGB pixels feed directly from the fork to `u_overlay_bbox`, bypassing `u_motion_detect` entirely. They are never modified by the motion-detection logic. The fork ensures the overlay receives the same pixels with no additional latency.
-2. **Mask path (1-bit per pixel, `fork_a`):** `u_motion_detect` receives the second fork output, converts each pixel to Y8, compares against the per-pixel background model, and emits a single bit: **"did this pixel change compared to the background?"** A `1` means yes (motion detected at this pixel), a `0` means no (this pixel looks the same as the background model). The raw mask is then passed through `u_morph_open` for speckle cleanup before it reaches the downstream consumers.
+2. **Mask path (1-bit per pixel, `fork_a`):** `u_motion_detect` receives the second fork output, converts each pixel to Y8, compares against the per-pixel background model, and emits a single bit: **"did this pixel change compared to the background?"** A `1` means yes (motion detected at this pixel), a `0` means no (this pixel looks the same as the background model). The raw mask is then passed through `u_morph_clean` for speckle cleanup and gap-closing before it reaches the downstream consumers.
 
 The mask is a binary image the same size as the video (H_ACTIVE × V_ACTIVE), transmitted as an AXI4-Stream of 1-bit values, one per pixel, in the same raster order as the video. Visually, if you could see the mask, it would look like this:
 
@@ -185,9 +187,9 @@ The mask and video paths are consumed by **different modules that do not synchro
 
 1. **`u_ccl` is a pure sink on its mask input** — it accepts one mask bit per cycle whenever the upstream strobes valid, and it produces **no mask output stream** at all. It never stalls the mask stream once the upstream broadcast handshake is complete, and it never touches the video stream. All accumulation (per-label min/max/count, union-find) is internal.
 2. **Bboxes are committed at end-of-frame, used during the *next* frame.** After EOF, `u_ccl` runs a four-phase resolution FSM inside the vertical blanking interval (path-compress → fold → top-N select → reset) and then performs a `PHASE_SWAP` that atomically promotes the new `N_OUT` bbox slots into the front register bank. These outputs are stable for the entire duration of the next frame. `u_overlay_bbox` reads them as a static sideband while processing that next frame's video.
-3. **Adding stages to the mask path (morph, Gaussian, stricter CCL variants) just delays when the EOF resolution happens within the vblank.** As long as the full resolution FSM completes before the next frame's first pixel reaches the overlay, the bbox is ready in time. Vblank headroom must exceed the CCL worst-case EOF-FSM cycle budget plus the latency of any mask-path stages ahead of it; see [axis_ccl-arch.md](axis_ccl-arch.md) §6.7 and [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md) §7.
+3. **Adding stages to the mask path (morph, Gaussian, stricter CCL variants) just delays when the EOF resolution happens within the vblank.** As long as the full resolution FSM completes before the next frame's first pixel reaches the overlay, the bbox is ready in time. Vblank headroom must exceed the CCL worst-case EOF-FSM cycle budget plus the latency of any mask-path stages ahead of it; see [axis_ccl-arch.md](axis_ccl-arch.md) §6.7 and [axis_morph_clean-arch.md](axis_morph_clean-arch.md).
 
-`u_morph_open` is the first concrete application of this property — inserted between `u_motion_detect` and `u_ccl` without any compensating delay on the `fork_b` RGB path. Future mask-path stages (additional morphology, stricter thresholding) can slot in the same way.
+`u_morph_clean` is the concrete application of this property — inserted between `u_motion_detect` and `u_ccl` without any compensating delay on the `fork_b` RGB path. Future mask-path stages (additional morphology, stricter thresholding) can slot in the same way.
 
 ---
 
@@ -205,9 +207,9 @@ Buffers each input line and emits it in reverse column order: 1-line latency, 1 
 
 **FIFO sizing.** During hflip's TX phase the upstream is stalled, so the input CDC FIFO must absorb up to one line of write-clock pixels. At a 4:1 dsp/pix ratio and `H_ACTIVE=320`, worst case is ~80 entries — `IN_FIFO_DEPTH=128` covers it. The output side accumulates ~`3·H_ACTIVE/4` entries per line; `OUT_FIFO_DEPTH=256` covers it (and bumps to 1024 with `CFG.scaler_en=1`; see §6.1).
 
-### 5.3 `u_morph_open` — clean speckle in the mask
+### 5.3 `u_morph_clean` — clean speckle and close gaps in the mask
 
-3×3 square morphological opening (erode → dilate) on the 1-bit mask. Erodes salt noise and features narrower than 3 pixels; the dilation restores survivors to roughly their original shape. Without it, each sensor-noise speckle becomes its own component in `u_ccl` and crowds real objects out of the `N_OUT` bbox list. `CFG.morph_en=0` is a zero-latency bypass. Details: [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md).
+3×3 morphological opening (erode → dilate) followed by a parametrizable 3×3 or 5×5 closing (dilate → erode) on the 1-bit mask. The open erodes salt noise and features narrower than 3 pixels while the dilation restores survivors to roughly their original shape; without it, each sensor-noise speckle becomes its own component in `u_ccl` and crowds real objects out of the `N_OUT` bbox list. The close bridges small intra-object gaps so a single moving object produces one connected blob rather than fragmented components. `CFG.morph_open_en=0` and `CFG.morph_close_en=0` are each independent zero-latency bypasses. Details: [axis_morph_clean-arch.md](axis_morph_clean-arch.md).
 
 ### 5.4 `u_ccl` — group motion pixels into objects
 
@@ -257,7 +259,7 @@ At `H_ACTIVE=320` and 100 MHz the long paths are ≈10 µs — negligible vs. th
 
 **Video/mask asymmetry.** In motion mode the video reaches the overlay in ~5 cycles via `fork_b` while the mask traverses motion_detect → morph → ccl for `3·H_ACTIVE + ~14` cycles. The mask cannot overtake the video — *this* is why the bbox is one frame late (§5.9).
 
-**V-blank budget.** Blanking must absorb the cascading drains of `axis_gauss3x3` + `axis_morph3x3_open` (each ≥ `H_ACTIVE + 1` cycles, drained sequentially) plus the `u_ccl` EOF FSM. Detailed in [`axis_ccl-arch.md`](axis_ccl-arch.md) §6.7.
+**V-blank budget.** Blanking must absorb the cascading drains of `axis_gauss3x3` + `axis_morph_clean` (each sub-stage ≥ `H_ACTIVE + 1` cycles, drained sequentially) plus the `u_ccl` EOF FSM. Detailed in [`axis_ccl-arch.md`](axis_ccl-arch.md) §6.7.
 
 **4:1 clock ratio.** `clk_dsp` is 4× `clk_pix`, so the pipeline can emit up to 4 output pixels per input pixel; after fill, throughput is 1 pixel/cycle. Both CDC FIFOs stay near empty; SVAs in §9 catch violations.
 
@@ -298,7 +300,7 @@ At `H_ACTIVE=320` and 100 MHz the long paths are ≈10 µs — negligible vs. th
   │             │  motion_to_morph (1-bit mask)               │                  │
   │             ▼                                             │                  │
   │    ┌──────────────────┐                                   │                  │
-  │    │ u_morph_open     │                                   │                  │
+  │    │ u_morph_clean    │                                   │                  │
   │    └────────┬─────────┘                                   │                  │
   │             │  morph_to_ccl                               │                  │
   │             ├───────────────────────────────────┐         │                  │
@@ -358,13 +360,13 @@ At `H_ACTIVE=320` and 100 MHz the long paths are ≈10 µs — negligible vs. th
 
 The control-flow mux selects between:
 - **Passthrough** (`ctrl_flow_i = 2'b00`): `pix_in_to_hflip` feeds directly into `u_fifo_out` (flat-bridge). `u_fork` input `tvalid` is gated to 0; overlay output `tready` is tied to 1.
-- **Motion detect** (`ctrl_flow_i = 2'b01`): `overlay_to_pix_out` feeds into `u_fifo_out`. Both fork outputs are active; `fork_b_to_overlay` provides RGB to the overlay while `fork_a_to_motion` feeds `u_motion_detect` → `u_morph_open` → `u_ccl` for bbox generation via `u_ccl_bboxes`. This is the default path.
+- **Motion detect** (`ctrl_flow_i = 2'b01`): `overlay_to_pix_out` feeds into `u_fifo_out`. Both fork outputs are active; `fork_b_to_overlay` provides RGB to the overlay while `fork_a_to_motion` feeds `u_motion_detect` → `u_morph_clean` → `u_ccl` for bbox generation via `u_ccl_bboxes`. This is the default path.
 - **Mask display** (`ctrl_flow_i = 2'b10`): `msk_rgb` (cleaned 1-bit mask expanded to 24-bit B/W) feeds into `u_fifo_out`. The overlay path is drained (overlay `tready = 1`). Mask `tready` carries output FIFO backpressure; `u_ccl` still receives the cleaned mask via the broadcast handshake but its bboxes are not used.
 - **CCL bbox** (`ctrl_flow_i = 2'b11`): `overlay_to_pix_out` feeds into `u_fifo_out`, but the overlay's video input (`overlay_in`) is `mask_grey_rgb` (a combinational grey canvas derived from the cleaned mask) instead of `fork_b_to_overlay`. `fork_b_to_overlay.tready` is tied to 1 so the unused RGB pipe drains. `u_ccl` runs normally and its `u_ccl_bboxes` are drawn on top of the grey canvas — a direct visual readout of the CCL stage.
 
 ### 6.1 Plumbing and glue
 
-Per-block roles for the processing stages (`u_motion_detect`, `u_morph_open`, `u_ccl`, `u_overlay_bbox`, `u_vga`) are covered in §5. The remaining top-level plumbing:
+Per-block roles for the processing stages (`u_motion_detect`, `u_morph_clean`, `u_ccl`, `u_overlay_bbox`, `u_vga`) are covered in §5. The remaining top-level plumbing:
 
 - **u_fifo_in / u_fifo_out**: CDC between the pixel domains (`clk_pix_in` / `clk_pix_out`) and `clk_dsp`; `IN_FIFO_DEPTH = 128`, `OUT_FIFO_DEPTH = 256` (bumps to `1024` when `CFG.scaler_en=1` to absorb the scaler's burst output, since it emits up to 4 beats per input pixel). Overflow detected by SVA (§9).
 - **u_scale2x**: 2x bilinear spatial upscaler instantiated under a generate gate when `CFG.scaler_en=1`. When `CFG.scaler_en=0`, the gate produces a zero-latency combinational bridge (`assign` chain from `gamma_to_pix_out` to `scale2x_to_pix_out`) so the path is byte-identical to pre-scaler runs. See [axis_scale2x-arch.md](axis_scale2x-arch.md).
@@ -389,7 +391,7 @@ Per-block roles for the processing stages (`u_motion_detect`, `u_morph_open`, `u
 |--------|-------|---------|
 | `clk_pix_in` | nominally 25 MHz (1x) | source driver, `u_fifo_in` write side |
 | `clk_pix_out` | `CFG.scaler_en=0`: tied to `clk_pix_in`. `CFG.scaler_en=1`: 4x `clk_pix_in` so VGA can drain the 2x-upscaled output. | `u_fifo_out` read side, `u_vga`, VGA reset gating |
-| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_morph_open`, `u_ccl`, `u_overlay_bbox`, `u_gamma_cor`, `u_scale2x` (when `CFG.scaler_en=1`), `u_fifo_out` write side |
+| `clk_dsp` | 100 MHz | `u_fifo_in` read side, `u_fork`, `u_motion_detect`, `u_ram`, `u_morph_clean`, `u_ccl`, `u_overlay_bbox`, `u_gamma_cor`, `u_scale2x` (when `CFG.scaler_en=1`), `u_fifo_out` write side |
 
 CDC crossings use vendored `axis_async_fifo` from [alexforencich/verilog-axis](https://github.com/alexforencich/verilog-axis) (MIT). Active-high resets are derived at the top level: `rst_pix_in = ~rst_pix_in_n_i`, `rst_pix_out = ~rst_pix_out_n_i`, `rst_dsp = ~rst_dsp_n_i`.
 
@@ -435,7 +437,7 @@ When runtime configurability is needed, the descriptor table and the `CFG` field
 - **Frame-0 full-frame border**: the zero-initialized RAM means every pixel on frame 0 reads as motion. The bounding box would span the full frame and the overlay would draw a border around the image edge. This is a known cosmetic artifact. `axis_ccl` suppresses bboxes for the first `CCL_PRIME_FRAMES` frames so no rectangle is drawn until the EMA background has converged.
 - **1-frame overlay latency**: the bbox drawn on frame N is derived from the motion observed during frame N−1. This is a deliberate architectural choice — see §5.9. Same-frame overlay would cost ~225 KB of frame-buffer RAM for no human-visible improvement at 60 fps.
 - **Same-frame bbox**: bbox coordinates are latched at EOF; mid-frame updates are not possible with the current design.
-- **Thin-feature deletion under morph**: `u_morph_open` erases foreground features narrower than 3 pixels (single-pixel lines, far-field point targets). Profile `no_morph` (`CFG.morph_en=0`) is the escape hatch; see [axis_morph3x3_open-arch.md](axis_morph3x3_open-arch.md) §4.4.
+- **Thin-feature deletion under morph**: `u_morph_clean`'s open stage erases foreground features narrower than 3 pixels (single-pixel lines, far-field point targets). Profile `no_morph` (`CFG.morph_open_en=0`) is the escape hatch; see [axis_morph_clean-arch.md](axis_morph_clean-arch.md).
 - **No AXI-Lite control**: all algorithm parameters (motion threshold, bbox colour, EMA rates, stage enables) are compile-time fields of `CFG`. Runtime override requires synthesizing a CSR slave (see §8.1).
 - **Port B unused**: `u_ram` port B is tied off. A future host client (debug dump, FPN reference, etc.) may connect here, subject to the host-responsibility rule in [ram-arch.md](ram-arch.md).
 - **Pixel-clock stability assumption (CFG.scaler_en=1)**: the design assumes the caller provides `clk_pix_out_i` at exactly 4× `clk_pix_in_i` so long-term input/output rates balance through the output FIFO. Real silicon would need either a genlocked PLL pair or a dedicated output-side frame buffer to handle independent source/display clocks. See [axis_scale2x-arch.md](axis_scale2x-arch.md) for the rate-budget detail.
@@ -450,7 +452,7 @@ When runtime configurability is needed, the descriptor table and the `CFG` field
 |--------|--------|---------|---------|-----------|------------|
 | EMA background model | `u_ram` | **75 kB** | **300 kB** | **~1.98 MB** | Behavioral TDPRAM → BRAM on FPGA |
 | Gaussian line buffers (×2) | `u_motion_detect` (`gauss_en=1`) | 640 B | **1.25 kB** | **3.75 kB** | Distributed LUT-RAM |
-| Morph opening line buffers (×4) | `u_morph_open` (`morph_en=1`) | 160 B | 320 B | 960 B | Distributed LUT-RAM |
+| Mask cleanup line buffers (×8) | `u_morph_clean` (`morph_open_en=1`, `morph_close_kernel=3`) | 320 B | 640 B | 1920 B | Distributed LUT-RAM |
 | CCL label line buffer | `u_ccl` | 240 B | 480 B | **1.41 kB** | Distributed LUT-RAM |
 | CCL accumulator bank (×5 arrays) | `u_ccl` | 408 B | 456 B | 520 B | Distributed LUT-RAM |
 | CCL equivalence table | `u_ccl` | 48 B | 48 B | 48 B | Distributed LUT-RAM |
@@ -462,7 +464,7 @@ Sizing formulas (W = H\_ACTIVE, H = V\_ACTIVE):
 |--------|---------|
 | EMA background model | W × H bytes |
 | Gaussian line buffers | 2 × W bytes |
-| Morph opening line buffers | 4 × W bits (2 per sub-module × 2 sub-modules) |
+| Mask cleanup line buffers | 8 × W bits (2 per sub-module × 4 sub-modules for open+close with `CLOSE_KERNEL=3`; 12 × W bits for `CLOSE_KERNEL=5`) |
 | CCL label line buffer | W × ⌈log₂(N\_LABELS\_INT)⌉ bits |
 | CCL accumulator bank | N\_LABELS\_INT × (2⌈log₂W⌉ + 2⌈log₂H⌉ + ⌈log₂(WH+1)⌉) bits |
 | CCL equivalence table | N\_LABELS\_INT × ⌈log₂(N\_LABELS\_INT)⌉ bits |

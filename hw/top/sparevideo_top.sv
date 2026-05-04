@@ -246,10 +246,11 @@ module sparevideo_top
     );
 
     // -----------------------------------------------------------------
-    // Morphological opening (erode->dilate) on the 1-bit mask stream.
-    // enable_i=0 is a zero-latency combinational bypass.
+    // Morphological clean: open (erode->dilate) + parametrizable close.
+    // morph_open_en_i / morph_close_en_i each gate their half independently;
+    // both off = zero-latency combinational bypass.
     //
-    // morph_to_ccl: u_morph_open.m_axis -> raw bundle (un-strobed).
+    // morph_to_ccl: u_morph_clean.m_axis -> raw bundle (un-strobed).
     // ccl_s_axis below copies tdata/tlast/tuser and injects ccl_beat_strobe as
     // tvalid, so u_ccl sees one beat per upstream beat-fire (tvalid && tready).
     // -----------------------------------------------------------------
@@ -257,15 +258,17 @@ module sparevideo_top
     // morph output — shared interface bundle (tready driven back from ccl gating).
     axis_if #(.DATA_W(1), .USER_W(1)) morph_to_ccl ();
 
-    axis_morph3x3_open #(
-        .H_ACTIVE (H_ACTIVE),
-        .V_ACTIVE (V_ACTIVE)
-    ) u_morph_open (
-        .clk_i    (clk_dsp_i),
-        .rst_n_i  (rst_dsp_n_i),
-        .enable_i (CFG.morph_en),
-        .s_axis   (motion_to_morph),
-        .m_axis   (morph_to_ccl)
+    axis_morph_clean #(
+        .H_ACTIVE     (H_ACTIVE),
+        .V_ACTIVE     (V_ACTIVE),
+        .CLOSE_KERNEL (CFG.morph_close_kernel)
+    ) u_morph_clean (
+        .clk_i            (clk_dsp_i),
+        .rst_n_i          (rst_dsp_n_i),
+        .morph_open_en_i  (CFG.morph_open_en),
+        .morph_close_en_i (CFG.morph_close_en),
+        .s_axis           (motion_to_morph),
+        .m_axis           (morph_to_ccl)
     );
 
     // Mask tready backpressure, re-expressed on the morph-cleaned stream.

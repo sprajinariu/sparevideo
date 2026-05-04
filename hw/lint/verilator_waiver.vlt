@@ -6,9 +6,9 @@ lint_off -rule PINCONNECTEMPTY -file "*sparevideo_top.sv"
 // axis_motion_detect has empty pin connections on internal sub-module
 // instances where the output is intentionally unused at this level.
 lint_off -rule PINCONNECTEMPTY -file "*axis_motion_detect.sv"
-// axis_morph3x3_open ties off busy_o from its erode/dilate sub-modules; the
+// axis_morph_clean ties off busy_o from all erode/dilate sub-modules; the
 // composite does not re-export it.
-lint_off -rule PINCONNECTEMPTY -file "*axis_morph3x3_open.sv"
+lint_off -rule PINCONNECTEMPTY -file "*axis_morph_clean.sv"
 // vga_controller and pattern_gen lack `timescale; harmless mismatch
 // against vendored verilog-axis files that do have one.
 lint_off -rule TIMESCALEMOD    -file "*vga_controller.sv"

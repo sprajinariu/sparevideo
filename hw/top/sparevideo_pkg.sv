@@ -89,7 +89,9 @@ package sparevideo_pkg;
         int         grace_frames;        // aggressive-EMA grace after priming
         int         grace_alpha_shift;   // EMA rate during grace window
         logic       gauss_en;            // 3x3 Gaussian pre-filter on Y
-        logic       morph_en;            // 3x3 opening on mask
+        logic       morph_open_en;       // 3x3 opening on mask
+        logic       morph_close_en;      // 3x3 or 5x5 closing on mask
+        int         morph_close_kernel;  // 3 or 5; selects close kernel size
         logic       hflip_en;            // horizontal mirror on input
         logic       gamma_en;            // sRGB display gamma at output tail
         logic       scaler_en;           // 2x bilinear upscaler at output tail
@@ -109,118 +111,132 @@ package sparevideo_pkg;
         // default. Use CFG_DEFAULT_HFLIP for selfie-cam / mirrored-sensor setups.
         // scaler_en=1: 2x upscaler ON by default → 640x480 VGA output.
         // Use CFG_NO_SCALER for the legacy 320x240 native-resolution path.
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b1,
-        scaler_en:         1'b1,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b1,
+        scaler_en:          1'b1,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // Default + horizontal mirror (selfie-cam).
     localparam cfg_t CFG_DEFAULT_HFLIP = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b1,
-        gamma_en:          1'b1,
-        scaler_en:         1'b1,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b1,
+        gamma_en:           1'b1,
+        scaler_en:          1'b1,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // EMA disabled — alpha=1 on both rates means bg follows the current
     // frame exactly, so the motion test reduces to raw frame-to-frame
     // differencing. Useful as a baseline against the smoothed default.
     localparam cfg_t CFG_NO_EMA = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       0,
-        alpha_shift_slow:  0,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b1,
-        scaler_en:         1'b1,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        0,
+        alpha_shift_slow:   0,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b1,
+        scaler_en:          1'b1,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
-    // 3x3 mask opening bypassed.
+    // 3x3 mask opening AND closing bypassed.
     localparam cfg_t CFG_NO_MORPH = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b0,
-        hflip_en:          1'b0,
-        gamma_en:          1'b1,
-        scaler_en:         1'b1,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b0,
+        morph_close_en:     1'b0,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b1,
+        scaler_en:          1'b1,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // 3x3 Gaussian pre-filter bypassed.
     localparam cfg_t CFG_NO_GAUSS = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b0,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b1,
-        scaler_en:         1'b1,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b0,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b1,
+        scaler_en:          1'b1,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // sRGB gamma correction bypassed (linear passthrough at output tail).
     localparam cfg_t CFG_NO_GAMMA_COR = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b0,
-        scaler_en:         1'b1,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b1,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // 2x scaler bypassed — output stays at native 320x240. The upstream
     // pipeline is unchanged; this profile is byte-identical to the
     // pre-scaler design's CFG_DEFAULT for SCALER=0.
     localparam cfg_t CFG_NO_SCALER = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b1,
-        scaler_en:         1'b0,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b1,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // CFG_DEMO: tuned for the README demo. Differences from CFG_DEFAULT:
@@ -239,35 +255,39 @@ package sparevideo_pkg;
     //                          on PRIME_FRAMES + the EMA's natural convergence
     //                          rather than a forced grace window.
     localparam cfg_t CFG_DEMO = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       2,
-        alpha_shift_slow:  8,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b0,
-        scaler_en:         1'b0,
-        hud_en:            1'b1,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        2,
+        alpha_shift_slow:   8,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:         24'h00_FF_00
     };
 
     // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
     // Byte-identical to CFG_DEFAULT for every pixel outside the HUD region.
     localparam cfg_t CFG_NO_HUD = '{
-        motion_thresh:     8'd16,
-        alpha_shift:       3,
-        alpha_shift_slow:  6,
-        grace_frames:      0,
-        grace_alpha_shift: 1,
-        gauss_en:          1'b1,
-        morph_en:          1'b1,
-        hflip_en:          1'b0,
-        gamma_en:          1'b1,
-        scaler_en:         1'b1,
-        hud_en:            1'b0,
-        bbox_color:        24'h00_FF_00
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b1,
+        scaler_en:          1'b1,
+        hud_en:             1'b0,
+        bbox_color:         24'h00_FF_00
     };
 
     // ---------------------------------------------------------------

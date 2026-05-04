@@ -31,7 +31,7 @@ Per-module architecture and design decisions live in [`docs/specs/`](docs/specs/
 | [`axis_hflip-arch.md`](docs/specs/axis_hflip-arch.md) | Horizontal mirror (selfie-cam) AXIS stage with single line buffer + `enable_i` bypass |
 | [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; `EDGE_POLICY` parameter) |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
-| [`axis_morph3x3_open-arch.md`](docs/specs/axis_morph3x3_open-arch.md) | 3x3 morphological opening on mask (erode → dilate) |
+| [`axis_morph_clean-arch.md`](docs/specs/axis_morph_clean-arch.md) | 3x3 morphological opening + parametrizable 3x3/5x5 closing on mask; runtime gates `morph_open_en` / `morph_close_en`; compile-time `morph_close_kernel` |
 | [`axis_gamma_cor-arch.md`](docs/specs/axis_gamma_cor-arch.md) | Per-channel sRGB gamma correction at output tail (33-entry LUT + linear interp, `enable_i` bypass) |
 | [`axis_ccl-arch.md`](docs/specs/axis_ccl-arch.md) | Streaming 8-connected connected-component labeler + top-N bbox selector |
 | [`axis_overlay_bbox-arch.md`](docs/specs/axis_overlay_bbox-arch.md) | `N_OUT`-wide rectangle overlay on RGB video |
@@ -118,7 +118,7 @@ make run-pipeline CTRL_FLOW=ccl_bbox      # mask-as-grey canvas + CCL bboxes (de
 make run-pipeline CFG=default
 make run-pipeline CFG=default_hflip          # selfie-cam mirror enabled
 make run-pipeline CFG=no_ema                 # alpha=1 → raw frame differencing
-make run-pipeline CFG=no_morph               # 3x3 mask opening bypassed
+make run-pipeline CFG=no_morph               # 3x3 mask opening AND closing bypassed
 make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
 make run-pipeline CFG=no_scaler              # disable 2x output upscaler (output at input resolution)
@@ -206,7 +206,7 @@ Knobs: `DEMO_FRAMES=45 DEMO_WIDTH=320 DEMO_HEIGHT=240 DEMO_FPS=15`. Each build t
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator`) |
 | `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), `mask` (raw motion mask as B/W image), or `ccl_bbox` (mask-as-grey + CCL bboxes) |
-| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, 2x scaler ON, HUD ON, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening bypassed), `no_gauss` (Gaussian pre-filter bypassed), `no_gamma_cor` (sRGB gamma bypassed), `no_scaler` (2x output upscaler disabled), `no_hud` (bitmap HUD overlay bypassed). |
+| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, 2x scaler ON, HUD ON, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening AND closing bypassed), `no_gauss` (Gaussian pre-filter bypassed), `no_gamma_cor` (sRGB gamma bypassed), `no_scaler` (2x output upscaler disabled), `no_hud` (bitmap HUD overlay bypassed). |
 | `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |
