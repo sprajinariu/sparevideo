@@ -15,9 +15,16 @@ renders/
 dv/data/config.mk
 dv/data/real_video/*
 
-# Demo working dir — outputs of `make demo[-synthetic|-real]` land here.
-# `make demo-publish` promotes them to media/demo/ for the README.
+# Demo working dirs.
+# `make demo[-…]`        writes RTL-backend WebPs here (publishable).
+# `make demo[-…] EXP=1`  writes Python-model-backend WebPs to demo-draft-exp/
+#                        (NOT publishable — demo-publish never reads from here).
 media/demo-draft/
+media/demo-draft-exp/
+
+# Raw downloaded MP4s. Stage here before running `make demo-prepare`.
+# Stabilized 320x240 masters land in media/source/ (committed); raws are local-only.
+media/source_raw/
 
 # FuseSoC build
 build/

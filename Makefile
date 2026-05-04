@@ -40,7 +40,7 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
         test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean \
-        demo demo-synthetic demo-real demo-publish
+        demo demo-synthetic demo-real demo-publish demo-prepare
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -60,12 +60,22 @@ help:
 	@echo "  Additional targets:"
 	@echo "    sim-waves             RTL sim + open GTKWave"
 	@echo "    sw-dry-run            Bypass RTL (file loopback, zero sim time)"
-	@echo "    demo                  Build both demo WebPs into media/demo-draft/ (gitignored)"
-	@echo "    demo-synthetic        Build media/demo-draft/synthetic.webp from synthetic:multi_speed_color"
-	@echo "    demo-real             Build media/demo-draft/real.webp from media/source/pexels-pedestrians-320x240.mp4"
-	@echo "                          (real-clip prep: see media/source/README.md and py/demo/stabilize.py)"
-	@echo "    demo-publish          Promote media/demo-draft/*.webp to media/demo/ (README-referenced)"
-	@echo "                          Override: WHICH=both|synthetic|real (default both)"
+	@echo "    demo                  Build all demo WebPs into media/demo-draft/ (gitignored)"
+	@echo "    demo-synthetic        Build the synthetic-source WebP (multi_speed_color)"
+	@echo "    demo-real             Build all real-source WebPs (each name in REAL_SOURCES)"
+	@echo "    demo-real-<name>      Build one real WebP (e.g. demo-real-intersection)"
+	@echo "    demo-publish          Promote media/demo-draft/*.webp to media/demo/"
+	@echo "                          Override: WHICH=both|<name> (default both)"
+	@echo "    demo-prepare          Stabilize a raw download into a 320x240 demo master."
+	@echo "                          Required: SRC=raw.mp4 NAME=<short>; opt START/DURATION."
+	@echo ""
+	@echo "  Demo knobs:"
+	@echo "    EXP=1                 Use Python reference model (fast). Output → media/demo-draft-exp/."
+	@echo "                          EXP runs are NOT publishable (demo-publish reads media/demo-draft/ only)."
+	@echo "    DEMO_PUBLISH_FRAMES=45    Frame count for default (RTL) demo runs"
+	@echo "    DEMO_EXP_FRAMES=150       Frame count for EXP=1 (model) runs"
+	@echo "    REAL_SOURCES='a b'    Curated real clips (default: intersection birdseye people)"
+	@echo ""
 	@echo "    test-py               Run Python unit tests"
 	@echo "    test-ip               All per-block IP unit testbenches (Verilator)"
 	@echo "    test-ip-rgb2ycrcb          rgb2ycrcb: 18 vectors, exact-match golden model"
@@ -75,8 +85,8 @@ help:
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
 	@echo "    test-ip-overlay-bbox       axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
 	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
-	@echo "    test-ip-morph-clean        axis_morph_clean: 7 tests, (open_en,close_en,CLOSE_KERNEL) ∈ {0,1}²×{3,5}, backpressure, multi-frame
-    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
+	@echo "    test-ip-morph-clean        axis_morph_clean: 7 tests, (open_en,close_en,CLOSE_KERNEL) ∈ {0,1}²×{3,5}, backpressure, multi-frame"
+	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
 	@echo "    test-ip-gamma-cor          axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough"
 	@echo "    test-ip-scale2x            axis_scale2x: 2x bilinear upscaler"
 	@echo ""
@@ -175,24 +185,65 @@ render:
 #   2. `make demo-publish` promotes them to $(DEMO_PUBLISH_DIR) — the path
 #      referenced by the README.
 
-DEMO_FRAMES      ?= 45
-DEMO_WIDTH       ?= 320
-DEMO_HEIGHT      ?= 240
-DEMO_FPS         ?= 15
-DEMO_DRAFT_DIR   ?= $(CURDIR)/media/demo-draft
-DEMO_PUBLISH_DIR ?= $(CURDIR)/media/demo
+# RTL-backend (publishable) demo length: 3 s @ 15 fps.
+DEMO_PUBLISH_FRAMES ?= 45
+# Model-backend (EXP=1) demo length: full 10 s master @ 15 fps.
+DEMO_EXP_FRAMES     ?= 150
+
+# Per-clip EXP frame count overrides. If unset, the clip uses DEMO_EXP_FRAMES.
+# Set when a clip's stabilized master is shorter than DEMO_EXP_FRAMES (because
+# only a portion of the raw was usable — typically a scene cut or motion artifact).
+DEMO_EXP_FRAMES_people ?= 75   # raw has a scene cut at ~5 s; only first 5 s usable
+
+# Resolve EXP frame count for a given clip name, falling back to the global default.
+# Usage: $(call demo_exp_frames,<clip-name>)
+demo_exp_frames = $(or $(DEMO_EXP_FRAMES_$(1)),$(DEMO_EXP_FRAMES))
+
+DEMO_WIDTH          ?= 320
+DEMO_HEIGHT         ?= 240
+DEMO_FPS            ?= 15
+DEMO_PUBLISH_DIR    ?= $(CURDIR)/media/demo
+
+# EXP=1 runs the bit-accurate Python reference model in place of the RTL
+# simulator (much faster) and routes output to a separate draft dir that
+# demo-publish never reads — so EXP runs are physically un-publishable.
+EXP ?= 0
+ifeq ($(EXP),1)
+DEMO_BACKEND   := model
+DEMO_FRAMES    ?= $(DEMO_EXP_FRAMES)
+DEMO_DRAFT_DIR ?= $(CURDIR)/media/demo-draft-exp
+else
+DEMO_BACKEND   := rtl
+DEMO_FRAMES    ?= $(DEMO_PUBLISH_FRAMES)
+DEMO_DRAFT_DIR ?= $(CURDIR)/media/demo-draft
+endif
+
+# Curated set of real-video demo clips. Each <name> here corresponds to a
+# committed master at media/source/<name>-$(DEMO_WIDTH)x$(DEMO_HEIGHT).mp4
+# (produced via `make demo-prepare`). Adding a clip is a one-line edit here
+# plus a stabilize run.
+REAL_SOURCES ?= intersection birdseye people
 
 demo: demo-synthetic demo-real
 
 demo-synthetic:
 	$(MAKE) prepare SOURCE=synthetic:multi_speed_color \
 	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_FRAMES) MODE=binary CFG=demo
+ifeq ($(DEMO_BACKEND),rtl)
 	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
 	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
 	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
 	$(MAKE) compile CTRL_FLOW=motion CFG=demo
 	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
 	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
+else
+	cd py && $(HARNESS) model --input $(CURDIR)/dv/data/input.bin \
+	    --output $(CURDIR)/dv/data/output_ccl_bbox.bin \
+	    --mode binary --ctrl-flow ccl_bbox --cfg demo
+	cd py && $(HARNESS) model --input $(CURDIR)/dv/data/input.bin \
+	    --output $(CURDIR)/dv/data/output_motion.bin \
+	    --mode binary --ctrl-flow motion --cfg demo
+endif
 	@mkdir -p $(DEMO_DRAFT_DIR)
 	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
 	    --input  dv/data/input.bin \
@@ -203,40 +254,65 @@ demo-synthetic:
 	    --fps   $(DEMO_FPS)
 	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/synthetic.webp — run 'make demo-publish' to promote."
 
-demo-real:
-	$(MAKE) prepare SOURCE=$(CURDIR)/media/source/pexels-pedestrians-320x240.mp4 \
-	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_FRAMES) MODE=binary CFG=demo
+demo-real: $(REAL_SOURCES:%=demo-real-%)
+
+# Per-target frame count: in EXP=1 mode, falls back to clip-specific override
+# via demo_exp_frames; otherwise uses DEMO_FRAMES (which the EXP/publish
+# dispatch above already resolved).
+ifeq ($(EXP),1)
+demo-real-%: DEMO_REAL_FRAMES = $(call demo_exp_frames,$*)
+else
+demo-real-%: DEMO_REAL_FRAMES = $(DEMO_FRAMES)
+endif
+
+demo-real-%:
+	$(MAKE) prepare SOURCE=$(CURDIR)/media/source/$*-$(DEMO_WIDTH)x$(DEMO_HEIGHT).mp4 \
+	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_REAL_FRAMES) MODE=binary CFG=demo
+ifeq ($(DEMO_BACKEND),rtl)
 	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
 	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
 	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
 	$(MAKE) compile CTRL_FLOW=motion CFG=demo
 	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
 	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
+else
+	cd py && $(HARNESS) model --input $(CURDIR)/dv/data/input.bin \
+	    --output $(CURDIR)/dv/data/output_ccl_bbox.bin \
+	    --mode binary --ctrl-flow ccl_bbox --cfg demo
+	cd py && $(HARNESS) model --input $(CURDIR)/dv/data/input.bin \
+	    --output $(CURDIR)/dv/data/output_motion.bin \
+	    --mode binary --ctrl-flow motion --cfg demo
+endif
 	@mkdir -p $(DEMO_DRAFT_DIR)
 	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
 	    --input  dv/data/input.bin \
 	    --ccl    dv/data/output_ccl_bbox.bin \
 	    --motion dv/data/output_motion.bin \
-	    --out    $(DEMO_DRAFT_DIR)/real.webp \
-	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_FRAMES) \
+	    --out    $(DEMO_DRAFT_DIR)/$*.webp \
+	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_REAL_FRAMES) \
 	    --fps   $(DEMO_FPS)
-	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/real.webp — run 'make demo-publish' to promote."
+	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/$*.webp — run 'make demo-publish' to promote."
 
-# Promote draft WebPs to the README-referenced media/demo/ dir. WHICH=both|synthetic|real
-# selects which panels to publish; default both.
+# Promote draft WebPs to the README-referenced media/demo/ dir.
+# WHICH=both|synthetic|<real-name> selects which panels to publish; default both.
 WHICH ?= both
 demo-publish:
 	@mkdir -p $(DEMO_PUBLISH_DIR)
 	@published=0; \
-	for name in synthetic real; do \
+	for name in synthetic $(REAL_SOURCES); do \
 	    case "$(WHICH)" in \
 	        both|$$name) ;; \
 	        *) continue ;; \
 	    esac; \
-	    src=$(DEMO_DRAFT_DIR)/$$name.webp; \
+	    # src is intentionally hardcoded — never reads from demo-draft-exp/, so EXP=1 runs cannot be published. \
+	    src=$(CURDIR)/media/demo-draft/$$name.webp; \
 	    dst=$(DEMO_PUBLISH_DIR)/$$name.webp; \
 	    if [ ! -f "$$src" ]; then \
-	        echo "skip $$name: $$src not found (run 'make demo-$$name' first)"; \
+	        if [ "$$name" = "synthetic" ]; then \
+	            echo "skip $$name: $$src not found (run 'make demo-synthetic' first)"; \
+	        else \
+	            echo "skip $$name: $$src not found (run 'make demo-real-$$name' first)"; \
+	        fi; \
 	        continue; \
 	    fi; \
 	    cp "$$src" "$$dst"; \
@@ -244,9 +320,37 @@ demo-publish:
 	    published=$$((published+1)); \
 	done; \
 	if [ $$published -eq 0 ]; then \
-	    echo "Nothing published. Run 'make demo' or 'make demo-synthetic'/'make demo-real' first."; \
+	    echo "Nothing published. Run 'make demo' or 'make demo-synthetic'/'make demo-real-<name>' first."; \
 	    exit 1; \
 	fi
+
+# Stabilize a raw downloaded MP4 into a 320x240 demo master.
+#   Required: SRC=path/to/raw.mp4 NAME=<short-name>
+#   Optional: START=<sec> DURATION=<sec> (defaults: 0, 10)
+#             WIDTH/HEIGHT/FPS inherit DEMO_WIDTH/DEMO_HEIGHT/DEMO_FPS
+# Output: media/source/$(NAME)-$(DEMO_WIDTH)x$(DEMO_HEIGHT).mp4
+DEMO_PREP_START    ?= 0
+DEMO_PREP_DURATION ?= 10
+demo-prepare:
+	@if [ -z "$(SRC)" ] || [ "$(origin NAME)" != "command line" ]; then \
+	    echo "usage: make demo-prepare SRC=<raw.mp4> NAME=<short-name> \\"; \
+	    echo "                         [START=<s>] [DURATION=<s>]"; \
+	    echo ""; \
+	    echo "  SRC      Path to raw download (e.g. media/source_raw/foo.mp4)"; \
+	    echo "  NAME     Short scenario name (e.g. intersection, birdseye)"; \
+	    echo "  START    Trim start seconds into source (default $(DEMO_PREP_START))"; \
+	    echo "  DURATION Trim duration in seconds   (default $(DEMO_PREP_DURATION))"; \
+	    exit 2; \
+	fi
+	@mkdir -p $(CURDIR)/media/source
+	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo.stabilize \
+	    --src "$(SRC)" \
+	    --dst "$(CURDIR)/media/source/$(NAME)-$(DEMO_WIDTH)x$(DEMO_HEIGHT).mp4" \
+	    --start $(DEMO_PREP_START) --duration $(DEMO_PREP_DURATION) \
+	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --fps $(DEMO_FPS)
+	@echo "Wrote media/source/$(NAME)-$(DEMO_WIDTH)x$(DEMO_HEIGHT).mp4"
+	@echo "  Record this invocation in media/source/README.md, then commit"
+	@echo "  the new MP4 alongside the README update."
 
 # ---- Other targets ----
 
@@ -256,6 +360,7 @@ lint:
 test-py:
 	$(VENV_PY) $(CURDIR)/py/tests/test_frame_io.py
 	$(VENV_PY) $(CURDIR)/py/tests/test_models.py
+	$(VENV_PY) $(CURDIR)/py/tests/test_harness_model.py
 
 test-ip:
 	$(MAKE) -C dv/sim test-ip SIMULATOR=$(SIMULATOR)

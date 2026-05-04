@@ -12,11 +12,9 @@ End-to-end animated triptychs: **Input | CCL BBOX | MOTION**, each panel 320×24
 
 Three colored objects with distinct speeds and trajectories on a tinted textured background. Used as the canonical regression-style demo: deterministic, fully regenerable, frame 0 is bg-only by construction so EMA priming starts clean.
 
-### Real video (Pexels intersection)
+### Real video (Pexels)
 
-![Real demo](media/demo/real.webp)
-
-Top-down view of an intersection (cars + pedestrians). 3 s window from a Pexels-licensed clip, pre-stabilized to remove tripod sway (the motion-detect RTL assumes a fixed camera). The first ~1 s of output frames contain no bboxes — `grace_frames=16` blanks the mask while the EMA background converges past frame-0 contamination. Source clip and prep command: [`media/source/README.md`](media/source/README.md).
+The pipeline ships with three real-source clips (intersection, birdseye, people). Stabilized 320×240 masters live in [`media/source/`](media/source/) and are documented in [`media/source/README.md`](media/source/README.md). Build a per-clip triptych WebP with `make demo-real-<name>` (RTL backend) or `make demo-real-<name> EXP=1` (Python reference model — much faster, output goes to a non-publishable draft dir).
 
 ## Overview
 
@@ -183,20 +181,41 @@ make test-py                 # Python unit tests (frame I/O + reference models)
 Two-stage workflow: build to a gitignored draft dir, preview, then publish to the README-referenced dir when happy.
 
 ```bash
-make demo                                                      # build both WebPs into media/demo-draft/
-make demo-synthetic                                            # just media/demo-draft/synthetic.webp
-make demo-real                                                 # just media/demo-draft/real.webp
-explorer.exe "$(wslpath -w media/demo-draft/synthetic.webp)"   # preview the draft (WSL)
-make demo-publish                                              # promote media/demo-draft/*.webp → media/demo/
-make demo-publish WHICH=synthetic                              # promote one panel only (or WHICH=real)
-grip README.md                                                 # preview README at github.com fidelity
+make demo                                                          # build all WebPs into media/demo-draft/
+make demo-synthetic                                                # just synthetic.webp
+make demo-real                                                     # all real-source WebPs (each name in REAL_SOURCES)
+make demo-real-intersection                                        # one real WebP
+explorer.exe "$(wslpath -w media/demo-draft/intersection.webp)"    # preview the draft (WSL)
+make demo-publish                                                  # promote media/demo-draft/*.webp → media/demo/
+make demo-publish WHICH=synthetic                                  # promote one panel only (WHICH=<name>)
+grip README.md                                                     # preview README at github.com fidelity
 ```
 
 `media/demo-draft/` is gitignored — iterate freely. `media/demo/` is what the README points at; commit the published WebPs alongside the RTL change that produced them.
 
-Knobs: `DEMO_FRAMES=45 DEMO_WIDTH=320 DEMO_HEIGHT=240 DEMO_FPS=15`. Each build target runs `prepare → compile → sim` twice (once for `ccl_bbox`, once for `motion`) under `CFG=demo`, then assembles the triptych via `python -m demo`.
+**Iterating on a new real clip without RTL sim.** Pass `EXP=1` to use the bit-accurate Python reference model in place of Verilator. Output lands in `media/demo-draft-exp/` (gitignored), which `demo-publish` never reads — so EXP runs are physically un-publishable.
 
-`make demo-real` reads `media/source/pexels-pedestrians-320x240.mp4` (committed in-tree). To swap or re-prepare the real-video source clip — including the exact `python -m demo.stabilize` command, the Pexels source URL, and the trim/resize/stabilize parameters — see [`media/source/README.md`](media/source/README.md).
+```bash
+make demo-real-intersection EXP=1                                  # ~minutes; output → media/demo-draft-exp/
+explorer.exe "$(wslpath -w media/demo-draft-exp/intersection.webp)"
+```
+
+EXP runs default to the full 10 s master (`DEMO_EXP_FRAMES=150`); default RTL runs use 3 s (`DEMO_PUBLISH_FRAMES=45`) for github-friendly README WebPs. A clip's master can be shorter than 10 s — set `DEMO_EXP_FRAMES_<name>` per clip (see `people` for an example: 5 s).
+
+Knobs: `DEMO_PUBLISH_FRAMES=45 DEMO_EXP_FRAMES=150 DEMO_WIDTH=320 DEMO_HEIGHT=240 DEMO_FPS=15`. Each RTL build runs `prepare → compile → sim` twice (`ccl_bbox` + `motion`) under `CFG=demo`, then assembles the triptych via `python -m demo`. With `EXP=1` the `compile`+`sim` pair is replaced by `python harness.py model`.
+
+**Adding a new real clip.** Stage a raw download in `media/source_raw/` (gitignored), then:
+
+```bash
+make demo-prepare SRC=media/source_raw/foo.mp4 NAME=foo START=0 DURATION=10
+# adds media/source/foo-320x240.mp4
+# add 'foo' to REAL_SOURCES in the Makefile
+make demo-real-foo EXP=1                                           # quick preview
+make demo-real-foo                                                 # final RTL build
+make demo-publish WHICH=foo
+```
+
+The stabilizer (`py/demo/stabilize.py`) does KLT-tracked similarity warping plus a two-pass safe-rect crop that eliminates edge artifacts on rotated drone footage. See [`media/source/README.md`](media/source/README.md) for clip provenance, license notes, and per-clip prep commands.
 
 `grip` is an optional dev tool (`pip install grip`) that renders local markdown using GitHub's API — useful for confirming the README looks right before pushing.
 

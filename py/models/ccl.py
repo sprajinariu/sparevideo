@@ -151,7 +151,7 @@ def _run_single_frame(
 
 def run_ccl(
     masks: List[np.ndarray],
-    n_out: int = 8,
+    n_out: int = 32,
     n_labels_int: int = 64,
     min_component_pixels: int = 16,
     max_chain_depth: int = 8,
