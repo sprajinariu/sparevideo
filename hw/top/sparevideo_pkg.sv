@@ -294,7 +294,7 @@ package sparevideo_pkg;
     // CCL (Block 4) parameters — defaults; override at instantiation.
     // ---------------------------------------------------------------
     localparam int CCL_N_LABELS_INT        = 64;
-    localparam int CCL_N_OUT               = 8;
+    localparam int CCL_N_OUT               = 32;
     localparam int CCL_MIN_COMPONENT_PIXELS = 16;
     localparam int CCL_MAX_CHAIN_DEPTH     = 8;
     // Suppress the first N frames' bboxes so the EMA background has time to

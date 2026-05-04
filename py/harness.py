@@ -145,6 +145,31 @@ def cmd_verify(args):
         sys.exit(1)
 
 
+def cmd_model(args):
+    """Run the bit-accurate Python reference model and write its output as
+    a frame file. Used by `make demo … EXP=1` so demo iterations on new
+    clips can skip the slow Verilator compile+sim step.
+
+    The model is the same one `cmd_verify` uses; we just plumb its output
+    to a file in the format `make sim` produces.
+    """
+    width, height, num_frames = _resolve_dims(args)
+
+    if args.mode == "text":
+        input_frames = read_frames(args.input, mode="text",
+                                   width=width, height=height,
+                                   num_frames=num_frames)
+    else:
+        input_frames = read_frames(args.input, mode="binary")
+
+    cfg = resolve_cfg(args.cfg)
+    output_frames = run_model(args.ctrl_flow, input_frames, **cfg)
+
+    write_frames(args.output, output_frames, mode=args.mode)
+    print(f"Wrote {len(output_frames)} model frames to {args.output} "
+          f"(ctrl_flow={args.ctrl_flow}, cfg={args.cfg})")
+
+
 def cmd_render(args):
     """Render input vs output comparison grid."""
     input_frames, output_frames = _load_input_output(args)
@@ -215,6 +240,20 @@ def main():
     p_ren.add_argument("--render-output", default="renders/comparison.png",
                        help="Output PNG path")
 
+    # model
+    p_mod = sub.add_parser("model", parents=[common],
+                           help="Run reference model, write output frame file")
+    p_mod.add_argument("--input",  default="dv/data/input.bin",
+                       help="Input file (text or binary)")
+    p_mod.add_argument("--output", default="dv/data/output.bin",
+                       help="Output file (text or binary)")
+    p_mod.add_argument("--ctrl-flow", default="passthrough",
+                       choices=["passthrough", "motion", "mask", "ccl_bbox"],
+                       help="Control flow model to run")
+    p_mod.add_argument("--cfg", default="default",
+                       choices=list(PROFILES.keys()),
+                       help="Algorithm profile name (see py/profiles.py)")
+
     args = parser.parse_args()
 
     if args.command == "prepare":
@@ -223,6 +262,8 @@ def main():
         cmd_verify(args)
     elif args.command == "render":
         cmd_render(args)
+    elif args.command == "model":
+        cmd_model(args)
 
 
 if __name__ == "__main__":
