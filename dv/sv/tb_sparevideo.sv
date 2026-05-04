@@ -239,8 +239,11 @@ module tb_sparevideo #(
         $display("  CFG=%s thresh=%0d a=%0d a_slow=%0d grace=%0d ga=%0d",
                  CFG_NAME, CFG.motion_thresh, CFG.alpha_shift, CFG.alpha_shift_slow,
                  CFG.grace_frames, CFG.grace_alpha_shift);
-        $display("  gauss=%0b morph=%0b hflip=%0b gamma=%0b bbox=0x%06x",
-                 CFG.gauss_en, CFG.morph_en, CFG.hflip_en, CFG.gamma_en, CFG.bbox_color);
+        $display("  gauss=%0b morph_open=%0b morph_close=%0b ck=%0d",
+                 CFG.gauss_en, CFG.morph_open_en, CFG.morph_close_en,
+                 CFG.morph_close_kernel);
+        $display("  hflip=%0b gamma=%0b bbox=0x%06x",
+                 CFG.hflip_en, CFG.gamma_en, CFG.bbox_color);
         $display("  input:  %s", cfg_infile);
         $display("  output: %s", cfg_outfile);
 

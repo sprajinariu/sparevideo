@@ -75,7 +75,8 @@ help:
 	@echo "    test-ip-motion-detect-gauss axis_motion_detect GAUSS_EN=1: 8-frame Gaussian golden model, stall"
 	@echo "    test-ip-overlay-bbox       axis_overlay_bbox: 8 tests, empty/full/single-pixel/backpressure"
 	@echo "    test-ip-ccl                axis_ccl: 6 tests, single/hollow/disjoint/U-shape/overflow/back-to-back"
-	@echo "    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
+	@echo "    test-ip-morph-clean        axis_morph_clean: 7 tests, (open_en,close_en,CLOSE_KERNEL) ∈ {0,1}²×{3,5}, backpressure, multi-frame
+    test-ip-hflip              axis_hflip: 5 tests, mirror correctness, asymmetric stall, enable_i passthrough"
 	@echo "    test-ip-gamma-cor          axis_gamma_cor: 4 tests, sRGB endpoint/ramp/stall/passthrough"
 	@echo "    test-ip-scale2x            axis_scale2x: 2x bilinear upscaler"
 	@echo ""

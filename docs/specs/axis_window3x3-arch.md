@@ -45,10 +45,10 @@ This module does **not** apply any arithmetic operation to the window. Each cons
 axis_gauss3x3    (u_gauss, in axis_motion_detect)
 └── axis_window3x3  (u_window, DATA_WIDTH=8)   ← this module
 
-axis_morph3x3_erode  (u_erode, in axis_morph3x3_open)
+axis_morph3x3_erode  (u_erode, in axis_morph_clean)
 └── axis_window3x3  (u_window, DATA_WIDTH=1)
 
-axis_morph3x3_dilate (u_dilate, in axis_morph3x3_open)
+axis_morph3x3_dilate (u_dilate, in axis_morph_clean)
 └── axis_window3x3  (u_window, DATA_WIDTH=1)
 ```
 

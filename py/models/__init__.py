@@ -52,7 +52,8 @@ def run_model(ctrl_flow: str, frames: list, **kwargs) -> list:
         bbox_kwargs = {k: kwargs[k] for k in
                        ("motion_thresh", "alpha_shift", "alpha_shift_slow",
                         "grace_frames", "grace_alpha_shift", "gauss_en",
-                        "morph_en") if k in kwargs}
+                        "morph_open_en", "morph_close_en", "morph_close_kernel")
+                       if k in kwargs}
         bbox_counts = _bbox_counts(ctrl_flow, in_frames, **bbox_kwargs)
         # SV samples u_ccl_bboxes.valid at HUD-input-SOF — at that moment, CCL
         # still holds the previous frame's bboxes (its commit happens at the

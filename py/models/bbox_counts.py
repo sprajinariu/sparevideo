@@ -11,7 +11,8 @@ from models.ops.morph_open import morph_open
 
 def bbox_counts_per_frame(ctrl_flow: str, frames, *, motion_thresh, alpha_shift,
                            alpha_shift_slow, grace_frames, grace_alpha_shift,
-                           gauss_en, morph_en, **_ignored) -> list[int]:
+                           gauss_en, morph_open_en, morph_close_en=False,
+                           morph_close_kernel=3, **_ignored) -> list[int]:
     """Number of valid bboxes per frame matching what SV's u_ccl_bboxes.valid
     popcount would yield. Returns zeros for non-bbox-producing flows."""
     # passthrough bypasses CCL entirely; every other flow (motion, mask,
@@ -27,7 +28,7 @@ def bbox_counts_per_frame(ctrl_flow: str, frames, *, motion_thresh, alpha_shift,
                                   grace_frames=grace_frames,
                                   grace_alpha_shift=grace_alpha_shift,
                                   gauss_en=gauss_en)
-    if morph_en:
+    if morph_open_en:
         masks = [morph_open(m) for m in masks]
     bboxes_per_frame = run_ccl(masks, n_out=N_OUT,
                                n_labels_int=N_LABELS_INT,
