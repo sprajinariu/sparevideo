@@ -55,7 +55,7 @@ Defaults: `R = 20`, `min_match = 2`. Mask = 1 means motion, 0 means background.
 - Stronger dependence on `φ_diffuse` than on shape; lowering φ_diffuse from 16 to 8 should roughly halve convergence time.
 - A solid ghost a few hundred pixels across is the worst case; thin/elongated ghosts converge faster (more boundary per area).
 
-**Configuration.** Five `cfg_t` knobs (plus a deterministic PRNG seed):
+**Configuration.** Seven `cfg_t` knobs (plus a deterministic PRNG seed):
 
 | Field | Meaning | Default | Constraint |
 |---|---|---|---|
@@ -65,8 +65,12 @@ Defaults: `R = 20`, `min_match = 2`. Mask = 1 means motion, 0 means background.
 | `phi_update` | Inverse self-update probability | 16 | **power of 2** (see §7.2) |
 | `phi_diffuse` | Inverse diffusion probability | 16 | **power of 2** (see §7.2) |
 | `prng_seed` | Initial Xorshift32 state | 0xDEADBEEF | non-zero |
+| `bg_init_mode` | Sample-bank seeding strategy: `"frame0"` (canonical Barnich init) or `"lookahead_median"` (per-pixel temporal median over `bg_init_lookahead_n` frames). | `"lookahead_median"` | one of `{"frame0", "lookahead_median"}` |
+| `bg_init_lookahead_n` | When `bg_init_mode = "lookahead_median"`: number of leading frames used for the median. `None` = use entire clip. | `None` | `None` or 1 ≤ N ≤ frames_total |
 
 The power-of-2 restriction on `phi_update` / `phi_diffuse` is what keeps the probability comparison free in hardware (a fixed-width zero-check on a PRNG bit slice — no comparator, no divider). The literature uses φ = 16 throughout, so this restriction loses nothing in expressiveness; it just forces the tuning surface into coarse log-scale steps (4, 8, 16, 32, 64) rather than fine integer steps.
+
+**Note on `bg_init_mode` / `bg_init_lookahead_n`.** These two knobs were added in 2026-05-05 after a Python-only experiment (see [`2026-05-05-vibe-lookahead-init-design.md`](2026-05-05-vibe-lookahead-init-design.md) and [`2026-05-05-vibe-lookahead-init-results.md`](2026-05-05-vibe-lookahead-init-results.md)) showed that seeding the sample bank from a per-pixel temporal median over the entire clip eliminates the canonical frame-0 ghost (`ghost_box_disappear` 0.0584 → 0.0003 mask coverage, ~200× reduction) and reduces real-clip false-positive coverage by 22–34% versus the canonical `init_from_frame` baseline — and this win survives the full production motion pipeline (gauss + morph_clean) at 22–32% reduction. The default is therefore changed to `bg_init_mode = "lookahead_median"` with `bg_init_lookahead_n = None`. The canonical Barnich frame-0 init remains available via `bg_init_mode = "frame0"` for upstream-parity verification (where Phase-0's `±0.0057` per-frame `|ours − upstream|` budget at TOLERANCE=0 is preserved). For RTL implementation, `"lookahead_median"` requires a startup buffer of `bg_init_lookahead_n` frames of frame storage (or full-clip if `None`) and a streaming-median compute, before normal `process_frame` operation can begin; latency cost is `bg_init_lookahead_n` frames of inactivity at startup.
 
 **Note on the φ-split.** The canonical ViBe algorithm (Barnich 2011, upstream C/Python references) uses a **single** `updateFactor` covering both rolls — self-update and neighbor-diffusion fire together with one shared probability `1/φ`. Doc B exposes them as **two independent fields** (`phi_update`, `phi_diffuse`) because the two rolls tune different failure modes: `phi_update` controls temporal adaptation rate (analog of EMA's α), `phi_diffuse` controls spatial error-correction rate (the unique-to-ViBe ghost-recovery mechanism). Setting `phi_update == phi_diffuse` recovers canonical behavior exactly. The split adds zero hardware cost (each is its own zero-check) and zero algorithmic risk; it just opens a tuning axis Phase 0 may want to explore (e.g., `phi_diffuse=8` for faster ghost recovery while keeping `phi_update=16` for steady model state).
 
