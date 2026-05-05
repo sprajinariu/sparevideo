@@ -6,12 +6,17 @@ Supported sources:
   - "synthetic:<pattern>" where pattern is one of:
       moving_box, dark_moving_box, two_boxes, noisy_moving_box,
       lighting_ramp, textured_static, entering_object, multi_speed,
-      multi_speed_color, stopping_object, lit_moving_object, thin_moving_line
+      multi_speed_color, stopping_object, lit_moving_object, thin_moving_line,
+      ghost_box_disappear, ghost_box_moving
 
 All synthetic patterns with moving objects render frame 0 as background-only
 (no foreground). Moving objects appear from frame 1 onward. This avoids
 baking foreground into the EMA background model during hard-init (frame-0
 ghost problem) — see CLAUDE.md and axis_motion_detect-arch.md §4.4.3.
+
+EXCEPTION: ghost_box_* patterns INTENTIONALLY place foreground at frame 0 to
+test ghost decay and recovery behavior under the ViBe diffusion mechanism.
+These patterns violate the "no frame-0 fg" convention by design.
 """
 
 import sys
@@ -119,6 +124,8 @@ def _generate_synthetic(pattern, width, height, num_frames):
         "stopping_object": _gen_stopping_object,
         "lit_moving_object": _gen_lit_moving_object,
         "thin_moving_line": _gen_thin_moving_line,
+        "ghost_box_disappear": _gen_ghost_box_disappear,
+        "ghost_box_moving": _gen_ghost_box_moving,
     }
     if pattern not in generators:
         raise ValueError(
@@ -542,6 +549,66 @@ def _gen_lighting_ramp(width, height, num_frames):
             t = i / max(num_frames - 1, 1)
             cx = int(t * (width - box_w))
             cy = int(t * (height - box_h))
+            frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        frames.append(frame)
+    return frames
+
+
+def _gen_ghost_box_disappear(width, height, num_frames):
+    """Red box at frame 0, pure black background from frame 1 onward.
+
+    INTENTIONALLY places foreground at frame 0 to contaminate the background
+    model's hard-init, forcing a ghost at the box's original position in
+    frames 1+. Pure ghost-decay test: no ongoing motion to confound the
+    signal. Box size: width/4 × height/4, centered.
+
+    This pattern tests the ViBe diffusion mechanism's ability to recover from
+    frame-0 contamination on a clean, motion-free signal.
+    """
+    box_w, box_h = width // 4, height // 4
+    cx = (width - box_w) // 2
+    cy = (height - box_h) // 2
+    frames = []
+    for i in range(num_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        if i == 0:
+            # Frame 0: red box at the center (this contaminates the bg model).
+            frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
+        # Frames 1+: pure black background (no foreground).
+        frames.append(frame)
+    return frames
+
+
+def _gen_ghost_box_moving(width, height, num_frames):
+    """Red box at top-left frame 0; moving box elsewhere from frame 1+.
+
+    INTENTIONALLY places foreground at frame 0 at the top-left corner
+    to contaminate the background model's hard-init, forcing a ghost at
+    (0, 0). From frame 1 onward, a red box moves horizontally across the
+    lower-middle of the frame (y=height//2), away from the ghost's location.
+
+    Box size: width/4 × height/4. Motion path: starts at (width//4, height//2)
+    at frame 1, sweeps horizontally to (3*width//4, height//2) at the last frame.
+
+    This pattern tests ghost decay while real motion is happening elsewhere
+    in the frame — validates that the ViBe diffusion mechanism can suppress
+    the ghost at (0,0) independently of active motion in a different region.
+    """
+    box_w, box_h = width // 4, height // 4
+    frames = []
+    for i in range(num_frames):
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        if i == 0:
+            # Frame 0: red box at top-left (0, 0) — contaminates bg model.
+            frame[0 : box_h, 0 : box_w] = (255, 0, 0)
+        else:
+            # Frames 1+: moving box at lower-middle, horizontal sweep.
+            t = i / max(num_frames - 1, 1)
+            # Motion path: from (width//4, height//2) to (3*width//4, height//2).
+            start_x = width // 4
+            end_x = 3 * width // 4
+            cx = int(start_x + t * (end_x - start_x - box_w))
+            cy = height // 2
             frame[cy : cy + box_h, cx : cx + box_w] = (255, 0, 0)
         frames.append(frame)
     return frames

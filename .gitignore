@@ -238,3 +238,7 @@ marimo/_lsp/
 __marimo__/
 dv/sim/obj_tb_rgb2ycrcb/Vtb_rgb2ycrcb__ALL.o
 .claude/settings.local.json
+
+# ViBe Phase 0 experiments — upstream-derived outputs and our local renders
+py/experiments/upstream_baseline_outputs/
+py/experiments/our_outputs/

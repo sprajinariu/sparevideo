@@ -92,9 +92,38 @@ def test_qvga_frame():
     Path(path).unlink()
 
 
+def test_ghost_box_disappear_has_fg_at_frame_0_only():
+    """ghost_box_disappear: frame 0 has the box, frames 1+ are pure bg."""
+    from frames.video_source import generate_synthetic
+    frames = generate_synthetic("ghost_box_disappear", width=320, height=240, num_frames=10)
+    assert len(frames) == 10
+    # Frame 0 has non-zero pixels (the red box)
+    assert frames[0].any(), "frame 0 should contain the box"
+    # Frames 1+ should be entirely black (pure bg)
+    for i in range(1, 10):
+        assert not frames[i].any(), f"frame {i} should be pure bg, got non-zero pixels"
+
+
+def test_ghost_box_moving_has_fg_at_all_frames():
+    """ghost_box_moving: frame 0 has top-left box; frames 1+ have moving box at different location."""
+    from frames.video_source import generate_synthetic
+    frames = generate_synthetic("ghost_box_moving", width=320, height=240, num_frames=10)
+    assert len(frames) == 10
+    # All frames have foreground
+    for i, f in enumerate(frames):
+        assert f.any(), f"frame {i} should have foreground"
+    # Frame 0's box should be at top-left
+    box_w, box_h = 320 // 4, 240 // 4
+    assert frames[0][0:box_h, 0:box_w].any(), "frame 0 box should be at top-left corner"
+    # Frame 1's box should NOT be at top-left (it's the moved position)
+    assert not frames[1][0:box_h, 0:box_w].any(), "frame 1 box should NOT be at top-left"
+
+
 if __name__ == "__main__":
     test_text_round_trip()
     test_binary_round_trip()
     test_single_frame()
     test_qvga_frame()
+    test_ghost_box_disappear_has_fg_at_frame_0_only()
+    test_ghost_box_moving_has_fg_at_all_frames()
     print("All tests passed!")
