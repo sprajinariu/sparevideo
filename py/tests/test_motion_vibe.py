@@ -464,3 +464,59 @@ def test_init_scheme_c_noise_covers_full_range():
     # Sanity: nothing observed outside the band.
     assert min(observed) >= -20 and max(observed) <= 20, \
         f"Noise out of band: {min(observed)}..{max(observed)}"
+
+
+def test_init_from_frames_single_frame_matches_init_from_frame():
+    """N=1 stack → median is the single frame → result must match init_from_frame."""
+    frame = _y_frame(120, h=4, w=4)
+    stack = frame[None, ...]  # (1, 4, 4) uint8
+
+    a = ViBe(K=8, R=20, min_match=2, phi_update=16, phi_diffuse=16,
+             init_scheme="c", prng_seed=0xDEADBEEF)
+    a.init_from_frame(frame)
+
+    b = ViBe(K=8, R=20, min_match=2, phi_update=16, phi_diffuse=16,
+             init_scheme="c", prng_seed=0xDEADBEEF)
+    b.init_from_frames(stack, lookahead_n=1)
+
+    assert np.array_equal(a.samples, b.samples), \
+        "init_from_frames(N=1) must produce identical bank to init_from_frame"
+
+
+def test_init_from_frames_median_equivalence():
+    """N>1 stack → init_from_frames must equal init_from_frame applied to
+    the per-pixel median of the stack (with same seed/scheme)."""
+    rng = np.random.default_rng(seed=42)
+    stack = rng.integers(0, 256, size=(7, 6, 8), dtype=np.uint8)
+    median = np.median(stack, axis=0).astype(np.uint8)
+
+    a = ViBe(K=8, R=20, min_match=2, phi_update=16, phi_diffuse=16,
+             init_scheme="c", prng_seed=0xDEADBEEF)
+    a.init_from_frame(median)
+
+    b = ViBe(K=8, R=20, min_match=2, phi_update=16, phi_diffuse=16,
+             init_scheme="c", prng_seed=0xDEADBEEF)
+    b.init_from_frames(stack, lookahead_n=None)  # use all 7 frames
+
+    assert np.array_equal(a.samples, b.samples), \
+        "init_from_frames(N=all) must match init_from_frame on the median"
+
+
+def test_init_from_frames_partial_window():
+    """lookahead_n < N uses only the first lookahead_n frames for the median."""
+    # Frames 0..2 are filled with 100, frames 3..5 are filled with 200.
+    # median over first 3 frames = 100, median over all 6 = ~150.
+    f_lo = _y_frame(100, h=4, w=4)
+    f_hi = _y_frame(200, h=4, w=4)
+    stack = np.stack([f_lo, f_lo, f_lo, f_hi, f_hi, f_hi], axis=0)
+
+    a = ViBe(K=8, R=20, min_match=2, phi_update=16, phi_diffuse=16,
+             init_scheme="c", prng_seed=0xDEADBEEF)
+    a.init_from_frame(_y_frame(100, h=4, w=4))
+
+    b = ViBe(K=8, R=20, min_match=2, phi_update=16, phi_diffuse=16,
+             init_scheme="c", prng_seed=0xDEADBEEF)
+    b.init_from_frames(stack, lookahead_n=3)
+
+    assert np.array_equal(a.samples, b.samples), \
+        "init_from_frames(lookahead_n=3) must median over only frames[:3]"

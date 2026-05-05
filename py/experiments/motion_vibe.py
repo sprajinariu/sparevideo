@@ -83,6 +83,34 @@ class ViBe:
         else:
             raise ValueError(f"unknown init_scheme {self.init_scheme!r}")
 
+    def init_from_frames(
+        self,
+        frames: np.ndarray,
+        lookahead_n: Optional[int] = None,
+    ) -> None:
+        """Seed the sample bank from a temporal median over the first
+        `lookahead_n` frames of `frames`. When `lookahead_n` is None, use
+        all frames in the stack.
+
+        Equivalent to `init_from_frame(median(frames[:lookahead_n], axis=0))`
+        but routes through the configured init_scheme so noise structure
+        and PRNG advance count match the canonical frame-0 path.
+
+        Args:
+            frames: (N, H, W) uint8 stack of Y frames, N >= 1.
+            lookahead_n: number of leading frames to median over. None ⇒ all.
+        """
+        assert frames.ndim == 3 and frames.dtype == np.uint8, \
+            "frames must be a (N, H, W) uint8 stack"
+        n_total = frames.shape[0]
+        assert n_total >= 1, "frames must have at least 1 frame"
+        n = n_total if lookahead_n is None else int(lookahead_n)
+        assert 1 <= n <= n_total, \
+            f"lookahead_n={lookahead_n} out of range [1, {n_total}]"
+        bg_est = np.median(frames[:n], axis=0).astype(np.uint8)
+        # Reuse the configured init scheme to seed the bank around bg_est.
+        self.init_from_frame(bg_est)
+
     def _init_scheme_c(self, frame_0: np.ndarray) -> None:
         """Scheme (c): each slot = clamp(y + noise, 0, 255), noise ∈ [-20, +20].
 
