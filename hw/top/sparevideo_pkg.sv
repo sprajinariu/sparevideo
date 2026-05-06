@@ -82,6 +82,31 @@ package sparevideo_pkg;
     // Future runtime CSR will use the active profile as the reset-value
     // table; the same field set carries over.
     // ---------------------------------------------------------------
+
+    // ---------------------------------------------------------------
+    // bg_model selector + ViBe enums.
+    //
+    // These are plain `int` values inside cfg_t (not enums) so the
+    // py/profiles.py parity test (which parses literal SV decimals)
+    // can compare bit-for-bit. Use the localparam names everywhere
+    // EXCEPT inside the CFG_* assignments — there the literal must
+    // appear so test_profiles.py can read it.
+    //
+    // These constants are referenced by Python profiles and future RTL
+    // (Phase 2+); no RTL consumer exists yet — suppress UNUSEDPARAM.
+    // ---------------------------------------------------------------
+    /* verilator lint_off UNUSEDPARAM */
+    localparam int BG_MODEL_EMA  = 0;
+    localparam int BG_MODEL_VIBE = 1;
+
+    localparam int VIBE_INIT_NEIGHBOURHOOD = 0;  // scheme (a)
+    localparam int VIBE_INIT_DEGENERATE    = 1;  // scheme (b)
+    localparam int VIBE_INIT_NOISE         = 2;  // scheme (c) — upstream-canonical
+
+    localparam int BG_INIT_FRAME0           = 0;
+    localparam int BG_INIT_LOOKAHEAD_MEDIAN = 1;
+    /* verilator lint_on UNUSEDPARAM */
+
     typedef struct packed {
         component_t motion_thresh;       // raw |Y_cur - Y_prev| threshold
         int         alpha_shift;         // EMA rate, non-motion pixels
@@ -97,6 +122,19 @@ package sparevideo_pkg;
         logic       scaler_en;           // 2x bilinear upscaler at output tail
         logic       hud_en;              // 8x8 bitmap HUD overlay at post-scaler tail
         pixel_t     bbox_color;          // overlay colour
+        // ---- bg_model selector (Phase 1: Python-only; RTL still EMA) ----
+        int         bg_model;            // 0=EMA, 1=ViBe — see BG_MODEL_*
+        // ---- ViBe knobs (consumed only when bg_model==BG_MODEL_VIBE) ----
+        int         vibe_K;              // sample-bank depth per pixel
+        int         vibe_R;              // match radius |x - sample_i| < R
+        int         vibe_min_match;      // count<min_match ⇒ motion
+        int         vibe_phi_update;     // self-update period (power of 2)
+        int         vibe_phi_diffuse;    // diffusion period (power of 2; 0=off)
+        int         vibe_init_scheme;    // 0/1/2 — see VIBE_INIT_*
+        int         vibe_prng_seed;      // 32-bit non-zero Xorshift seed
+        logic       vibe_coupled_rolls;  // 1=upstream-coupled rolls
+        int         vibe_bg_init_mode;   // 0/1 — see BG_INIT_*
+        int         vibe_bg_init_lookahead_n;  // N frames; 0 = sentinel "all"
     } cfg_t;
 
     // Default: all cleanup stages on, mirror OFF. Use CFG_DEFAULT_HFLIP if
@@ -124,7 +162,18 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b1,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // Default + horizontal mirror (selfie-cam).
@@ -142,7 +191,18 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b1,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // EMA disabled — alpha=1 on both rates means bg follows the current
@@ -162,7 +222,18 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b1,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // 3x3 mask opening AND closing bypassed.
@@ -180,7 +251,18 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b1,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // 3x3 Gaussian pre-filter bypassed.
@@ -198,7 +280,18 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b1,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // sRGB gamma correction bypassed (linear passthrough at output tail).
@@ -216,7 +309,18 @@ package sparevideo_pkg;
         gamma_en:           1'b0,
         scaler_en:          1'b1,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // 2x scaler bypassed — output stays at native 320x240. The upstream
@@ -236,7 +340,18 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b0,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // CFG_DEMO: tuned for the README demo. Differences from CFG_DEFAULT:
@@ -268,7 +383,18 @@ package sparevideo_pkg;
         gamma_en:           1'b0,
         scaler_en:          1'b0,
         hud_en:             1'b1,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
     };
 
     // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
@@ -287,7 +413,174 @@ package sparevideo_pkg;
         gamma_en:           1'b1,
         scaler_en:          1'b1,
         hud_en:             1'b0,
-        bbox_color:         24'h00_FF_00
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  0,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_init_scheme:          2,
+        vibe_prng_seed:            32'hDEADBEEF,
+        vibe_coupled_rolls:        1'b1,
+        vibe_bg_init_mode:         1,
+        vibe_bg_init_lookahead_n:  0
+    };
+
+    // ===== ViBe profiles (Phase 1 — Python-only; RTL still EMA) =====
+    // Same DEFAULT cleanup pipeline (gauss + morph_open + morph_close);
+    // bg block is ViBe (8-sample bank, R=20) with look-ahead median init.
+    // No RTL consumer yet; suppress UNUSEDPARAM for the whole section via .vlt waiver.
+    localparam cfg_t CFG_DEFAULT_VIBE = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_init_scheme:         2,
+        vibe_prng_seed:           32'hDEADBEEF,
+        vibe_coupled_rolls:       1'b1,
+        vibe_bg_init_mode:        1,
+        vibe_bg_init_lookahead_n: 0
+    };
+
+    // ViBe at K=20 (literature-default sample diversity; ~2.5x the on-chip
+    // RAM cost of K=8). Stress-tests the upper end of the memory budget
+    // discussion in §10.1 of the design doc.
+    localparam cfg_t CFG_VIBE_K20 = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   20,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_init_scheme:         2,
+        vibe_prng_seed:           32'hDEADBEEF,
+        vibe_coupled_rolls:       1'b1,
+        vibe_bg_init_mode:        1,
+        vibe_bg_init_lookahead_n: 0
+    };
+
+    // ViBe with diffusion disabled — negative-control ablation. Validates
+    // that diffusion is the mechanism behind frame-0 ghost dissolution
+    // (see design doc §8 step 4). Mask should retain the ghost.
+    localparam cfg_t CFG_VIBE_NO_DIFFUSE = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         0,
+        vibe_init_scheme:         2,
+        vibe_prng_seed:           32'hDEADBEEF,
+        vibe_coupled_rolls:       1'b0,
+        vibe_bg_init_mode:        1,
+        vibe_bg_init_lookahead_n: 0
+    };
+
+    // ViBe with the 3x3 Gaussian pre-filter bypassed — same role as
+    // CFG_NO_GAUSS but for the ViBe pipeline. Useful for isolating the
+    // pre-filter's contribution to mask quality under ViBe.
+    localparam cfg_t CFG_VIBE_NO_GAUSS = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b0,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_init_scheme:         2,
+        vibe_prng_seed:           32'hDEADBEEF,
+        vibe_coupled_rolls:       1'b1,
+        vibe_bg_init_mode:        1,
+        vibe_bg_init_lookahead_n: 0
+    };
+
+    // ViBe with the legacy frame-0 init (no look-ahead median). Required
+    // for A/B comparison against CFG_DEFAULT_VIBE so the look-ahead-init
+    // contribution stays measurable after the new mode becomes default.
+    localparam cfg_t CFG_VIBE_INIT_FRAME0 = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_init_scheme:         2,
+        vibe_prng_seed:           32'hDEADBEEF,
+        vibe_coupled_rolls:       1'b1,
+        vibe_bg_init_mode:        0,
+        vibe_bg_init_lookahead_n: 0
     };
 
     // ---------------------------------------------------------------

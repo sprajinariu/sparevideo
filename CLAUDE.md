@@ -59,6 +59,13 @@ make run-pipeline CFG=no_gauss               # 3x3 Gaussian pre-filter bypassed
 make run-pipeline CFG=no_gamma_cor           # sRGB gamma correction bypassed
 make run-pipeline CFG=no_hud                 # bitmap HUD overlay bypassed
 
+# ViBe background model profiles (Phase 1: Python-only, test via `make sw-dry-run`)
+make run-pipeline CFG=default_vibe           # ViBe bg + look-ahead median init
+make run-pipeline CFG=vibe_k20               # ViBe with literature-default K=20
+make run-pipeline CFG=vibe_no_diffuse        # negative control: diffusion off
+make run-pipeline CFG=vibe_no_gauss          # ViBe with Gaussian pre-filter bypassed
+make run-pipeline CFG=vibe_init_frame0       # ViBe with legacy frame-0 init (A/B)
+
 # Upscaler profile selection
 make run-pipeline CFG=default                       # 640x480 output, bilinear (default, 2x scaler enabled)
 make run-pipeline CFG=no_scaler                     # 320x240 output (legacy native-resolution path, scaler disabled)
@@ -155,6 +162,7 @@ TB blanking parameters: H: 4+8+4, V: 2+2+16 (the 16-line V_BLANK absorbs the axi
 - Binary mode uses a 12-byte header (width, height, frames as LE uint32) followed by raw RGB bytes.
 - Frame dimensions flow via plusargs (`+WIDTH=`, `+HEIGHT=`, `+FRAMES=`, `+MODE=`).
 - Input sources: MP4/AVI (via OpenCV), PNG directory, or `synthetic:<pattern>` (moving_box, dark_moving_box, two_boxes, noisy_moving_box, lighting_ramp, textured_static, entering_object, multi_speed, stopping_object, lit_moving_object). All synthetic patterns with moving objects render frame 0 as background-only; objects appear from frame 1 onward to avoid baking foreground into the EMA hard-init bg.
+- **bg_model selector** is a `cfg_t` field. `bg_model=BG_MODEL_EMA` (the default for every existing profile) keeps the EMA bg block; `bg_model=BG_MODEL_VIBE` swaps in the ViBe reference (Python-only at Phase 1 — the RTL still runs EMA, so ViBe profiles characterise via `make sw-dry-run`, not `make verify`). RTL parity for ViBe arrives in Phase 2.
 
 ## Skills
 

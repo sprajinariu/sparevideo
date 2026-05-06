@@ -36,7 +36,12 @@ def _parse_int(sv: str) -> int:
     return int(sv)
 
 
-EXPECTED_PROFILES = {"default", "default_hflip", "no_ema", "no_morph", "no_gauss", "no_gamma_cor", "no_scaler", "demo", "no_hud"}
+EXPECTED_PROFILES = {
+    "default", "default_hflip", "no_ema", "no_morph", "no_gauss",
+    "no_gamma_cor", "no_scaler", "demo", "no_hud",
+    "default_vibe", "vibe_k20", "vibe_no_diffuse", "vibe_no_gauss",
+    "vibe_init_frame0",
+}
 
 
 def test_profile_set_is_complete() -> None:

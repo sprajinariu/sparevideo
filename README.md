@@ -225,13 +225,31 @@ The stabilizer (`py/demo/stabilize.py`) does KLT-tracked similarity warping plus
 |--------|---------|-------------|
 | `SIMULATOR` | `verilator` | Simulator to use (`verilator`) |
 | `CTRL_FLOW` | `motion` | Control flow: `passthrough` (no processing), `motion` (motion detect + bbox overlay), `mask` (raw motion mask as B/W image), or `ccl_bbox` (mask-as-grey + CCL bboxes) |
-| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. Available profiles: `default` (all stages on, 2x scaler ON, HUD ON, mirror OFF), `default_hflip` (mirror ON), `no_ema` (raw frame differencing), `no_morph` (morphological opening AND closing bypassed), `no_gauss` (Gaussian pre-filter bypassed), `no_gamma_cor` (sRGB gamma bypassed), `no_scaler` (2x output upscaler disabled), `no_hud` (bitmap HUD overlay bypassed). |
+| `CFG` | `default` | Algorithm profile. Selects a named bundle of algorithm parameters from `py/profiles.py` / `sparevideo_pkg.sv`. See table below for available profiles. |
 | `SOURCE` | `synthetic:moving_box` | Input source (only used by `prepare`). See table below for available patterns. Also accepts MP4/AVI files (OpenCV) or a PNG directory. |
 | `WIDTH` | `320` | Frame width in pixels |
 | `HEIGHT` | `240` | Frame height in pixels |
 | `FRAMES` | `4` | Number of frames |
 | `MODE` | `text` | File format: `text` (hex) or `binary` |
 | `TOLERANCE` | `0` | Max differing pixels per frame in `verify`. Default is 0 (pixel-accurate model-based verification). |
+
+### Algorithm Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `default` | All stages on, 2x scaler ON, HUD ON, mirror OFF. Default EMA background model. |
+| `default_hflip` | Default with horizontal mirror enabled (selfie-cam). |
+| `no_ema` | Raw frame differencing (alpha=1). |
+| `no_morph` | 3x3 morphological opening and closing bypassed. |
+| `no_gauss` | 3x3 Gaussian pre-filter bypassed. |
+| `no_gamma_cor` | sRGB gamma correction bypassed (linear at output). |
+| `no_scaler` | 2x output upscaler disabled; output at input resolution. |
+| `no_hud` | Bitmap HUD overlay bypassed. |
+| `default_vibe` | Recommended ViBe profile: K=8, R=20, look-ahead median init (Python-only at Phase 1). |
+| `vibe_k20` | ViBe with literature-default K=20 (~2.5x sample-bank RAM vs default_vibe). |
+| `vibe_no_diffuse` | Negative-control ablation: diffusion disabled. |
+| `vibe_no_gauss` | ViBe with 3x3 Gaussian pre-filter bypassed. |
+| `vibe_init_frame0` | ViBe with legacy frame-0 init (A/B vs default_vibe). |
 
 ### Synthetic Sources
 
