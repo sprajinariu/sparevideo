@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from experiments.motion_vibe import ViBe
+from models.ops.vibe import ViBe
 
 
 def _y_frame(value, h=4, w=4):

@@ -5,7 +5,7 @@ in axis_motion_detect_vibe will diverge from the Python ref → TOLERANCE=0
 verify breaks. Do not modify the golden sequence without also updating the SV.
 """
 
-from experiments.xorshift import xorshift32
+from models.ops.xorshift import xorshift32
 
 
 def test_xorshift32_seed_dead_beef_first_8():
