@@ -567,6 +567,8 @@ Three steps, each independently testable and revertible.
 
 Pattern matches `axis_morph3x3_open`'s `morph_en=0` bypass and `axis_scale2x`'s `scaler_en=0` bypass — known-good migration shape in this codebase.
 
+> **Phase 2 cfg_t shape decision.** Before Phase 2 RTL is written, see [`2026-05-06-vibe-rtl-cfg-contract-design.md`](2026-05-06-vibe-rtl-cfg-contract-design.md) for the trim that drops Python-only experimentation knobs (`vibe_init_scheme`, `vibe_prng_seed`, `vibe_coupled_rolls`, `vibe_bg_init_lookahead_n`) from `cfg_t`, hardcodes `init_scheme=2` and `coupled_rolls=1` in the RTL ViBe block, and replaces `vibe_bg_init_mode` with the binary `vibe_bg_init_external` knob. The Phase 2 plan implements that contract.
+
 ---
 
 ## 10. Open questions / risks
