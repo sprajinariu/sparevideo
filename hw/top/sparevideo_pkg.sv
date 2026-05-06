@@ -108,11 +108,8 @@ package sparevideo_pkg;
     /* verilator lint_on UNUSEDPARAM */
 
     typedef struct packed {
-        component_t motion_thresh;       // raw |Y_cur - Y_prev| threshold
-        int         alpha_shift;         // EMA rate, non-motion pixels
-        int         alpha_shift_slow;    // EMA rate, motion pixels
-        int         grace_frames;        // aggressive-EMA grace after priming
-        int         grace_alpha_shift;   // EMA rate during grace window
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        int         bg_model;            // selector: 0=EMA, 1=ViBe — see BG_MODEL_*
         logic       gauss_en;            // 3x3 Gaussian pre-filter on Y
         logic       morph_open_en;       // 3x3 opening on mask
         logic       morph_close_en;      // 3x3 or 5x5 closing on mask
@@ -122,9 +119,13 @@ package sparevideo_pkg;
         logic       scaler_en;           // 2x bilinear upscaler at output tail
         logic       hud_en;              // 8x8 bitmap HUD overlay at post-scaler tail
         pixel_t     bbox_color;          // overlay colour
-        // ---- bg_model selector (Phase 1: Python-only; RTL still EMA) ----
-        int         bg_model;            // 0=EMA, 1=ViBe — see BG_MODEL_*
-        // ---- ViBe knobs (consumed only when bg_model==BG_MODEL_VIBE) ----
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        component_t motion_thresh;       // raw |Y_cur - Y_prev| threshold
+        int         alpha_shift;         // EMA rate, non-motion pixels
+        int         alpha_shift_slow;    // EMA rate, motion pixels
+        int         grace_frames;        // aggressive-EMA grace after priming
+        int         grace_alpha_shift;   // EMA rate during grace window
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         int         vibe_K;              // sample-bank depth per pixel
         int         vibe_R;              // match radius |x - sample_i| < R
         int         vibe_min_match;      // count<min_match ⇒ motion
@@ -149,11 +150,8 @@ package sparevideo_pkg;
         // default. Use CFG_DEFAULT_HFLIP for selfie-cam / mirrored-sensor setups.
         // scaler_en=1: 2x upscaler ON by default → 640x480 VGA output.
         // Use CFG_NO_SCALER for the legacy 320x240 native-resolution path.
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -163,7 +161,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -178,11 +182,8 @@ package sparevideo_pkg;
 
     // Default + horizontal mirror (selfie-cam).
     localparam cfg_t CFG_DEFAULT_HFLIP = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -192,7 +193,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -209,11 +216,8 @@ package sparevideo_pkg;
     // frame exactly, so the motion test reduces to raw frame-to-frame
     // differencing. Useful as a baseline against the smoothed default.
     localparam cfg_t CFG_NO_EMA = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        0,
-        alpha_shift_slow:   0,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -223,7 +227,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        0,
+        alpha_shift_slow:   0,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -238,11 +248,8 @@ package sparevideo_pkg;
 
     // 3x3 mask opening AND closing bypassed.
     localparam cfg_t CFG_NO_MORPH = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b0,
         morph_close_en:     1'b0,
@@ -252,7 +259,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -267,11 +280,8 @@ package sparevideo_pkg;
 
     // 3x3 Gaussian pre-filter bypassed.
     localparam cfg_t CFG_NO_GAUSS = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b0,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -281,7 +291,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -296,11 +312,8 @@ package sparevideo_pkg;
 
     // sRGB gamma correction bypassed (linear passthrough at output tail).
     localparam cfg_t CFG_NO_GAMMA_COR = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -310,7 +323,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -327,11 +346,8 @@ package sparevideo_pkg;
     // pipeline is unchanged; this profile is byte-identical to the
     // pre-scaler design's CFG_DEFAULT for SCALER=0.
     localparam cfg_t CFG_NO_SCALER = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -341,7 +357,13 @@ package sparevideo_pkg;
         scaler_en:          1'b0,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -370,11 +392,8 @@ package sparevideo_pkg;
     //                          on PRIME_FRAMES + the EMA's natural convergence
     //                          rather than a forced grace window.
     localparam cfg_t CFG_DEMO = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        2,
-        alpha_shift_slow:   8,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -384,7 +403,13 @@ package sparevideo_pkg;
         scaler_en:          1'b0,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        2,
+        alpha_shift_slow:   8,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -400,11 +425,8 @@ package sparevideo_pkg;
     // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
     // Byte-identical to CFG_DEFAULT for every pixel outside the HUD region.
     localparam cfg_t CFG_NO_HUD = '{
-        motion_thresh:      8'd16,
-        alpha_shift:        3,
-        alpha_shift_slow:   6,
-        grace_frames:       0,
-        grace_alpha_shift:  1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                  0,
         gauss_en:           1'b1,
         morph_open_en:      1'b1,
         morph_close_en:     1'b1,
@@ -414,7 +436,13 @@ package sparevideo_pkg;
         scaler_en:          1'b1,
         hud_en:             1'b0,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -432,11 +460,8 @@ package sparevideo_pkg;
     // bg block is ViBe (8-sample bank, R=20) with look-ahead median init.
     // No RTL consumer yet; suppress UNUSEDPARAM for the whole section via .vlt waiver.
     localparam cfg_t CFG_DEFAULT_VIBE = '{
-        motion_thresh:            8'd16,
-        alpha_shift:              3,
-        alpha_shift_slow:         6,
-        grace_frames:             0,
-        grace_alpha_shift:        1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                 1,
         gauss_en:                 1'b1,
         morph_open_en:            1'b1,
         morph_close_en:           1'b1,
@@ -446,7 +471,13 @@ package sparevideo_pkg;
         scaler_en:                1'b1,
         hud_en:                   1'b1,
         bbox_color:               24'h00_FF_00,
-        bg_model:                 1,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                   8,
         vibe_R:                   20,
         vibe_min_match:           2,
@@ -463,11 +494,8 @@ package sparevideo_pkg;
     // RAM cost of K=8). Stress-tests the upper end of the memory budget
     // discussion in §10.1 of the design doc.
     localparam cfg_t CFG_VIBE_K20 = '{
-        motion_thresh:            8'd16,
-        alpha_shift:              3,
-        alpha_shift_slow:         6,
-        grace_frames:             0,
-        grace_alpha_shift:        1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                 1,
         gauss_en:                 1'b1,
         morph_open_en:            1'b1,
         morph_close_en:           1'b1,
@@ -477,7 +505,13 @@ package sparevideo_pkg;
         scaler_en:                1'b1,
         hud_en:                   1'b1,
         bbox_color:               24'h00_FF_00,
-        bg_model:                 1,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                   20,
         vibe_R:                   20,
         vibe_min_match:           2,
@@ -494,11 +528,8 @@ package sparevideo_pkg;
     // that diffusion is the mechanism behind frame-0 ghost dissolution
     // (see design doc §8 step 4). Mask should retain the ghost.
     localparam cfg_t CFG_VIBE_NO_DIFFUSE = '{
-        motion_thresh:            8'd16,
-        alpha_shift:              3,
-        alpha_shift_slow:         6,
-        grace_frames:             0,
-        grace_alpha_shift:        1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                 1,
         gauss_en:                 1'b1,
         morph_open_en:            1'b1,
         morph_close_en:           1'b1,
@@ -508,7 +539,13 @@ package sparevideo_pkg;
         scaler_en:                1'b1,
         hud_en:                   1'b1,
         bbox_color:               24'h00_FF_00,
-        bg_model:                 1,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                   8,
         vibe_R:                   20,
         vibe_min_match:           2,
@@ -525,11 +562,8 @@ package sparevideo_pkg;
     // CFG_NO_GAUSS but for the ViBe pipeline. Useful for isolating the
     // pre-filter's contribution to mask quality under ViBe.
     localparam cfg_t CFG_VIBE_NO_GAUSS = '{
-        motion_thresh:            8'd16,
-        alpha_shift:              3,
-        alpha_shift_slow:         6,
-        grace_frames:             0,
-        grace_alpha_shift:        1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                 1,
         gauss_en:                 1'b0,
         morph_open_en:            1'b1,
         morph_close_en:           1'b1,
@@ -539,7 +573,13 @@ package sparevideo_pkg;
         scaler_en:                1'b1,
         hud_en:                   1'b1,
         bbox_color:               24'h00_FF_00,
-        bg_model:                 1,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                   8,
         vibe_R:                   20,
         vibe_min_match:           2,
@@ -556,11 +596,8 @@ package sparevideo_pkg;
     // for A/B comparison against CFG_DEFAULT_VIBE so the look-ahead-init
     // contribution stays measurable after the new mode becomes default.
     localparam cfg_t CFG_VIBE_INIT_FRAME0 = '{
-        motion_thresh:            8'd16,
-        alpha_shift:              3,
-        alpha_shift_slow:         6,
-        grace_frames:             0,
-        grace_alpha_shift:        1,
+        // ---- General enables / knobs (apply to all bg_model values) ----
+        bg_model:                 1,
         gauss_en:                 1'b1,
         morph_open_en:            1'b1,
         morph_close_en:           1'b1,
@@ -570,7 +607,13 @@ package sparevideo_pkg;
         scaler_en:                1'b1,
         hud_en:                   1'b1,
         bbox_color:               24'h00_FF_00,
-        bg_model:                 1,
+        // ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        // ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
         vibe_K:                   8,
         vibe_R:                   20,
         vibe_min_match:           2,

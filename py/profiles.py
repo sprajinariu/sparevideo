@@ -12,11 +12,8 @@ from typing import Mapping
 ProfileT = Mapping[str, int | bool]
 
 DEFAULT: ProfileT = dict(
-    motion_thresh=16,
-    alpha_shift=3,
-    alpha_shift_slow=6,
-    grace_frames=0,
-    grace_alpha_shift=1,
+    # ---- General enables / knobs (apply to all bg_model values) ----
+    bg_model=0,                       # BG_MODEL_EMA
     gauss_en=True,
     morph_open_en=True,
     morph_close_en=True,
@@ -26,9 +23,13 @@ DEFAULT: ProfileT = dict(
     scaler_en=True,
     hud_en=True,
     bbox_color=0x00_FF_00,
-    # ---- bg_model selector (Phase 1: Python-only; RTL still EMA) ----
-    bg_model=0,                       # BG_MODEL_EMA
-    # ---- ViBe knobs (consumed only when bg_model==1) ----
+    # ---- EMA-specific (consumed only when bg_model == BG_MODEL_EMA) ----
+    motion_thresh=16,
+    alpha_shift=3,
+    alpha_shift_slow=6,
+    grace_frames=0,
+    grace_alpha_shift=1,
+    # ---- ViBe-specific (consumed only when bg_model == BG_MODEL_VIBE) ----
     vibe_K=8,
     vibe_R=20,
     vibe_min_match=2,
