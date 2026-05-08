@@ -199,7 +199,12 @@ This chapter explains what each processing sub-block contributes to the video/ma
 
 ### 5.1 `u_motion_detect` — detect moving pixels
 
-Produces a 1-bit motion mask: `1` where the current pixel differs from a learned per-pixel background, `0` elsewhere. Converts RGB → Y8 (luma carries nearly all motion information at 1/3 the bandwidth), optionally smooths Y with a 3×3 Gaussian (`CFG.gauss_en`) to reject single-pixel sensor noise, then thresholds `|Y − bg| > CFG.motion_thresh`. The background `bg` is an EMA in shared RAM with two rates — fast (`CFG.alpha_shift`) on non-motion pixels for lighting drift, slow (`CFG.alpha_shift_slow`) on motion pixels to avoid trails — plus a `CFG.grace_frames` window that suppresses frame-0 ghosts. Details: [axis_motion_detect-arch.md](axis_motion_detect-arch.md).
+The motion-detect stage is `bg_model`-selectable at elaboration time. `sparevideo_top` uses a `generate` block keyed on `CFG.bg_model`:
+
+- **`BG_MODEL_EMA` (default, `bg_model=0`):** instantiates `axis_motion_detect` (`u_motion_detect_ema`). Produces a 1-bit motion mask by converting RGB → Y8, optionally smoothing with a 3×3 Gaussian (`CFG.gauss_en`), then thresholding `|Y − bg| > CFG.motion_thresh`. The background `bg` is an EMA in shared RAM with two rates — fast (`CFG.alpha_shift`) on non-motion pixels for lighting drift, slow (`CFG.alpha_shift_slow`) on motion pixels to avoid trails — plus a `CFG.grace_frames` window that suppresses frame-0 ghosts. Details: [axis_motion_detect-arch.md](axis_motion_detect-arch.md).
+- **`BG_MODEL_VIBE` (`bg_model=1`):** instantiates `axis_motion_detect_vibe` (`u_motion_detect_vibe`). Produces the same 1-bit motion mask using the ViBe background-subtraction algorithm: a per-pixel sample bank of K luma values, each new pixel classified as motion if fewer than `MIN_MATCH` samples are within L1 distance R. Stochastic per-pixel update (probability 1/φ) and neighbor diffusion. Parametric `K∈{8,20}`. External-init path loads a pre-computed lookahead-median bank via `$readmemh`. Details: [axis_motion_detect_vibe-arch.md](axis_motion_detect_vibe-arch.md).
+
+Both variants present an identical AXI4-Stream interface to the rest of the pipeline and are verified bit-exact against their respective Python reference models at TOLERANCE=0.
 
 ### 5.2 `u_hflip` — selfie-cam horizontal mirror
 

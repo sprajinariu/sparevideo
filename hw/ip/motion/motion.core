@@ -7,6 +7,8 @@ filesets:
     files:
       - rtl/motion_core.sv
       - rtl/axis_motion_detect.sv
+      - rtl/motion_core_vibe.sv
+      - rtl/axis_motion_detect_vibe.sv
     file_type: systemVerilogSource
     depend:
       - sparevideo:pkg:common

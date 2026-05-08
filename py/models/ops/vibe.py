@@ -25,6 +25,17 @@ import numpy as np
 
 from models.ops.xorshift import xorshift32
 
+# Magic XOR constants for parallel init streams in _init_scheme_c.
+# Stream i is seeded as (prng_seed ^ INIT_SEED_MAGICS[i]) & 0xFFFFFFFF.
+# Stream 0 uses MAGIC=0 so it starts at prng_seed unchanged.
+INIT_SEED_MAGICS = (
+    0x00000000,  # stream 0 uses prng_seed unchanged
+    0x9E3779B9,  # golden ratio (stream 1)
+    0xD1B54A32,  # arbitrary distinctive (stream 2)
+    0xCAFEBABE,  # arbitrary distinctive (stream 3)
+    0x12345678,  # arbitrary distinctive (stream 4)
+)
+
 
 class ViBe:
     """Deterministic ViBe re-implementation."""
@@ -114,30 +125,43 @@ class ViBe:
     def _init_scheme_c(self, frame_0: np.ndarray) -> None:
         """Scheme (c): each slot = clamp(y + noise, 0, 255), noise ∈ [-20, +20].
 
-        8-bit lanes (one byte per slot) sliced from N PRNG state words, where
-        N = ceil(K / 4). Each byte produces a noise via `(byte % 41) - 20`,
-        matching upstream's `randint(-20, 20)` range. The modulo-41 introduces
-        a small (~5.9%) non-uniformity below the K-slot smoothing threshold.
+        Parallel-stream construction:
+          - N = ceil(K / 4) parallel Xorshift32 streams
+          - Stream i seeded as (prng_seed ^ INIT_SEED_MAGICS[i]) & 0xFFFFFFFF
+          - Each pixel: all N streams advance once; output bytes sliced from the
+            concatenated post-advance states
+          - Noise = (byte % 41) - 20
 
-        K=20 specifically uses 5 PRNG advances per pixel during init; K=8 uses
-        2; K=4 uses 1. This eliminates the prior latent slot-degenerate bug in
-        which slots k≥8 collapsed to `clamp(y - 8, 0, 255)` because
-        `(state >> (4*k)) & 0xF == 0` for any k ≥ 8 on a 32-bit state.
+        Eliminates serial correlation between lanes (chained variant had this
+        because consecutive Xorshift32 outputs are not statistically independent).
+        All streams use Xorshift32 so per-stream character is unchanged.
 
-        Companion design doc: docs/plans/2026-05-05-vibe-phase-0-redo-design.md
+        Runtime PRNG (self.prng_state) is unchanged — single stream, used by
+        process_frame for update/diffusion rolls in subsequent frames. The init
+        streams are local to this function.
         """
-        n_advances = (self.K + 3) // 4
+        n_streams = (self.K + 3) // 4
+        states = [
+            (self.prng_state ^ INIT_SEED_MAGICS[i]) & 0xFFFFFFFF
+            for i in range(n_streams)
+        ]
+        for i, s in enumerate(states):
+            if s == 0:
+                raise ValueError(
+                    f"_init_scheme_c stream {i} would be zero — change PRNG_SEED")
+
         for r in range(self.H):
             for c in range(self.W):
-                states = [self._next_prng() for _ in range(n_advances)]
+                for i in range(n_streams):
+                    states[i] = xorshift32(states[i])
                 y = int(frame_0[r, c])
                 for k in range(self.K):
-                    word = states[k // 4]
-                    byte = (word >> (8 * (k % 4))) & 0xFF
-                    noise = (byte % 41) - 20
-                    val = y + noise
-                    val = 0 if val < 0 else (255 if val > 255 else val)
-                    self.samples[r, c, k] = val
+                    stream_idx = k // 4
+                    byte_idx   = k % 4
+                    byte       = (states[stream_idx] >> (8 * byte_idx)) & 0xFF
+                    noise      = (byte % 41) - 20
+                    val        = y + noise
+                    self.samples[r, c, k] = 0 if val < 0 else (255 if val > 255 else val)
 
     def _init_scheme_a(self, frame_0: np.ndarray) -> None:
         """Scheme (a): 3×3 neighborhood draws (paper-canonical).

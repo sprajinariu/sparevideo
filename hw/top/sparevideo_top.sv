@@ -1,3 +1,11 @@
+// VIBE_INIT_BANK_FILE: path to a $readmemh bank-init file, set via
+// +define+VIBE_INIT_BANK_FILE=<path> at compile time. Default is "" (no file,
+// meaning frame-0 init or internal look-ahead). Required when
+// CFG.vibe_bg_init_external=1.
+`ifndef VIBE_INIT_BANK_FILE
+  `define VIBE_INIT_BANK_FILE ""
+`endif
+
 // sparevideo_top — AXI4-Stream video pipeline top level.
 //
 //   s_axis (axis_if.rx, clk_pix) -> async_fifo -> motion detect pipeline (clk_dsp)
@@ -218,32 +226,89 @@ module sparevideo_top
         .m_b_axis (fork_b_to_overlay)
     );
 
-    // motion_to_morph: u_motion_detect.m_axis_msk -> u_morph_open.s_axis (direct pass-through).
+    // motion_to_morph: u_motion.m_axis_msk -> u_morph_clean.s_axis (direct pass-through).
     axis_if #(.DATA_W(1), .USER_W(1)) motion_to_morph ();
 
-    axis_motion_detect #(
-        .H_ACTIVE          (H_ACTIVE),
-        .V_ACTIVE          (V_ACTIVE),
-        .THRESH            (int'(CFG.motion_thresh)),
-        .ALPHA_SHIFT       (CFG.alpha_shift),
-        .ALPHA_SHIFT_SLOW  (CFG.alpha_shift_slow),
-        .GRACE_FRAMES      (CFG.grace_frames),
-        .GRACE_ALPHA_SHIFT (CFG.grace_alpha_shift),
-        .GAUSS_EN          (int'(CFG.gauss_en)),
-        .RGN_BASE          (RGN_Y_PREV_BASE),
-        .RGN_SIZE          (RGN_Y_PREV_SIZE)
-    ) u_motion_detect (
-        .clk_i         (clk_dsp_i),
-        .rst_n_i       (rst_dsp_n_i),
-        .s_axis        (fork_a_to_motion),
-        .m_axis_msk    (motion_to_morph),
-        // Memory port (to shared RAM port A)
-        .mem_rd_addr_o (ram_a_rd_addr),
-        .mem_rd_data_i (ram_a_rd_data),
-        .mem_wr_addr_o (ram_a_wr_addr),
-        .mem_wr_data_o (ram_a_wr_data),
-        .mem_wr_en_o   (ram_a_wr_en)
-    );
+    // bg_model generate gate: EMA (BG_MODEL_EMA=0) or ViBe (BG_MODEL_VIBE=1).
+    // Both branches present the same external AXI-Stream contract — fork_a_to_motion
+    // feeds the input and motion_to_morph carries the 1-bit mask output — so the
+    // downstream morph/CCL/overlay path is completely agnostic to which branch is
+    // active.  Only one branch is elaborated per build.
+    generate
+        if (CFG.bg_model == sparevideo_pkg::BG_MODEL_EMA) begin : g_ema
+            // EMA background model. Also owns shared RAM port A (Y8 prev-frame buffer).
+            axis_motion_detect #(
+                .H_ACTIVE          (H_ACTIVE),
+                .V_ACTIVE          (V_ACTIVE),
+                .THRESH            (int'(CFG.motion_thresh)),
+                .ALPHA_SHIFT       (CFG.alpha_shift),
+                .ALPHA_SHIFT_SLOW  (CFG.alpha_shift_slow),
+                .GRACE_FRAMES      (CFG.grace_frames),
+                .GRACE_ALPHA_SHIFT (CFG.grace_alpha_shift),
+                .GAUSS_EN          (int'(CFG.gauss_en)),
+                .RGN_BASE          (RGN_Y_PREV_BASE),
+                .RGN_SIZE          (RGN_Y_PREV_SIZE)
+            ) u_motion (
+                .clk_i         (clk_dsp_i),
+                .rst_n_i       (rst_dsp_n_i),
+                .s_axis        (fork_a_to_motion),
+                .m_axis_msk    (motion_to_morph),
+                // Memory port (to shared RAM port A)
+                .mem_rd_addr_o (ram_a_rd_addr),
+                .mem_rd_data_i (ram_a_rd_data),
+                .mem_wr_addr_o (ram_a_wr_addr),
+                .mem_wr_data_o (ram_a_wr_data),
+                .mem_wr_en_o   (ram_a_wr_en)
+            );
+        end
+        else if (CFG.bg_model == sparevideo_pkg::BG_MODEL_VIBE) begin : g_vibe
+            // ViBe sample-based background model. Carries its own internal sample
+            // banks; the shared RAM port A signals are tied off.
+            assign ram_a_rd_addr = '0;
+            assign ram_a_wr_addr = '0;
+            assign ram_a_wr_data = '0;
+            assign ram_a_wr_en   = 1'b0;
+
+            axis_motion_detect_vibe #(
+                .WIDTH                (H_ACTIVE),
+                .HEIGHT               (V_ACTIVE),
+                .K                    (CFG.vibe_K),
+                .R                    (CFG.vibe_R),
+                .MIN_MATCH            (CFG.vibe_min_match),
+                .PHI_UPDATE           (CFG.vibe_phi_update),
+                .PHI_DIFFUSE          (CFG.vibe_phi_diffuse),
+                .GAUSS_EN             (CFG.gauss_en),
+                .VIBE_BG_INIT_EXTERNAL(CFG.vibe_bg_init_external),
+                .PRNG_SEED            (32'hDEADBEEF),
+                .INIT_BANK_FILE       (`VIBE_INIT_BANK_FILE)
+            ) u_motion (
+                .clk_i       (clk_dsp_i),
+                .rst_n_i     (rst_dsp_n_i),
+                .s_axis_pix  (fork_a_to_motion),
+                .m_axis_msk  (motion_to_morph)
+            );
+        end
+        else begin : g_unknown
+            initial $error("sparevideo_top: unsupported CFG.bg_model = %0d", CFG.bg_model);
+        end
+    endgenerate
+
+    // K-value validation for ViBe (only K=8 and K=20 are supported).
+    generate
+        if (CFG.bg_model == sparevideo_pkg::BG_MODEL_VIBE &&
+                CFG.vibe_K != 8 && CFG.vibe_K != 20) begin : g_vibe_k_check
+            initial $error("sparevideo_top: vibe_K must be 8 or 20, got %0d", CFG.vibe_K);
+        end
+    endgenerate
+
+    // External-init guard: VIBE_INIT_BANK_FILE must be provided when
+    // vibe_bg_init_external=1 so the $readmemh in motion_core_vibe resolves.
+    generate
+        if (CFG.bg_model == sparevideo_pkg::BG_MODEL_VIBE &&
+                CFG.vibe_bg_init_external && `VIBE_INIT_BANK_FILE == "") begin : g_vibe_init_check
+            initial $error("vibe_bg_init_external=1 needs +define+VIBE_INIT_BANK_FILE=<path>");
+        end
+    endgenerate
 
     // -----------------------------------------------------------------
     // Morphological clean: open (erode->dilate) + parametrizable close.

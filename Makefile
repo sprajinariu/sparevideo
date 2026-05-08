@@ -36,11 +36,13 @@ SIM_VARS = SIMULATOR=$(SIMULATOR) \
            WIDTH=$(WIDTH) HEIGHT=$(HEIGHT) FRAMES=$(FRAMES) \
            MODE=$(MODE) CTRL_FLOW=$(CTRL_FLOW) CFG=$(CFG) \
            INFILE=$(CURDIR)/$(PIPE_INFILE) \
-           OUTFILE=$(CURDIR)/$(PIPE_OUTFILE)
+           OUTFILE=$(CURDIR)/$(PIPE_OUTFILE) \
+           VIBE_BG_INIT_EXTERNAL=$(VIBE_BG_INIT_EXTERNAL) \
+           VIBE_INIT_BANK_FILE=$(VIBE_INIT_BANK_FILE)
 
 .PHONY: help lint run-pipeline prepare compile sim sw-dry-run verify render sim-waves \
-        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x setup clean \
-        demo demo-synthetic demo-real demo-publish demo-prepare
+        test-py test-ip test-ip-window test-ip-hflip test-ip-gamma-cor test-ip-scale2x test-ip-vibe \
+        setup clean demo demo-synthetic demo-real demo-publish demo-prepare
 
 help:
 	@echo "Usage: make <target> [OPTIONS]"
@@ -100,6 +102,7 @@ help:
 	@echo "    CTRL_FLOW=motion|passthrough|mask|ccl_bbox Control flow (default ccl_bbox)"
 	@echo "    TOLERANCE=<n>                    Max diff pixels/frame for verify (default 0 = exact)"
 	@echo "    CFG=default                      Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler)"
+	@echo "    CFG=vibe_init_external           ViBe with \$$readmemh-loaded init bank (exercises external-init path)"
 	@echo ""
 	@echo "  Sources (SOURCE=):"
 	@echo "    synthetic:moving_box       Red box, diagonal top-left → bottom-right"
@@ -141,6 +144,25 @@ prepare:
 	cd py && $(HARNESS) prepare \
 		--source "$(SOURCE)" --width $(WIDTH) --height $(HEIGHT) \
 		--frames $(FRAMES) --mode $(MODE) --output $(CURDIR)/$(PIPE_INFILE)
+	@bg_model=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field bg_model); \
+	 ext=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_external); \
+	 if [ "$$bg_model" = "1" ] && [ "$$ext" = "1" ]; then \
+	   echo "==== [VIBE] generating init_bank.mem ===="; \
+	   vibe_k=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_K); \
+	   lookahead=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_lookahead_n); \
+	   seed=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_prng_seed); \
+	   $(VENV_PY) $(CURDIR)/py/gen_vibe_init_rom.py \
+	       --input  $(CURDIR)/$(DATA_DIR)/input.bin \
+	       --output $(CURDIR)/$(DATA_DIR)/init_bank.mem \
+	       --width  $(WIDTH) --height $(HEIGHT) \
+	       --k      $$vibe_k \
+	       --lookahead-n $$lookahead \
+	       --seed   $$seed; \
+	   printf 'VIBE_BG_INIT_EXTERNAL=1\nVIBE_INIT_BANK_FILE=%s\n' \
+	       '$(CURDIR)/$(DATA_DIR)/init_bank.mem' >> $(DATA_DIR)/config.mk; \
+	 else \
+	   printf 'VIBE_BG_INIT_EXTERNAL=0\nVIBE_INIT_BANK_FILE=\n' >> $(DATA_DIR)/config.mk; \
+	 fi
 
 compile:
 	@echo ""
@@ -376,6 +398,9 @@ test-ip-gamma-cor:
 
 test-ip-scale2x:
 	$(MAKE) -C dv/sim test-ip-scale2x SIMULATOR=$(SIMULATOR)
+
+test-ip-vibe:
+	$(MAKE) -C dv/sim test-ip-vibe SIMULATOR=$(SIMULATOR)
 
 setup:
 	sudo apt install -y verilator

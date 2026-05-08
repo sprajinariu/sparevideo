@@ -37,7 +37,7 @@ DEFAULT: ProfileT = dict(
     vibe_init_scheme=2,               # VIBE_INIT_NOISE — upstream-canonical
     vibe_prng_seed=0xDEADBEEF,
     vibe_coupled_rolls=True,
-    vibe_bg_init_mode=1,              # BG_INIT_LOOKAHEAD_MEDIAN
+    vibe_bg_init_external=1,          # BG_INIT_LOOKAHEAD_MEDIAN
     vibe_bg_init_lookahead_n=0,       # 0 = sentinel "all available frames"
 )
 
@@ -91,7 +91,7 @@ DEFAULT_VIBE: ProfileT = dict(
     vibe_init_scheme=2,
     vibe_prng_seed=0xDEADBEEF,
     vibe_coupled_rolls=True,
-    vibe_bg_init_mode=1,
+    vibe_bg_init_external=1,
     vibe_bg_init_lookahead_n=0,
 )
 
@@ -100,14 +100,21 @@ VIBE_K20: ProfileT = dict(DEFAULT_VIBE, vibe_K=20)
 
 # Negative-control: diffusion disabled. Validates diffusion is the frame-0
 # ghost dissolution mechanism (design-doc §8 step 4).
-VIBE_NO_DIFFUSE: ProfileT = dict(DEFAULT_VIBE, vibe_phi_diffuse=0,
-                                  vibe_coupled_rolls=False)
+VIBE_NO_DIFFUSE: ProfileT = dict(DEFAULT_VIBE, vibe_phi_diffuse=0)
 
 # 3x3 Gaussian pre-filter bypassed under ViBe (peer of NO_GAUSS).
 VIBE_NO_GAUSS: ProfileT = dict(DEFAULT_VIBE, gauss_en=False)
 
 # Legacy frame-0 init (no look-ahead). A/B vs DEFAULT_VIBE.
-VIBE_INIT_FRAME0: ProfileT = dict(DEFAULT_VIBE, vibe_bg_init_mode=0)
+VIBE_INIT_FRAME0: ProfileT = dict(DEFAULT_VIBE, vibe_bg_init_external=0)
+
+# default_vibe + external-init via lookahead-median ROM. Exercises the
+# $readmemh path end-to-end. Lookahead window = full source (sentinel 0).
+VIBE_INIT_EXTERNAL: ProfileT = dict(
+    DEFAULT_VIBE,
+    vibe_bg_init_external=1,
+    vibe_bg_init_lookahead_n=0,
+)
 
 PROFILES: dict[str, ProfileT] = {
     "default":           DEFAULT,
@@ -122,8 +129,9 @@ PROFILES: dict[str, ProfileT] = {
     "default_vibe":      DEFAULT_VIBE,
     "vibe_k20":          VIBE_K20,
     "vibe_no_diffuse":   VIBE_NO_DIFFUSE,
-    "vibe_no_gauss":     VIBE_NO_GAUSS,
-    "vibe_init_frame0":  VIBE_INIT_FRAME0,
+    "vibe_no_gauss":      VIBE_NO_GAUSS,
+    "vibe_init_frame0":   VIBE_INIT_FRAME0,
+    "vibe_init_external":      VIBE_INIT_EXTERNAL,
 }
 
 
@@ -133,3 +141,21 @@ def resolve(name: str) -> ProfileT:
             f"unknown CFG profile {name!r}; known: {sorted(PROFILES)}"
         )
     return PROFILES[name]
+
+
+if __name__ == "__main__":
+    import argparse, sys
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--query", required=True, help="profile name")
+    ap.add_argument("--field", required=True, help="field name")
+    args = ap.parse_args()
+    if args.query not in PROFILES:
+        sys.exit(f"unknown profile '{args.query}'; known: {sorted(PROFILES)}")
+    profile = PROFILES[args.query]
+    val = profile.get(args.field)
+    if val is None:
+        sys.exit(f"field '{args.field}' not in profile '{args.query}'")
+    if isinstance(val, bool):
+        print(int(val))
+    else:
+        print(val)

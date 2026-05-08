@@ -15,7 +15,7 @@
 //   +DUMP_VCD          Dump waveforms to VCD
 //
 // Compile-time -G overrides:
-//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler|demo|no_hud)
+//   -GCFG_NAME='"<name>"' Algorithm profile (default|default_hflip|no_ema|no_morph|no_gauss|no_gamma_cor|no_scaler|demo|no_hud|default_vibe|vibe_k20|vibe_no_diffuse|vibe_no_gauss|vibe_init_frame0|vibe_init_external)
 //   -GH_ACTIVE / -GV_ACTIVE Resolution overrides
 
 `timescale 1ns / 1ps
@@ -48,15 +48,21 @@ module tb_sparevideo #(
     // sparevideo_pkg.sv AND in py/profiles.py.
     // ---------------------------------------------------------------
     localparam sparevideo_pkg::cfg_t CFG =
-        (CFG_NAME == "default_hflip") ? sparevideo_pkg::CFG_DEFAULT_HFLIP :
-        (CFG_NAME == "no_ema")        ? sparevideo_pkg::CFG_NO_EMA        :
-        (CFG_NAME == "no_morph")      ? sparevideo_pkg::CFG_NO_MORPH      :
-        (CFG_NAME == "no_gauss")      ? sparevideo_pkg::CFG_NO_GAUSS      :
-        (CFG_NAME == "no_gamma_cor")  ? sparevideo_pkg::CFG_NO_GAMMA_COR  :
-        (CFG_NAME == "no_scaler")     ? sparevideo_pkg::CFG_NO_SCALER     :
-        (CFG_NAME == "demo")          ? sparevideo_pkg::CFG_DEMO          :
-        (CFG_NAME == "no_hud")        ? sparevideo_pkg::CFG_NO_HUD        :
-                                        sparevideo_pkg::CFG_DEFAULT;
+        (CFG_NAME == "default_hflip")     ? sparevideo_pkg::CFG_DEFAULT_HFLIP     :
+        (CFG_NAME == "no_ema")            ? sparevideo_pkg::CFG_NO_EMA            :
+        (CFG_NAME == "no_morph")          ? sparevideo_pkg::CFG_NO_MORPH          :
+        (CFG_NAME == "no_gauss")          ? sparevideo_pkg::CFG_NO_GAUSS          :
+        (CFG_NAME == "no_gamma_cor")      ? sparevideo_pkg::CFG_NO_GAMMA_COR      :
+        (CFG_NAME == "no_scaler")         ? sparevideo_pkg::CFG_NO_SCALER         :
+        (CFG_NAME == "demo")              ? sparevideo_pkg::CFG_DEMO              :
+        (CFG_NAME == "no_hud")            ? sparevideo_pkg::CFG_NO_HUD            :
+        (CFG_NAME == "default_vibe")      ? sparevideo_pkg::CFG_DEFAULT_VIBE      :
+        (CFG_NAME == "vibe_k20")          ? sparevideo_pkg::CFG_VIBE_K20          :
+        (CFG_NAME == "vibe_no_diffuse")   ? sparevideo_pkg::CFG_VIBE_NO_DIFFUSE   :
+        (CFG_NAME == "vibe_no_gauss")     ? sparevideo_pkg::CFG_VIBE_NO_GAUSS     :
+        (CFG_NAME == "vibe_init_frame0")  ? sparevideo_pkg::CFG_VIBE_INIT_FRAME0  :
+        (CFG_NAME == "vibe_init_external")? sparevideo_pkg::CFG_VIBE_INIT_EXTERNAL:
+                                            sparevideo_pkg::CFG_DEFAULT;
 
     localparam int H_ACTIVE_OUT = CFG.scaler_en ? 2 * H_ACTIVE : H_ACTIVE;
     localparam int V_ACTIVE_OUT = CFG.scaler_en ? 2 * V_ACTIVE : V_ACTIVE;
@@ -123,15 +129,21 @@ module tb_sparevideo #(
     logic [7:0] vga_b;
 
     initial begin
-        if (CFG_NAME != "default"       &&
-            CFG_NAME != "default_hflip" &&
-            CFG_NAME != "no_ema"        &&
-            CFG_NAME != "no_morph"      &&
-            CFG_NAME != "no_gauss"      &&
-            CFG_NAME != "no_gamma_cor"  &&
-            CFG_NAME != "no_scaler"     &&
-            CFG_NAME != "demo"          &&
-            CFG_NAME != "no_hud")
+        if (CFG_NAME != "default"           &&
+            CFG_NAME != "default_hflip"     &&
+            CFG_NAME != "no_ema"            &&
+            CFG_NAME != "no_morph"          &&
+            CFG_NAME != "no_gauss"          &&
+            CFG_NAME != "no_gamma_cor"      &&
+            CFG_NAME != "no_scaler"         &&
+            CFG_NAME != "demo"              &&
+            CFG_NAME != "no_hud"            &&
+            CFG_NAME != "default_vibe"      &&
+            CFG_NAME != "vibe_k20"          &&
+            CFG_NAME != "vibe_no_diffuse"   &&
+            CFG_NAME != "vibe_no_gauss"     &&
+            CFG_NAME != "vibe_init_frame0"  &&
+            CFG_NAME != "vibe_init_external")
             $warning("Unknown CFG_NAME '%s'; falling back to CFG_DEFAULT",
                      CFG_NAME);
     end
