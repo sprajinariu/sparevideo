@@ -4,12 +4,16 @@ Single source of truth used by motion_vibe / mask_vibe / ccl_bbox_vibe.
 Mirrors the structure of motion.compute_motion_masks (which uses EMA),
 swapping the bg block for a `models.ops.vibe.ViBe` instance.
 
-Frame-0 priming convention matches the EMA path: the first output mask is
-all-zero (the ViBe bank is being initialised, no motion can be reported).
-For lookahead-median init, the bank is seeded from the median of N frames
-of the input clip (or all frames when N=0), so frame 0 already has a
-realistic bg estimate — the all-zero priming convention is a deliberate
-match-the-EMA-path choice, NOT a ViBe limitation.
+Frame-0 convention depends on the init scheme:
+  vibe_bg_init_external == 0  (frame-0 self-init):
+    Frame 0 is consumed by the bank-priming pass; the output mask is
+    all-zero (matches the EMA hard-init convention — no detection possible
+    while the bank is being written).
+  vibe_bg_init_external == 1  (lookahead-median external init):
+    The bank is pre-seeded before frame 0 arrives, so frame 0 is processed
+    normally by the comparators.  The RTL sets init_phase=0 in this mode;
+    the Python model must do the same.  Frame 0 therefore produces a real
+    mask, not an all-zero placeholder.
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ def produce_masks_vibe(
     vibe_init_scheme: int,
     vibe_prng_seed: int,
     vibe_coupled_rolls: bool,
-    vibe_bg_init_mode: int,
+    vibe_bg_init_external: int,
     vibe_bg_init_lookahead_n: int,
     gauss_en: bool = True,
     **_ignored,
@@ -59,17 +63,56 @@ def produce_masks_vibe(
     )
 
     # Init.
-    if vibe_bg_init_mode == 0:           # frame0
+    if vibe_bg_init_external == 0:       # frame0 self-init
+        # Frame-0 luma is used to seed the bank (scheme-c noise via runtime PRNG).
+        # The runtime PRNG is advanced ceil(K/4) times per pixel during init —
+        # matching the RTL's frame-0 init_phase path exactly.
         v.init_from_frame(y_arr[0])
-    elif vibe_bg_init_mode == 1:         # lookahead median
-        n = None if vibe_bg_init_lookahead_n == 0 else int(vibe_bg_init_lookahead_n)
-        v.init_from_frames(y_arr, lookahead_n=n)
+    elif vibe_bg_init_external == 1:     # lookahead-median external init
+        # The RTL loads the bank from an externally-generated ROM
+        # (gen_vibe_init_rom.py / compute_lookahead_median_bank).  That ROM uses:
+        #   - raw luma (no Gaussian, regardless of gauss_en)
+        #   - a domain-separated PRNG seed (vibe_prng_seed ^ ROM_OFFSET)
+        # so the bank is the same whether gauss_en is True or False.
+        # The RTL's runtime PRNG therefore starts from PRNG_SEED without any
+        # init-phase advances — the two PRNG streams (ROM noise and runtime)
+        # are completely independent.
+        #
+        # Python must match: use compute_lookahead_median_bank (raw luma,
+        # domain-separated PRNG) to get the bank values, inject them into the
+        # ViBe object directly (bypassing any runtime-PRNG advance), and leave
+        # the ViBe PRNG at vibe_prng_seed so frame-0 processing starts from
+        # the same state as the RTL.
+        # Lazy import to avoid circular import (motion_vibe → _vibe_mask → motion_vibe).
+        from models.motion_vibe import compute_lookahead_median_bank  # noqa: PLC0415
+        n = vibe_bg_init_lookahead_n  # 0 = all frames (compute_lookahead_median_bank sentinel)
+        bank = compute_lookahead_median_bank(
+            rgb_frames=frames,
+            k=vibe_K,
+            lookahead_n=n,
+            seed=vibe_prng_seed,
+        )
+        h_b, w_b, _ = bank.shape
+        v.H = h_b
+        v.W = w_b
+        v.samples = bank
+        # v.prng_state is already vibe_prng_seed (set in ViBe.__init__) — no change needed.
     else:
-        raise ValueError(f"unknown vibe_bg_init_mode {vibe_bg_init_mode}")
+        raise ValueError(f"unknown vibe_bg_init_external {vibe_bg_init_external}")
 
-    # Per-frame mask production. Frame 0 is priming → all-zero (matches EMA path).
+    # Per-frame mask production.
+    # External-init (vibe_bg_init_external==1): bank is pre-seeded before frame 0,
+    # so process all frames starting from frame 0 (RTL init_phase=0 in this mode).
+    # Frame-0 self-init (vibe_bg_init_external==0): frame 0 was consumed by priming;
+    # output an all-zero placeholder for frame 0 to match the EMA convention, then
+    # process frames 1..N-1.
     h, w = y_arr.shape[1:]
-    masks: list[np.ndarray] = [np.zeros((h, w), dtype=bool)]
-    for i in range(1, y_arr.shape[0]):
-        masks.append(v.process_frame(y_arr[i]))
+    if vibe_bg_init_external == 1:
+        masks: list[np.ndarray] = []
+        for i in range(y_arr.shape[0]):
+            masks.append(v.process_frame(y_arr[i]))
+    else:
+        masks = [np.zeros((h, w), dtype=bool)]
+        for i in range(1, y_arr.shape[0]):
+            masks.append(v.process_frame(y_arr[i]))
     return masks

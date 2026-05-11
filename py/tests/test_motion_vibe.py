@@ -1,9 +1,59 @@
 """Unit tests for the ViBe re-implementation."""
 
+import re
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from models.ops.vibe import ViBe
+from profiles import DEFAULT_VIBE
+
+
+# ---------------------------------------------------------------------------
+# Task 30: PRNG_SEED static parity check
+# ---------------------------------------------------------------------------
+
+def test_sv_prng_seed_matches_python_default():
+    """The SV parameter PRNG_SEED in axis_motion_detect_vibe.sv must equal
+    vibe_prng_seed in DEFAULT_VIBE. Drift = every frame mismatches at frame 0."""
+    sv_path = (Path(__file__).parent.parent.parent
+               / "hw/ip/motion/rtl/axis_motion_detect_vibe.sv")
+    src = sv_path.read_text()
+    m = re.search(
+        r"parameter\s+logic\s*\[31:0\]\s+PRNG_SEED\s*=\s*32'h([0-9A-Fa-f]+)",
+        src,
+    )
+    assert m, "could not find PRNG_SEED parameter in axis_motion_detect_vibe.sv"
+    sv_seed = int(m.group(1), 16)
+    py_seed = DEFAULT_VIBE["vibe_prng_seed"]
+    assert sv_seed == py_seed, (
+        f"PRNG_SEED drift: SV=0x{sv_seed:08X}, Python=0x{py_seed:08X}. "
+        "Update one to match the other."
+    )
+
+
+def test_sv_init_seed_magics_match_python():
+    """The five INIT_MAGIC_N localparams in motion_core_vibe.sv must equal
+    the INIT_SEED_MAGICS tuple in py/models/ops/vibe.py. Drift here causes
+    init-bank divergence between SV and Python and breaks T2/T3 parity."""
+    from models.ops.vibe import INIT_SEED_MAGICS
+
+    sv_path = (Path(__file__).parent.parent.parent
+               / "hw/ip/motion/rtl/motion_core_vibe.sv")
+    src = sv_path.read_text()
+
+    for i, expected in enumerate(INIT_SEED_MAGICS):
+        m = re.search(
+            rf"localparam\s+logic\s*\[31:0\]\s+INIT_MAGIC_{i}\s*=\s*32'h([0-9A-Fa-f]+)",
+            src,
+        )
+        assert m, f"INIT_MAGIC_{i} not found in motion_core_vibe.sv"
+        sv_val = int(m.group(1), 16)
+        assert sv_val == expected, (
+            f"INIT_MAGIC_{i} drift: SV=0x{sv_val:08X}, Python=0x{expected:08X}. "
+            f"Update one to match the other."
+        )
 
 
 def _y_frame(value, h=4, w=4):

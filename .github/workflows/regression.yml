@@ -32,7 +32,8 @@ jobs:
 
       - name: Check no large generated files committed
         run: |
-          bad=$(git ls-files -- '*.vcd' '*.vvp' '*.bin' 'dv/data/*.txt' | head -20)
+          bad=$(git ls-files -- '*.vcd' '*.vvp' '*.bin' 'dv/data/*.txt' \
+                ':!hw/ip/motion/tb/golden/*.bin' | head -20)
           if [ -n "$bad" ]; then
             echo "ERROR: large/generated files found in repo:"
             echo "$bad"

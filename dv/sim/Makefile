@@ -16,6 +16,8 @@ RTL_SRCS = ../../hw/top/sparevideo_pkg.sv \
            ../../hw/ip/filters/rtl/axis_morph_clean.sv \
            ../../hw/ip/motion/rtl/motion_core.sv \
            ../../hw/ip/motion/rtl/axis_motion_detect.sv \
+           ../../hw/ip/motion/rtl/motion_core_vibe.sv \
+           ../../hw/ip/motion/rtl/axis_motion_detect_vibe.sv \
            ../../hw/ip/ccl/rtl/axis_ccl.sv \
            ../../hw/ip/overlay/rtl/axis_overlay_bbox.sv \
            ../../hw/top/sparevideo_top.sv \
@@ -49,7 +51,9 @@ SIM_ARGS = +INFILE=$(INFILE) +OUTFILE=$(OUTFILE) \
        test-ip-overlay-bbox test-ip-ccl \
        test-ip-morph3x3-erode test-ip-morph3x3-dilate \
        test-ip-morph-clean \
-       test-ip-hflip test-ip-gamma-cor test-ip-scale2x
+       test-ip-hflip test-ip-gamma-cor test-ip-scale2x \
+       test-ip-vibe test-ip-vibe-k8 test-ip-vibe-k20 test-ip-vibe-external \
+       test-ip-vibe-misconfig-external test-ip-vibe-misconfig-k
 
 # ---------------------------------------------------------------------------
 # Verilator
@@ -70,18 +74,26 @@ VLT_FLAGS = --binary -sv --timing \
             -Wno-CASEINCOMPLETE \
             --trace
 
-# Recompile when WIDTH/HEIGHT/CFG change.
+# Extra preprocessor defines injected from dv/data/config.mk.
+# VIBE_BG_INIT_EXTERNAL and VIBE_INIT_BANK_FILE are written by 'make prepare'
+# when the active CFG has bg_model=ViBe and vibe_bg_init_external=1.
+EXTRA_DEFINES :=
+ifeq ($(VIBE_BG_INIT_EXTERNAL),1)
+EXTRA_DEFINES += +define+VIBE_INIT_BANK_FILE=\"$(VIBE_INIT_BANK_FILE)\"
+endif
+
+# Recompile when WIDTH/HEIGHT/CFG/VIBE_BG_INIT_EXTERNAL change.
 CONFIG_STAMP = $(VOBJ_DIR)/.config_stamp
 $(CONFIG_STAMP): FORCE
 	@mkdir -p $(VOBJ_DIR)
-	@echo "$(WIDTH) $(HEIGHT) $(CFG)" | cmp -s - $@ || \
-	  echo "$(WIDTH) $(HEIGHT) $(CFG)" > $@
+	@echo "$(WIDTH) $(HEIGHT) $(CFG) $(VIBE_BG_INIT_EXTERNAL)" | cmp -s - $@ || \
+	  echo "$(WIDTH) $(HEIGHT) $(CFG) $(VIBE_BG_INIT_EXTERNAL)" > $@
 FORCE:
 
 compile: $(VOBJ_DIR)/Vtb_sparevideo
 
 $(VOBJ_DIR)/Vtb_sparevideo: $(RTL_SRCS) $(TB_SRC) $(DPI_SRC) $(CONFIG_STAMP)
-	verilator $(VLT_FLAGS) $(RTL_SRCS) $(TB_SRC) $(DPI_SRC)
+	verilator $(VLT_FLAGS) $(EXTRA_DEFINES) $(RTL_SRCS) $(TB_SRC) $(DPI_SRC)
 
 sim: compile
 	$(VOBJ_DIR)/Vtb_sparevideo $(SIM_ARGS)
@@ -118,8 +130,12 @@ VLT_TB_FLAGS = --binary -sv --timing \
                -Wno-WIDTHTRUNC -Wno-SELRANGE -Wno-WIDTHCONCAT \
                -Wno-UNUSEDSIGNAL -Wno-UNDRIVEN
 
-test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph-clean test-ip-hflip test-ip-gamma-cor test-ip-scale2x
+test-ip: test-ip-rgb2ycrcb test-ip-window test-ip-gauss3x3 test-ip-motion-detect test-ip-motion-detect-gauss test-ip-overlay-bbox test-ip-ccl test-ip-morph3x3-erode test-ip-morph3x3-dilate test-ip-morph-clean test-ip-hflip test-ip-gamma-cor test-ip-scale2x test-ip-vibe
 	@echo "All block testbenches passed."
+
+# test-ip-vibe runs K=8, K=20, external-init, and misconfig variants.
+test-ip-vibe: test-ip-vibe-k8 test-ip-vibe-k20 test-ip-vibe-external \
+              test-ip-vibe-misconfig-external test-ip-vibe-misconfig-k
 
 # --- rgb2ycrcb ---
 test-ip-rgb2ycrcb:
@@ -219,6 +235,58 @@ test-ip-ccl:
 	  ../../hw/ip/ccl/rtl/axis_ccl.sv ../../hw/ip/ccl/tb/tb_axis_ccl.sv
 	obj_tb_axis_ccl/Vtb_axis_ccl
 
+# Sources for axis_motion_detect_vibe TBs (GAUSS_EN=0: no window/gauss needed).
+# TB file is not included here; each K-specific target appends its own TB.
+IP_MOTION_DETECT_VIBE_SRCS = ../../hw/top/sparevideo_pkg.sv \
+	  ../../hw/top/sparevideo_if.sv \
+	  ../../hw/ip/rgb2ycrcb/rtl/rgb2ycrcb.sv \
+	  ../../hw/ip/motion/rtl/motion_core_vibe.sv \
+	  ../../hw/ip/motion/rtl/axis_motion_detect_vibe.sv
+
+# --- axis_motion_detect_vibe K=8: T1 (static gray), T2/T2b (bit-exact + decay) ---
+test-ip-vibe-k8:
+	verilator $(VLT_TB_FLAGS) \
+	  --top-module tb_axis_motion_detect_vibe --Mdir obj_tb_axis_motion_detect_vibe \
+	  $(IP_MOTION_DETECT_VIBE_SRCS) \
+	  ../../hw/ip/motion/tb/tb_axis_motion_detect_vibe.sv
+	obj_tb_axis_motion_detect_vibe/Vtb_axis_motion_detect_vibe
+
+# --- axis_motion_detect_vibe K=20: T3/T3b (bit-exact + decay) ---
+test-ip-vibe-k20:
+	verilator $(VLT_TB_FLAGS) \
+	  --top-module tb_axis_motion_detect_vibe_k20 --Mdir obj_tb_axis_motion_detect_vibe_k20 \
+	  $(IP_MOTION_DETECT_VIBE_SRCS) \
+	  ../../hw/ip/motion/tb/tb_axis_motion_detect_vibe_k20.sv
+	obj_tb_axis_motion_detect_vibe_k20/Vtb_axis_motion_detect_vibe_k20
+
+# --- axis_motion_detect_vibe external-init: T4 (frame-0 ghost suppression) ---
+test-ip-vibe-external:
+	verilator $(VLT_TB_FLAGS) \
+	  --top-module tb_axis_motion_detect_vibe_external --Mdir obj_tb_axis_motion_detect_vibe_external \
+	  $(IP_MOTION_DETECT_VIBE_SRCS) \
+	  ../../hw/ip/motion/tb/tb_axis_motion_detect_vibe_external.sv
+	obj_tb_axis_motion_detect_vibe_external/Vtb_axis_motion_detect_vibe_external
+
+# --- axis_motion_detect_vibe misconfig: T7 (VIBE_BG_INIT_EXTERNAL=1, empty INIT_BANK_FILE) ---
+# Verilator must fail at elaboration — target passes when verilator exits non-zero.
+test-ip-vibe-misconfig-external:
+	! verilator $(VLT_TB_FLAGS) \
+	  --top-module tb_axis_motion_detect_vibe_external --Mdir obj_tb_axis_motion_detect_vibe_misconfig_ext \
+	  -GVIBE_BG_INIT_EXTERNAL=1 -GINIT_BANK_FILE='""' \
+	  $(IP_MOTION_DETECT_VIBE_SRCS) \
+	  ../../hw/ip/motion/tb/tb_axis_motion_detect_vibe_external.sv
+	@echo "PASS T7: verilator correctly rejected VIBE_BG_INIT_EXTERNAL=1 with empty INIT_BANK_FILE"
+
+# --- axis_motion_detect_vibe misconfig: T8 (illegal K=7) ---
+# Verilator must fail at elaboration — target passes when verilator exits non-zero.
+test-ip-vibe-misconfig-k:
+	! verilator $(VLT_TB_FLAGS) \
+	  --top-module tb_axis_motion_detect_vibe --Mdir obj_tb_axis_motion_detect_vibe_misconfig_k \
+	  -GK=7 \
+	  $(IP_MOTION_DETECT_VIBE_SRCS) \
+	  ../../hw/ip/motion/tb/tb_axis_motion_detect_vibe.sv
+	@echo "PASS T8: verilator correctly rejected illegal K=7"
+
 # ---------------------------------------------------------------------------
 
 clean:
@@ -228,4 +296,6 @@ clean:
 	       obj_tb_axis_overlay_bbox obj_tb_axis_ccl \
 	       obj_tb_axis_morph3x3_erode obj_tb_axis_morph3x3_dilate \
 	       obj_tb_axis_morph_clean \
-	       obj_tb_axis_hflip obj_tb_axis_gamma_cor obj_tb_axis_scale2x
+	       obj_tb_axis_hflip obj_tb_axis_gamma_cor obj_tb_axis_scale2x \
+	       obj_tb_axis_motion_detect_vibe obj_tb_axis_motion_detect_vibe_k20 \
+	       obj_tb_axis_motion_detect_vibe_external

@@ -25,7 +25,8 @@ Per-module architecture and design decisions live in [`docs/specs/`](docs/specs/
 | Document | Module |
 |----------|--------|
 | [`sparevideo-top-arch.md`](docs/specs/sparevideo-top-arch.md) | Top-level pipeline, clock domains, FIFO sizing, SVAs |
-| [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure |
+| [`axis_motion_detect-arch.md`](docs/specs/axis_motion_detect-arch.md) | Motion mask generation, RAM port discipline, backpressure (EMA background model) |
+| [`axis_motion_detect_vibe-arch.md`](docs/specs/axis_motion_detect_vibe-arch.md) | ViBe background-subtraction block (parametric K∈{8,20}, external-init, defer-FIFO for two-pass update semantics) |
 | [`axis_hflip-arch.md`](docs/specs/axis_hflip-arch.md) | Horizontal mirror (selfie-cam) AXIS stage with single line buffer + `enable_i` bypass |
 | [`axis_window3x3-arch.md`](docs/specs/axis_window3x3-arch.md) | Reusable 3x3 sliding-window primitive (line buffers + window regs + edge handling; `EDGE_POLICY` parameter) |
 | [`axis_gauss3x3-arch.md`](docs/specs/axis_gauss3x3-arch.md) | 3x3 Gaussian pre-filter on Y channel |
