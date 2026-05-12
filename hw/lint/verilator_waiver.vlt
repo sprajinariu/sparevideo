@@ -51,6 +51,10 @@ lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_DEFAULT_HF
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_NO_*"
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_DEMO*"
 lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_*VIBE*"
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_PBAS*"
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_PBAS_DEFAULT_RAUTE4*"
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*CFG_PBAS_DEFAULT_RAUTE4_RCAP*"
+lint_off -rule UNUSEDPARAM    -file "*sparevideo_pkg.sv" -match "*BG_MODEL_PBAS*"
 // sparevideo_if.sv declares two interfaces (axis_if + bbox_if) in one file —
 // intentional one-file pattern mirroring sparevideo_pkg.sv. Suppresses the
 // DECLFILENAME warning. Also no `timescale directive, like sparevideo_pkg.sv.
