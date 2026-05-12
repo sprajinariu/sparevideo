@@ -39,6 +39,23 @@ DEFAULT: ProfileT = dict(
     vibe_coupled_rolls=True,
     vibe_bg_init_external=1,          # BG_INIT_LOOKAHEAD_MEDIAN
     vibe_bg_init_lookahead_n=0,       # 0 = sentinel "all available frames"
+    # ---- PBAS knobs (consumed only when bg_model==2) ----
+    pbas_N=0,
+    pbas_R_lower=0,
+    pbas_R_scale=0,
+    pbas_Raute_min=0,
+    pbas_T_lower=0,
+    pbas_T_upper=0,
+    pbas_T_init=0,
+    pbas_R_incdec_q8=0,
+    pbas_T_inc_q8=0,
+    pbas_T_dec_q8=0,
+    pbas_alpha=0,
+    pbas_beta=0,
+    pbas_mean_mag_min=0,
+    pbas_bg_init_lookahead=0,
+    pbas_prng_seed=0,
+    pbas_R_upper=0,
 )
 
 # Default + horizontal mirror (selfie-cam).
@@ -116,6 +133,40 @@ VIBE_INIT_EXTERNAL: ProfileT = dict(
     vibe_bg_init_lookahead_n=0,
 )
 
+# PBAS — Hofmann et al. 2012, Y + gradient features. Verified defaults
+# from the andrewssobral PBAS.cpp reference impl.
+PBAS_DEFAULT: ProfileT = dict(
+    DEFAULT,
+    bg_model=2,
+    pbas_N=20,
+    pbas_R_lower=18,
+    pbas_R_scale=5,
+    pbas_Raute_min=2,
+    pbas_T_lower=2,
+    pbas_T_upper=200,
+    pbas_T_init=18,
+    pbas_R_incdec_q8=13,
+    pbas_T_inc_q8=256,
+    pbas_T_dec_q8=13,
+    pbas_alpha=7,
+    pbas_beta=1,
+    pbas_mean_mag_min=20,
+    pbas_bg_init_lookahead=0,
+    pbas_prng_seed=0xDEADBEEF,
+    pbas_R_upper=0,
+)
+
+# PBAS + lookahead-median init (replaces the paper's frame-by-frame init).
+PBAS_LOOKAHEAD: ProfileT = dict(PBAS_DEFAULT, pbas_bg_init_lookahead=1)
+
+# Ablation: Raute_min=4 (published follow-up range: 3–5; higher = fewer false-bg).
+PBAS_DEFAULT_RAUTE4: ProfileT = dict(PBAS_DEFAULT, pbas_Raute_min=4)
+
+# Ablation: Raute_min=4 AND R_upper=80 cap.
+# R_upper is an engineering knob (NOT a published PBAS parameter): caps R(x) from
+# above at 80, preventing unbounded match-radius growth in high-d_min ghost regions.
+PBAS_DEFAULT_RAUTE4_RCAP: ProfileT = dict(PBAS_DEFAULT, pbas_Raute_min=4, pbas_R_upper=80)
+
 PROFILES: dict[str, ProfileT] = {
     "default":           DEFAULT,
     "default_hflip":     DEFAULT_HFLIP,
@@ -132,6 +183,10 @@ PROFILES: dict[str, ProfileT] = {
     "vibe_no_gauss":      VIBE_NO_GAUSS,
     "vibe_init_frame0":   VIBE_INIT_FRAME0,
     "vibe_init_external":      VIBE_INIT_EXTERNAL,
+    "pbas_default":                 PBAS_DEFAULT,
+    "pbas_lookahead":               PBAS_LOOKAHEAD,
+    "pbas_default_raute4":          PBAS_DEFAULT_RAUTE4,
+    "pbas_default_raute4_rcap":     PBAS_DEFAULT_RAUTE4_RCAP,
 }
 
 

@@ -67,6 +67,8 @@ EXPECTED_PROFILES = {
     "no_gamma_cor", "no_scaler", "demo", "no_hud",
     "default_vibe", "vibe_k20", "vibe_no_diffuse", "vibe_no_gauss",
     "vibe_init_frame0", "vibe_init_external",
+    "pbas_default", "pbas_lookahead",
+    "pbas_default_raute4", "pbas_default_raute4_rcap",
 }
 
 
