@@ -149,6 +149,16 @@ package sparevideo_pkg;
         // from above at this value after the R regulator step, preventing
         // excessive match-radius growth in ghost / high-d_min regions.
         logic [7:0]  pbas_R_upper;       // R(x) upper cap (0=disabled)
+        // ---- ViBe persistence-based FG demotion (Phase 1: Python-only) ----
+        // Demote_en=0 → canonical ViBe (bit-exact regression preserved).
+        // Demote_en=1 → after demote_K_persist FG-classified frames, if any
+        // 3x3 BG-classified neighbor's bank holds a sample within R of the
+        // current Y (at >= demote_consistency_thresh slots), force-write the
+        // current Y into one slot and OR the demote-fire bit into final_bg.
+        logic        vibe_demote_en;
+        logic [7:0]  vibe_demote_K_persist;
+        logic [3:0]  vibe_demote_kernel;            // 3 or 5 (5 reserved for Phase 2)
+        logic [3:0]  vibe_demote_consistency_thresh;
     } cfg_t;
 
     // Default: all cleanup stages on, mirror OFF. Use CFG_DEFAULT_HFLIP if
@@ -199,7 +209,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // Default + horizontal mirror (selfie-cam).
@@ -240,7 +254,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // EMA disabled — alpha=1 on both rates means bg follows the current
@@ -283,7 +301,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // 3x3 mask opening AND closing bypassed.
@@ -324,7 +346,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // 3x3 Gaussian pre-filter bypassed.
@@ -365,7 +391,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // sRGB gamma correction bypassed (linear passthrough at output tail).
@@ -406,7 +436,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // 2x scaler bypassed — output stays at native 320x240. The upstream
@@ -449,7 +483,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // CFG_DEMO: tuned for the README demo. Differences from CFG_DEFAULT:
@@ -504,7 +542,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
@@ -546,7 +588,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:         8'd0,
         pbas_bg_init_lookahead:    1'd0,
         pbas_prng_seed:            32'd0,
-        pbas_R_upper:              8'd0
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ===== ViBe profiles (Phase 1 — Python-only; RTL still EMA) =====
@@ -590,7 +636,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd0,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'd0,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ViBe at K=20 (literature-default sample diversity; ~2.5x the on-chip
@@ -633,7 +683,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd0,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'd0,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ViBe with diffusion disabled — negative-control ablation. Validates
@@ -676,7 +730,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd0,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'd0,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ViBe with the 3x3 Gaussian pre-filter bypassed — same role as
@@ -719,7 +777,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd0,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'd0,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ViBe with the legacy frame-0 init (no look-ahead median). Required
@@ -762,7 +824,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd0,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'd0,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ViBe with external (lookahead-median) ROM init. Named alias for
@@ -807,7 +873,107 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd0,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'd0,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
+    };
+
+    // ViBe + persistence-based FG demotion (Phase 1 candidate). Inherits
+    // every CFG_DEFAULT_VIBE field except: frame-0 hard-init (no lookahead),
+    // demote enabled with K_persist=30, kernel=3, consistency_thresh=3
+    // (thresh=3 promoted from the original 1 after the Phase-1 hollowing
+    // analysis — see docs/plans/2026-05-12-vibe-demote-python-results.md).
+    localparam cfg_t CFG_VIBE_DEMOTE = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_bg_init_external:    1'b0,
+        pbas_N:                   8'd0,
+        pbas_R_lower:             8'd0,
+        pbas_R_scale:             4'd0,
+        pbas_Raute_min:           4'd0,
+        pbas_T_lower:             8'd0,
+        pbas_T_upper:             8'd0,
+        pbas_T_init:              8'd0,
+        pbas_R_incdec_q8:         8'd0,
+        pbas_T_inc_q8:            16'd0,
+        pbas_T_dec_q8:            16'd0,
+        pbas_alpha:               8'd0,
+        pbas_beta:                8'd0,
+        pbas_mean_mag_min:        8'd0,
+        pbas_bg_init_lookahead:   1'd0,
+        pbas_prng_seed:           32'd0,
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b1,
+        vibe_demote_K_persist:          8'd30,
+        vibe_demote_kernel:             4'd3,
+        vibe_demote_consistency_thresh: 4'd3
+    };
+
+    // Demo-tuned vibe_demote: CFG_DEMO's visual tunings (scaler off, gamma
+    // off, EMA alpha overrides) overlaid on vibe_demote's bg model + demote
+    // mechanism. Used for `make demo DEMO_CFG=demo_vibe_demote` README WebPs.
+    localparam cfg_t CFG_DEMO_VIBE_DEMOTE = '{
+        motion_thresh:      8'd16,
+        alpha_shift:        2,
+        alpha_shift_slow:   8,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  1,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_bg_init_external:     1'b0,
+        pbas_N:                    8'd0,
+        pbas_R_lower:              8'd0,
+        pbas_R_scale:              4'd0,
+        pbas_Raute_min:            4'd0,
+        pbas_T_lower:              8'd0,
+        pbas_T_upper:              8'd0,
+        pbas_T_init:               8'd0,
+        pbas_R_incdec_q8:          8'd0,
+        pbas_T_inc_q8:             16'd0,
+        pbas_T_dec_q8:             16'd0,
+        pbas_alpha:                8'd0,
+        pbas_beta:                 8'd0,
+        pbas_mean_mag_min:         8'd0,
+        pbas_bg_init_lookahead:    1'd0,
+        pbas_prng_seed:            32'd0,
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b1,
+        vibe_demote_K_persist:          8'd30,
+        vibe_demote_kernel:             4'd3,
+        vibe_demote_consistency_thresh: 4'd3
     };
 
     // ===== PBAS profiles (Python-only; RTL shadow fields only) =====
@@ -851,7 +1017,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd20,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'hDEADBEEF,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // PBAS + lookahead-median init (replaces the paper's frame-by-frame init).
@@ -892,7 +1062,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd20,
         pbas_bg_init_lookahead:   1'd1,
         pbas_prng_seed:           32'hDEADBEEF,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // PBAS ablation: Raute_min raised from 2 to 4.
@@ -935,7 +1109,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd20,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'hDEADBEEF,
-        pbas_R_upper:             8'd0
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // PBAS ablation: Raute_min=4 AND R_upper cap at 80.
@@ -979,7 +1157,11 @@ package sparevideo_pkg;
         pbas_mean_mag_min:        8'd20,
         pbas_bg_init_lookahead:   1'd0,
         pbas_prng_seed:           32'hDEADBEEF,
-        pbas_R_upper:             8'd80
+        pbas_R_upper:             8'd80,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0
     };
 
     // ---------------------------------------------------------------

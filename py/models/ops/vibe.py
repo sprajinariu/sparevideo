@@ -50,6 +50,11 @@ class ViBe:
         init_scheme: str = "c",
         prng_seed: int = 0xDEADBEEF,
         coupled_rolls: bool = False,
+        # ---- Persistence-based FG demotion (B') ----
+        demote_en: bool = False,
+        demote_K_persist: int = 30,
+        demote_kernel: int = 3,
+        demote_consistency_thresh: int = 1,
     ):
         # Validate constraints from design doc
         assert K > 0, "K must be a positive integer"
@@ -59,6 +64,8 @@ class ViBe:
             assert phi_diffuse & (phi_diffuse - 1) == 0, "phi_diffuse must be a power of 2 or 0"
         assert init_scheme in ("a", "b", "c"), "init_scheme must be 'a', 'b', or 'c'"
         assert prng_seed != 0, "prng_seed must be non-zero (0 is Xorshift32 fixed point)"
+        assert demote_kernel in (0, 3, 5), "demote_kernel must be 0/3/5 (0 = disabled sentinel)"
+        assert demote_consistency_thresh >= 0, "demote_consistency_thresh must be >= 0"
 
         self.K = K
         self.R = R
@@ -72,8 +79,16 @@ class ViBe:
         # When False: independent rolls per Doc B §2 generalization.
         # phi_diffuse is unused when coupled_rolls=True.
         self.coupled_rolls = coupled_rolls
+        # Persistence-based demotion config
+        self.demote_en = bool(demote_en)
+        self.demote_K_persist = int(demote_K_persist)
+        self.demote_kernel = int(demote_kernel) if demote_kernel != 0 else 3
+        self.demote_consistency_thresh = int(demote_consistency_thresh)
 
         self.samples: Optional[np.ndarray] = None  # shape (H, W, K), uint8
+        # Per-pixel demote state — allocated by init_from_frame{,s} after H,W known.
+        self.fg_count: Optional[np.ndarray] = None       # (H, W) uint8
+        self.prev_final_bg: Optional[np.ndarray] = None  # (H, W) bool
         self.H = 0
         self.W = 0
 
@@ -88,6 +103,11 @@ class ViBe:
             "frame_0 must be a 2-D uint8 Y frame"
         self.H, self.W = frame_0.shape
         self.samples = np.zeros((self.H, self.W, self.K), dtype=np.uint8)
+        # Persistence-based demotion state. fg_count starts at 0; prev_final_bg
+        # starts all-True (bg) so that on frame 1 the consistency check sees the
+        # surrounding real-bg neighbors as previously-BG-classified.
+        self.fg_count = np.zeros((self.H, self.W), dtype=np.uint8)
+        self.prev_final_bg = np.ones((self.H, self.W), dtype=bool)
         if   self.init_scheme == "a": self._init_scheme_a(frame_0)
         elif self.init_scheme == "b": self._init_scheme_b(frame_0)
         elif self.init_scheme == "c": self._init_scheme_c(frame_0)
@@ -300,6 +320,81 @@ class ViBe:
                 if 0 <= nr < self.H and 0 <= nc < self.W:
                     self.samples[nr, nc, slot_nbr] = frame[r, c]
 
+    def _compute_demote_fire(self, frame: np.ndarray, canonical_fg: np.ndarray) -> np.ndarray:
+        """Per-pixel demote_fire bit. Fires when:
+          - pixel classified FG canonically this frame, AND
+          - fg_count[r,c] >= demote_K_persist, AND
+          - at least one neighbor in the demote_kernel neighborhood was
+            BG-classified per the previous-frame final_bg map, and that
+            neighbor's bank holds >= demote_consistency_thresh slots within
+            R of the current pixel value.
+        """
+        H, W = frame.shape
+        eligible = canonical_fg & (self.fg_count >= self.demote_K_persist)
+        if not eligible.any():
+            return np.zeros((H, W), dtype=bool)
+        radius = self.demote_kernel // 2
+        fire = np.zeros((H, W), dtype=bool)
+        # Short-circuit per-pixel scan. The image is small (≤ 320x240); explicit
+        # pixel-level loops match the upstream ViBe code style and keep RTL parity
+        # straightforward. Vectorisation is a future optimisation, not required for
+        # the Python reference operator.
+        R = self.R
+        K = self.K
+        thresh = self.demote_consistency_thresh
+        prev_bg = self.prev_final_bg
+        for r in range(H):
+            for c in range(W):
+                if not eligible[r, c]:
+                    continue
+                y = int(frame[r, c])
+                fired = False
+                for dr in range(-radius, radius + 1):
+                    if fired:
+                        break
+                    for dc in range(-radius, radius + 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr = r + dr
+                        nc = c + dc
+                        if not (0 <= nr < H and 0 <= nc < W):
+                            continue
+                        if not prev_bg[nr, nc]:
+                            continue
+                        # Count matching slots in this neighbor's bank.
+                        match_count = 0
+                        for k in range(K):
+                            if abs(int(self.samples[nr, nc, k]) - y) < R:
+                                match_count += 1
+                                if match_count >= thresh:
+                                    break
+                        if match_count >= thresh:
+                            fire[r, c] = True
+                            fired = True
+                            break
+        return fire
+
+    def _apply_demote_write(self, frame: np.ndarray, demote_fire: np.ndarray) -> None:
+        """Deterministic single-slot write per firing pixel. The slot index
+        is chosen from the existing PRNG stream (one advance per firing pixel,
+        in raster order) to preserve determinism without disturbing the
+        canonical update PRNG sequence beyond the existing pattern.
+        """
+        if not demote_fire.any():
+            return
+        H, W = frame.shape
+        K = self.K
+        log2_K = (K - 1).bit_length()
+        for r in range(H):
+            for c in range(W):
+                if not demote_fire[r, c]:
+                    continue
+                state = self._next_prng()
+                slot = ((state >> 0) % K)  # low log2(K) bits → slot
+                self.samples[r, c, slot] = frame[r, c]
+                # Silence unused-name warning for log2_K (kept for clarity / future use).
+                _ = log2_K
+
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process one frame: compute mask, then apply update.
 
@@ -310,18 +405,46 @@ class ViBe:
         independent PRNG advances per pixel, self-update at 1/phi_update and
         diffusion at 1/phi_diffuse independently.
 
+        With demote_en=True: after the canonical update, persistence-based
+        demotion may force-write the current pixel into one bank slot AND
+        OR a `demote_fire` bit into the output (and registered) mask. See
+        the design doc §3 for details.
+
         Args:
             frame: (H, W) uint8 Y frame.
 
         Returns:
-            (H, W) bool mask. True = motion, False = bg.
+            (H, W) bool mask. True = motion (FG), False = bg.
         """
-        mask = self.compute_mask(frame)
+        mask = self.compute_mask(frame)            # canonical FG/BG (True = FG)
         if self.coupled_rolls:
             self._apply_update_coupled(frame, mask)
         else:
-            # Order matters for PRNG-state determinism: self-update first, diffusion second.
-            # Each helper advances PRNG once per pixel; both passes see independent state words.
             self._apply_self_update(frame, mask)
             self._apply_diffusion(frame, mask)
-        return mask
+
+        if not self.demote_en:
+            # Canonical ViBe: no demote, no state to update beyond the bank.
+            return mask
+
+        # Persistence-based demotion: compute demote_fire, force-write, OR into final.
+        # demote_fire requires (canonical FG) AND fg_count >= K_persist AND
+        # at least one BG-classified previous-frame neighbor whose bank has
+        # >= demote_consistency_thresh slots matching current Y within R.
+        # Step 1 (spec §3.2): counter update using canonical classification.
+        # Done BEFORE eligibility check so frame-K_persist eligibility uses the
+        # newly-incremented count.
+        canonical_fg = mask
+        self.fg_count = np.where(
+            canonical_fg,
+            np.minimum(self.fg_count.astype(np.int32) + 1, 255),
+            0,
+        ).astype(np.uint8)
+        # Step 2-4: eligibility + consistency + demote write.
+        demote_fire = self._compute_demote_fire(frame, canonical_fg)
+        self._apply_demote_write(frame, demote_fire)
+        # Step 5: final classification.
+        final_bg = (~canonical_fg) | demote_fire
+        # Register for next-frame neighbor checks.
+        self.prev_final_bg = final_bg.copy()
+        return ~final_bg

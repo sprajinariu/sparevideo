@@ -56,6 +56,11 @@ DEFAULT: ProfileT = dict(
     pbas_bg_init_lookahead=0,
     pbas_prng_seed=0,
     pbas_R_upper=0,
+    # ---- ViBe persistence-based FG demotion (Phase 1: Python-only) ----
+    vibe_demote_en=False,
+    vibe_demote_K_persist=0,
+    vibe_demote_kernel=0,
+    vibe_demote_consistency_thresh=0,
 )
 
 # Default + horizontal mirror (selfie-cam).
@@ -167,6 +172,48 @@ PBAS_DEFAULT_RAUTE4: ProfileT = dict(PBAS_DEFAULT, pbas_Raute_min=4)
 # above at 80, preventing unbounded match-radius growth in high-d_min ghost regions.
 PBAS_DEFAULT_RAUTE4_RCAP: ProfileT = dict(PBAS_DEFAULT, pbas_Raute_min=4, pbas_R_upper=80)
 
+# ViBe + persistence-based foreground demotion (B'). Inherits DEFAULT_VIBE's
+# bg-model and cleanup pipeline; toggles vibe_bg_init_external OFF (frame-0
+# hard-init — no lookahead crutch) and enables the demote mechanism. Default
+# consistency_thresh=3 was promoted from the original 1 after the Phase-1
+# results: thresh=1 produced a single-slot-pollution cascade that hollowed
+# real moving objects via low-contrast pixels in their outline; thresh=3
+# requires three matching bank slots in a BG neighbor before firing, breaking
+# the cascade at the cost of a slower wavefront (3 frames per ghost ring
+# instead of 1). See docs/plans/2026-05-12-vibe-demote-python-results.md.
+VIBE_DEMOTE: ProfileT = dict(
+    DEFAULT_VIBE,
+    vibe_bg_init_external=0,             # frame-0 hard-init
+    vibe_bg_init_lookahead_n=0,          # unused under frame-0 init; keep sentinel
+    vibe_demote_en=True,
+    vibe_demote_K_persist=30,
+    vibe_demote_kernel=3,
+    vibe_demote_consistency_thresh=3,
+)
+
+# Demo-tuned vibe_demote: inherits DEMO's visual tunings (scaler off, gamma
+# off, EMA alpha overrides — though alpha_shift_slow is unused under ViBe)
+# and overlays vibe_demote's bg model + demote mechanism. Used for the
+# `make demo DEMO_CFG=demo_vibe_demote` README-style WebPs.
+DEMO_VIBE_DEMOTE: ProfileT = dict(
+    DEMO,
+    bg_model=1,
+    vibe_K=8,
+    vibe_R=20,
+    vibe_min_match=2,
+    vibe_phi_update=16,
+    vibe_phi_diffuse=16,
+    vibe_init_scheme=2,
+    vibe_prng_seed=0xDEADBEEF,
+    vibe_coupled_rolls=True,
+    vibe_bg_init_external=0,
+    vibe_bg_init_lookahead_n=0,
+    vibe_demote_en=True,
+    vibe_demote_K_persist=30,
+    vibe_demote_kernel=3,
+    vibe_demote_consistency_thresh=3,
+)
+
 PROFILES: dict[str, ProfileT] = {
     "default":           DEFAULT,
     "default_hflip":     DEFAULT_HFLIP,
@@ -183,6 +230,8 @@ PROFILES: dict[str, ProfileT] = {
     "vibe_no_gauss":      VIBE_NO_GAUSS,
     "vibe_init_frame0":   VIBE_INIT_FRAME0,
     "vibe_init_external":      VIBE_INIT_EXTERNAL,
+    "vibe_demote":                  VIBE_DEMOTE,
+    "demo_vibe_demote":             DEMO_VIBE_DEMOTE,
     "pbas_default":                 PBAS_DEFAULT,
     "pbas_lookahead":               PBAS_LOOKAHEAD,
     "pbas_default_raute4":          PBAS_DEFAULT_RAUTE4,
