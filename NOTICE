@@ -1,0 +1,74 @@
+sparevideo
+Copyright 2026 Sebastian Prajinariu
+
+This product includes software developed as part of the sparevideo
+project, licensed under the Apache License, Version 2.0. See the file
+LICENSE for the full license text.
+
+
+------------------------------------------------------------------------
+THIRD-PARTY PATENTS
+------------------------------------------------------------------------
+
+The Apache-2.0 license under which this project is distributed grants
+rights to the source code contributed by this project's authors. It
+does NOT, and cannot, grant rights to patents held by third parties.
+
+The following third-party patents may read on portions of this code.
+Users intending to make, use, sell, offer to sell, or import products
+derived from this code should evaluate their own patent exposure and
+obtain any necessary licenses directly from the patent holders.
+
+This notice is informational only and does not constitute legal
+advice. Consult qualified counsel regarding your specific exposure.
+
+
+ViBe (Visual Background Extractor)
+----------------------------------
+
+The ViBe background-subtraction algorithm is described in:
+
+  O. Barnich and M. Van Droogenbroeck, "ViBe: A Universal Background
+  Subtraction Algorithm for Video Sequences," IEEE Transactions on
+  Image Processing, vol. 20, no. 6, pp. 1709-1724, June 2011.
+
+ViBe is covered by patents owned by Université de Liège (ULiège),
+Belgium:
+
+  Priority filing: EP20070112011, 2007-07-08
+  PCT publication: WO2009007198 (2009-01-15)
+  - EP2015252B1 (Europe)
+  - US 8009918 B2 (United States)
+  - JP 4699564 B2 (Japan)
+
+The ViBe-related code in this repository is an INDEPENDENT
+reimplementation written from the published IEEE TIP 2011 paper and
+related publications. This repository does NOT contain or distribute
+the official ViBe reference code maintained by ULiège. The "Software
+Evaluation License Agreement" distributed with the official ViBe
+reference code therefore does not apply to this code, and does not
+grant any rights under the patents above.
+
+Additional information on the algorithm and the official reference
+implementation: https://www.telecom.uliege.be/vibe/
+
+PBAS (Pixel-Based Adaptive Segmenter)
+-------------------------------------
+
+Reference:
+
+  M. Hofmann, P. Tiefenbacher, and G. Rigoll, "Background Segmentation
+  with Feedback: The Pixel-Based Adaptive Segmenter," IEEE Computer
+  Vision and Pattern Recognition Workshops (CVPRW), 2012.
+
+
+------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE
+------------------------------------------------------------------------
+
+verilog-axis
+------------
+
+This project bundles a copy of alexforencich/verilog-axis under
+third_party/verilog-axis/, distributed under the MIT License. See
+third_party/verilog-axis/LICENSE for the full license text.
