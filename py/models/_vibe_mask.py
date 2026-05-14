@@ -36,6 +36,10 @@ def produce_masks_vibe(
     vibe_coupled_rolls: bool,
     vibe_bg_init_external: int,
     vibe_bg_init_lookahead_n: int,
+    vibe_demote_en: bool = False,
+    vibe_demote_K_persist: int = 30,
+    vibe_demote_kernel: int = 3,
+    vibe_demote_consistency_thresh: int = 1,
     gauss_en: bool = True,
     **_ignored,
 ) -> list[np.ndarray]:
@@ -60,6 +64,10 @@ def produce_masks_vibe(
         init_scheme=init_scheme,
         prng_seed=vibe_prng_seed,
         coupled_rolls=vibe_coupled_rolls,
+        demote_en=vibe_demote_en,
+        demote_K_persist=vibe_demote_K_persist,
+        demote_kernel=vibe_demote_kernel,
+        demote_consistency_thresh=vibe_demote_consistency_thresh,
     )
 
     # Init.
