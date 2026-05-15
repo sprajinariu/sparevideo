@@ -130,6 +130,15 @@ def main(argv: list[str] | None = None) -> None:
         required=True,
         help="Xorshift32 PRNG seed (e.g. 0xDEADBEEF). Must be non-zero.",
     )
+    ap.add_argument(
+        "--bg-init-mode", choices=["median", "imrm", "mvtw", "mam"], default="median",
+        help="BG-estimate algorithm (default: median, paper-canonical).",
+    )
+    ap.add_argument("--bg-init-imrm-tau",    type=int, default=20)
+    ap.add_argument("--bg-init-imrm-iters",  type=int, default=3)
+    ap.add_argument("--bg-init-mvtw-k",      type=int, default=24)
+    ap.add_argument("--bg-init-mam-delta",   type=int, default=8)
+    ap.add_argument("--bg-init-mam-dilate",  type=int, default=2)
     args = ap.parse_args(argv)
 
     if args.seed == 0:
@@ -141,6 +150,12 @@ def main(argv: list[str] | None = None) -> None:
         k=args.k,
         lookahead_n=args.lookahead_n,
         seed=args.seed,
+        bg_init_mode=args.bg_init_mode,
+        bg_init_imrm_tau=args.bg_init_imrm_tau,
+        bg_init_imrm_iters=args.bg_init_imrm_iters,
+        bg_init_mvtw_k=args.bg_init_mvtw_k,
+        bg_init_mam_delta=args.bg_init_mam_delta,
+        bg_init_mam_dilate=args.bg_init_mam_dilate,
     )
     _write_mem(
         args.output, bank, args.width, args.height, args.k,

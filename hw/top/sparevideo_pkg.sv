@@ -102,6 +102,12 @@ package sparevideo_pkg;
 
     localparam int BG_INIT_FRAME0           = 0;
     localparam int BG_INIT_LOOKAHEAD_MEDIAN = 1;
+
+    // ---- BG-init mode encoding (consumed only when vibe_bg_init_external=1) ----
+    localparam int BG_INIT_MEDIAN = 0;  // current production: per-pixel temporal median
+    localparam int BG_INIT_IMRM   = 1;  // iterative motion-rejected median
+    localparam int BG_INIT_MVTW   = 2;  // per-pixel min-variance temporal window
+    localparam int BG_INIT_MAM    = 3;  // motion-aware (frame-diff outlier rejection) median
     /* verilator lint_on UNUSEDPARAM */
 
     typedef struct packed {
@@ -128,6 +134,12 @@ package sparevideo_pkg;
         int         vibe_phi_update;     // self-update period (power of 2)
         int         vibe_phi_diffuse;    // diffusion period (power of 2; 0=off)
         logic       vibe_bg_init_external;  // 1=look-ahead median init; 0=frame-0 init
+        logic [1:0]  vibe_bg_init_mode;        // BG_INIT_MEDIAN/IMRM/MVTW/MAM
+        logic [7:0]  vibe_bg_init_imrm_tau;    // IMRM: outlier deviation threshold (default 20)
+        logic [3:0]  vibe_bg_init_imrm_iters;  // IMRM: iteration count (default 3)
+        logic [7:0]  vibe_bg_init_mvtw_k;      // MVTW: window length in frames (default 24)
+        logic [7:0]  vibe_bg_init_mam_delta;   // MAM: frame-diff threshold (default 8)
+        logic [3:0]  vibe_bg_init_mam_dilate;  // MAM: temporal dilation radius (default 2)
         // ---- PBAS knobs (consumed only when bg_model==BG_MODEL_PBAS) ----
         logic [7:0]  pbas_N;             // sample-bank depth per pixel
         logic [7:0]  pbas_R_lower;       // minimum match-radius floor
@@ -213,7 +225,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // Default + horizontal mirror (selfie-cam).
@@ -258,7 +276,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // EMA disabled — alpha=1 on both rates means bg follows the current
@@ -305,7 +329,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // 3x3 mask opening AND closing bypassed.
@@ -350,7 +380,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // 3x3 Gaussian pre-filter bypassed.
@@ -395,7 +431,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // sRGB gamma correction bypassed (linear passthrough at output tail).
@@ -440,7 +482,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // 2x scaler bypassed — output stays at native 320x240. The upstream
@@ -487,28 +535,27 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
-    // CFG_DEMO: tuned for the README demo. Differences from CFG_DEFAULT:
+    // CFG_DEMO: tuned for the README demo. Inherits ViBe + MVTW look-ahead init
+    // (k=12) from CFG_DEFAULT_VIBE; bank is pre-loaded by Python via
+    // gen_vibe_init_rom.py and consumed by RTL via $readmemh from init_bank.mem.
+    // Demo-specific overrides vs CFG_DEFAULT_VIBE:
     //   scaler_en=0          — 320x240 panels for the triptych
     //   gamma_en=0           — sources are already sRGB-encoded
-    //   alpha_shift=2        — faster fast-EMA (~4-frame recovery)
-    //   alpha_shift_slow=8   — bg barely drifts under sustained motion (~1/256
-    //                          per frame) so slow objects don't accumulate
-    //                          enough bg contamination to leave a trailing
-    //                          mask after the trailing edge passes (safe here:
-    //                          the 3 s demo has no stationary objects long
-    //                          enough to need bg-absorption protection)
-    //   grace_frames=0       — synthetic source renders frame 0 as bg-only
-    //                          (boxes start off-frame), so EMA hard-init has
-    //                          no foreground to bake in; the real clip relies
-    //                          on PRIME_FRAMES + the EMA's natural convergence
-    //                          rather than a forced grace window.
+    // alpha_shift / alpha_shift_slow / grace_frames are unused under ViBe but
+    // kept at the package defaults for cfg_t completeness.
     localparam cfg_t CFG_DEMO = '{
         motion_thresh:      8'd16,
-        alpha_shift:        2,
-        alpha_shift_slow:   8,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
         grace_frames:       0,
         grace_alpha_shift:  1,
         gauss_en:           1'b1,
@@ -520,7 +567,7 @@ package sparevideo_pkg;
         scaler_en:          1'b0,
         hud_en:             1'b1,
         bbox_color:                24'h00_FF_00,
-        bg_model:                  0,
+        bg_model:                  1,
         vibe_K:                    8,
         vibe_R:                    20,
         vibe_min_match:            2,
@@ -546,7 +593,115 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Demo sensitivity sweep: lower comparator radius R=12 (vs CFG_DEMO's 20).
+    localparam cfg_t CFG_DEMO_R12 = '{
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  1,
+        vibe_K:                    8,
+        vibe_R:                    12,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_bg_init_external:     1'b1,
+        pbas_N:                    8'd0,
+        pbas_R_lower:              8'd0,
+        pbas_R_scale:              4'd0,
+        pbas_Raute_min:            4'd0,
+        pbas_T_lower:              8'd0,
+        pbas_T_upper:              8'd0,
+        pbas_T_init:               8'd0,
+        pbas_R_incdec_q8:          8'd0,
+        pbas_T_inc_q8:             16'd0,
+        pbas_T_dec_q8:             16'd0,
+        pbas_alpha:                8'd0,
+        pbas_beta:                 8'd0,
+        pbas_mean_mag_min:         8'd0,
+        pbas_bg_init_lookahead:    1'd0,
+        pbas_prng_seed:            32'd0,
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Demo sensitivity sweep: K=20 bank slots (vs CFG_DEMO's 8).
+    localparam cfg_t CFG_DEMO_K20 = '{
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  1,
+        vibe_K:                    20,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_bg_init_external:     1'b1,
+        pbas_N:                    8'd0,
+        pbas_R_lower:              8'd0,
+        pbas_R_scale:              4'd0,
+        pbas_Raute_min:            4'd0,
+        pbas_T_lower:              8'd0,
+        pbas_T_upper:              8'd0,
+        pbas_T_init:               8'd0,
+        pbas_R_incdec_q8:          8'd0,
+        pbas_T_inc_q8:             16'd0,
+        pbas_T_dec_q8:             16'd0,
+        pbas_alpha:                8'd0,
+        pbas_beta:                 8'd0,
+        pbas_mean_mag_min:         8'd0,
+        pbas_bg_init_lookahead:    1'd0,
+        pbas_prng_seed:            32'd0,
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // HUD bitmap overlay bypassed (post-scaler tail is identity passthrough).
@@ -592,7 +747,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ===== ViBe profiles (Phase 1 — Python-only; RTL still EMA) =====
@@ -640,7 +801,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ViBe at K=20 (literature-default sample diversity; ~2.5x the on-chip
@@ -687,7 +854,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ViBe with diffusion disabled — negative-control ablation. Validates
@@ -734,7 +907,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ViBe with the 3x3 Gaussian pre-filter bypassed — same role as
@@ -781,7 +960,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ViBe with the legacy frame-0 init (no look-ahead median). Required
@@ -828,14 +1013,19 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
-    // ViBe with external (lookahead-median) ROM init. Named alias for
-    // CFG_DEFAULT_VIBE that explicitly targets the $readmemh path.
-    // Byte-identical to CFG_DEFAULT_VIBE at the SV level; the distinction
-    // (vibe_bg_init_lookahead_n sentinel) lives in the Python profile only
-    // and drives ROM-gen behaviour, not a cfg_t field.
+    // Lookahead-median baseline: external-init ROM populated via the median
+    // helper over the full source. Pins vibe_bg_init_mode=BG_INIT_MEDIAN so it
+    // remains the comparison baseline for the bg_init experiment runner,
+    // independent of any future CFG_DEFAULT_VIBE mode promotion.
     localparam cfg_t CFG_VIBE_INIT_EXTERNAL = '{
         motion_thresh:            8'd16,
         alpha_shift:              3,
@@ -877,7 +1067,169 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Look-ahead bg init using the IMRM (iterative motion-rejected median)
+    // helper. Identical to CFG_VIBE_INIT_EXTERNAL except vibe_bg_init_mode=1.
+    localparam cfg_t CFG_VIBE_INIT_IMRM = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_bg_init_external:    1'b1,
+        pbas_N:                   8'd0,
+        pbas_R_lower:             8'd0,
+        pbas_R_scale:             4'd0,
+        pbas_Raute_min:           4'd0,
+        pbas_T_lower:             8'd0,
+        pbas_T_upper:             8'd0,
+        pbas_T_init:              8'd0,
+        pbas_R_incdec_q8:         8'd0,
+        pbas_T_inc_q8:            16'd0,
+        pbas_T_dec_q8:            16'd0,
+        pbas_alpha:               8'd0,
+        pbas_beta:                8'd0,
+        pbas_mean_mag_min:        8'd0,
+        pbas_bg_init_lookahead:   1'd0,
+        pbas_prng_seed:           32'd0,
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd1,  // BG_INIT_IMRM
+        vibe_bg_init_imrm_tau:   8'd32,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Look-ahead bg init using the MVTW (min-variance temporal window)
+    // helper. Identical to CFG_VIBE_INIT_EXTERNAL except vibe_bg_init_mode=2.
+    localparam cfg_t CFG_VIBE_INIT_MVTW = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_bg_init_external:    1'b1,
+        pbas_N:                   8'd0,
+        pbas_R_lower:             8'd0,
+        pbas_R_scale:             4'd0,
+        pbas_Raute_min:           4'd0,
+        pbas_T_lower:             8'd0,
+        pbas_T_upper:             8'd0,
+        pbas_T_init:              8'd0,
+        pbas_R_incdec_q8:         8'd0,
+        pbas_T_inc_q8:            16'd0,
+        pbas_T_dec_q8:            16'd0,
+        pbas_alpha:               8'd0,
+        pbas_beta:                8'd0,
+        pbas_mean_mag_min:        8'd0,
+        pbas_bg_init_lookahead:   1'd0,
+        pbas_prng_seed:           32'd0,
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Look-ahead bg init using the MAM (motion-aware median) helper.
+    // Identical to CFG_VIBE_INIT_EXTERNAL except vibe_bg_init_mode=3.
+    localparam cfg_t CFG_VIBE_INIT_MAM = '{
+        motion_thresh:            8'd16,
+        alpha_shift:              3,
+        alpha_shift_slow:         6,
+        grace_frames:             0,
+        grace_alpha_shift:        1,
+        gauss_en:                 1'b1,
+        morph_open_en:            1'b1,
+        morph_close_en:           1'b1,
+        morph_close_kernel:       3,
+        hflip_en:                 1'b0,
+        gamma_en:                 1'b1,
+        scaler_en:                1'b1,
+        hud_en:                   1'b1,
+        bbox_color:               24'h00_FF_00,
+        bg_model:                 1,
+        vibe_K:                   8,
+        vibe_R:                   20,
+        vibe_min_match:           2,
+        vibe_phi_update:          16,
+        vibe_phi_diffuse:         16,
+        vibe_bg_init_external:    1'b1,
+        pbas_N:                   8'd0,
+        pbas_R_lower:             8'd0,
+        pbas_R_scale:             4'd0,
+        pbas_Raute_min:           4'd0,
+        pbas_T_lower:             8'd0,
+        pbas_T_upper:             8'd0,
+        pbas_T_init:              8'd0,
+        pbas_R_incdec_q8:         8'd0,
+        pbas_T_inc_q8:            16'd0,
+        pbas_T_dec_q8:            16'd0,
+        pbas_alpha:               8'd0,
+        pbas_beta:                8'd0,
+        pbas_mean_mag_min:        8'd0,
+        pbas_bg_init_lookahead:   1'd0,
+        pbas_prng_seed:           32'd0,
+        pbas_R_upper:             8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd3,  // BG_INIT_MAM
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd6,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ViBe + persistence-based FG demotion (Phase 1 candidate). Inherits
@@ -926,7 +1278,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b1,
         vibe_demote_K_persist:          8'd30,
         vibe_demote_kernel:             4'd3,
-        vibe_demote_consistency_thresh: 4'd3
+        vibe_demote_consistency_thresh: 4'd3,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // Demo-tuned vibe_demote: CFG_DEMO's visual tunings (scaler off, gamma
@@ -934,8 +1292,8 @@ package sparevideo_pkg;
     // mechanism. Used for `make demo DEMO_CFG=demo_vibe_demote` README WebPs.
     localparam cfg_t CFG_DEMO_VIBE_DEMOTE = '{
         motion_thresh:      8'd16,
-        alpha_shift:        2,
-        alpha_shift_slow:   8,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
         grace_frames:       0,
         grace_alpha_shift:  1,
         gauss_en:           1'b1,
@@ -973,7 +1331,116 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b1,
         vibe_demote_K_persist:          8'd30,
         vibe_demote_kernel:             4'd3,
-        vibe_demote_consistency_thresh: 4'd3
+        vibe_demote_consistency_thresh: 4'd3,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW (unused: vibe_bg_init_external=0)
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Demo-tuned MVTW init alone (no demote). Look-ahead bank pre-loaded by
+    // Python (compute_lookahead_median_bank with bg_init_mode=MVTW).
+    localparam cfg_t CFG_DEMO_INIT_MVTW = '{
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  1,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_bg_init_external:     1'b1,
+        pbas_N:                    8'd0,
+        pbas_R_lower:              8'd0,
+        pbas_R_scale:              4'd0,
+        pbas_Raute_min:            4'd0,
+        pbas_T_lower:              8'd0,
+        pbas_T_upper:              8'd0,
+        pbas_T_init:               8'd0,
+        pbas_R_incdec_q8:          8'd0,
+        pbas_T_inc_q8:             16'd0,
+        pbas_T_dec_q8:             16'd0,
+        pbas_alpha:                8'd0,
+        pbas_beta:                 8'd0,
+        pbas_mean_mag_min:         8'd0,
+        pbas_bg_init_lookahead:    1'd0,
+        pbas_prng_seed:            32'd0,
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b0,
+        vibe_demote_K_persist:          8'd0,
+        vibe_demote_kernel:             4'd0,
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
+    };
+
+    // Demo-tuned MVTW init + demote combo.
+    localparam cfg_t CFG_DEMO_INIT_DEMOTE = '{
+        motion_thresh:      8'd16,
+        alpha_shift:        3,
+        alpha_shift_slow:   6,
+        grace_frames:       0,
+        grace_alpha_shift:  1,
+        gauss_en:           1'b1,
+        morph_open_en:      1'b1,
+        morph_close_en:     1'b1,
+        morph_close_kernel: 3,
+        hflip_en:           1'b0,
+        gamma_en:           1'b0,
+        scaler_en:          1'b0,
+        hud_en:             1'b1,
+        bbox_color:                24'h00_FF_00,
+        bg_model:                  1,
+        vibe_K:                    8,
+        vibe_R:                    20,
+        vibe_min_match:            2,
+        vibe_phi_update:           16,
+        vibe_phi_diffuse:          16,
+        vibe_bg_init_external:     1'b1,
+        pbas_N:                    8'd0,
+        pbas_R_lower:              8'd0,
+        pbas_R_scale:              4'd0,
+        pbas_Raute_min:            4'd0,
+        pbas_T_lower:              8'd0,
+        pbas_T_upper:              8'd0,
+        pbas_T_init:               8'd0,
+        pbas_R_incdec_q8:          8'd0,
+        pbas_T_inc_q8:             16'd0,
+        pbas_T_dec_q8:             16'd0,
+        pbas_alpha:                8'd0,
+        pbas_beta:                 8'd0,
+        pbas_mean_mag_min:         8'd0,
+        pbas_bg_init_lookahead:    1'd0,
+        pbas_prng_seed:            32'd0,
+        pbas_R_upper:              8'd0,
+        vibe_demote_en:                 1'b1,
+        vibe_demote_K_persist:          8'd30,
+        vibe_demote_kernel:             4'd3,
+        vibe_demote_consistency_thresh: 4'd3,
+        vibe_bg_init_mode:       2'd2,  // BG_INIT_MVTW
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd12,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ===== PBAS profiles (Python-only; RTL shadow fields only) =====
@@ -1021,7 +1488,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // PBAS + lookahead-median init (replaces the paper's frame-by-frame init).
@@ -1066,7 +1539,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // PBAS ablation: Raute_min raised from 2 to 4.
@@ -1113,7 +1592,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // PBAS ablation: Raute_min=4 AND R_upper cap at 80.
@@ -1161,7 +1646,13 @@ package sparevideo_pkg;
         vibe_demote_en:                 1'b0,
         vibe_demote_K_persist:          8'd0,
         vibe_demote_kernel:             4'd0,
-        vibe_demote_consistency_thresh: 4'd0
+        vibe_demote_consistency_thresh: 4'd0,
+        vibe_bg_init_mode:       2'd0,  // BG_INIT_MEDIAN
+        vibe_bg_init_imrm_tau:   8'd20,
+        vibe_bg_init_imrm_iters: 4'd3,
+        vibe_bg_init_mvtw_k:     8'd24,
+        vibe_bg_init_mam_delta:  8'd8,
+        vibe_bg_init_mam_dilate: 4'd2
     };
 
     // ---------------------------------------------------------------

@@ -39,6 +39,12 @@ DEFAULT: ProfileT = dict(
     vibe_coupled_rolls=True,
     vibe_bg_init_external=1,          # BG_INIT_LOOKAHEAD_MEDIAN
     vibe_bg_init_lookahead_n=0,       # 0 = sentinel "all available frames"
+    vibe_bg_init_mode=0,              # BG_INIT_MEDIAN
+    vibe_bg_init_imrm_tau=20,
+    vibe_bg_init_imrm_iters=3,
+    vibe_bg_init_mvtw_k=24,
+    vibe_bg_init_mam_delta=8,
+    vibe_bg_init_mam_dilate=2,
     # ---- PBAS knobs (consumed only when bg_model==2) ----
     pbas_N=0,
     pbas_R_lower=0,
@@ -81,20 +87,6 @@ NO_GAMMA_COR: ProfileT = dict(DEFAULT, gamma_en=False)
 # 2x spatial upscaler bypassed (output resolution = input resolution).
 NO_SCALER: ProfileT = dict(DEFAULT, scaler_en=False)
 
-# README demo profile, tuned for the synthetic + Pexels triptychs:
-#   scaler_en=False       — 320x240 panels (no 2x upscale)
-#   gamma_en=False        — sources are already sRGB-encoded
-#   alpha_shift=2         — faster fast-EMA (~4-frame recovery)
-#   alpha_shift_slow=8    — bg barely drifts under sustained motion (~1/256/frame)
-#                           so slow objects don't accumulate enough bg contamination
-#                           to leave a trailing mask after the trailing edge passes
-#   grace_frames=0        — synthetic source renders frame 0 as bg-only (boxes start
-#                           off-frame), so EMA hard-init has no foreground to bake in.
-DEMO: ProfileT = dict(
-    DEFAULT, scaler_en=False, gamma_en=False,
-    alpha_shift=2, alpha_shift_slow=8, grace_frames=0,
-)
-
 # HUD bitmap overlay bypassed.
 NO_HUD: ProfileT = dict(DEFAULT, hud_en=False)
 
@@ -115,7 +107,31 @@ DEFAULT_VIBE: ProfileT = dict(
     vibe_coupled_rolls=True,
     vibe_bg_init_external=1,
     vibe_bg_init_lookahead_n=0,
+    vibe_bg_init_mode=2,              # BG_INIT_MVTW
+    vibe_bg_init_mvtw_k=12,
 )
+
+# README demo profile, tuned for the synthetic + Pexels triptychs.
+#   bg backend            — ViBe + MVTW look-ahead init (k=12), inherited from
+#                           DEFAULT_VIBE. Look-ahead bank pre-loaded by Python
+#                           (compute_lookahead_median_bank with bg_init_mode=MVTW)
+#                           and consumed by RTL via $readmemh from init_bank.mem.
+#   scaler_en=False       — 320x240 panels (no 2x upscale)
+#   gamma_en=False        — sources are already sRGB-encoded
+#   alpha_shift / alpha_shift_slow / grace_frames — unused under ViBe; kept at
+#                           the inherited values for cfg_t completeness.
+DEMO: ProfileT = dict(
+    DEFAULT_VIBE, scaler_en=False, gamma_en=False,
+)
+
+# Demo-tuned sensitivity sweep #1: lower comparator radius R=12 (vs DEMO's 20).
+# Catches low-contrast moving objects (e.g. grey cars on grey road) at the
+# cost of more sensor-noise false positives.
+DEMO_R12: ProfileT = dict(DEMO, vibe_R=12)
+
+# Demo-tuned sensitivity sweep #2: K=20 bank slots (vs DEMO's 8). More votes
+# per pixel = better separation between BG and FG without changing R.
+DEMO_K20: ProfileT = dict(DEMO, vibe_K=20)
 
 # K=20 (literature-default; ~2.5x sample-bank RAM vs DEFAULT_VIBE).
 VIBE_K20: ProfileT = dict(DEFAULT_VIBE, vibe_K=20)
@@ -130,12 +146,37 @@ VIBE_NO_GAUSS: ProfileT = dict(DEFAULT_VIBE, gauss_en=False)
 # Legacy frame-0 init (no look-ahead). A/B vs DEFAULT_VIBE.
 VIBE_INIT_FRAME0: ProfileT = dict(DEFAULT_VIBE, vibe_bg_init_external=0)
 
-# default_vibe + external-init via lookahead-median ROM. Exercises the
-# $readmemh path end-to-end. Lookahead window = full source (sentinel 0).
+# Lookahead-median baseline: external-init ROM populated via the median
+# helper over the full source (sentinel 0). Pins mode=BG_INIT_MEDIAN so it
+# remains the comparison baseline for the bg_init experiment runner,
+# independent of any future DEFAULT_VIBE mode promotion.
 VIBE_INIT_EXTERNAL: ProfileT = dict(
     DEFAULT_VIBE,
     vibe_bg_init_external=1,
     vibe_bg_init_lookahead_n=0,
+    vibe_bg_init_mode=0,        # BG_INIT_MEDIAN (production baseline)
+    vibe_bg_init_mvtw_k=24,     # unused under mode=0; reset to package default
+)
+
+# Look-ahead bg init using the IMRM (iterative motion-rejected median) helper.
+VIBE_INIT_IMRM: ProfileT = dict(
+    VIBE_INIT_EXTERNAL,
+    vibe_bg_init_mode=1,
+    vibe_bg_init_imrm_tau=32,
+)
+
+# Look-ahead bg init using the MVTW (min-variance temporal window) helper.
+VIBE_INIT_MVTW: ProfileT = dict(
+    VIBE_INIT_EXTERNAL,
+    vibe_bg_init_mode=2,
+    vibe_bg_init_mvtw_k=12,
+)
+
+# Look-ahead bg init using the MAM (motion-aware median) helper.
+VIBE_INIT_MAM: ProfileT = dict(
+    VIBE_INIT_EXTERNAL,
+    vibe_bg_init_mode=3,
+    vibe_bg_init_mam_delta=6,
 )
 
 # PBAS — Hofmann et al. 2012, Y + gradient features. Verified defaults
@@ -214,6 +255,47 @@ DEMO_VIBE_DEMOTE: ProfileT = dict(
     vibe_demote_consistency_thresh=3,
 )
 
+# Demo-tuned MVTW init alone (no demote). For README-style WebPs comparing
+# MVTW look-ahead init against the median baseline and the demote mechanism.
+DEMO_INIT_MVTW: ProfileT = dict(
+    DEMO,
+    bg_model=1,
+    vibe_K=8,
+    vibe_R=20,
+    vibe_min_match=2,
+    vibe_phi_update=16,
+    vibe_phi_diffuse=16,
+    vibe_init_scheme=2,
+    vibe_prng_seed=0xDEADBEEF,
+    vibe_coupled_rolls=True,
+    vibe_bg_init_external=1,
+    vibe_bg_init_lookahead_n=0,
+    vibe_bg_init_mode=2,        # BG_INIT_MVTW
+    vibe_bg_init_mvtw_k=12,
+)
+
+# Demo-tuned combo: MVTW look-ahead init + persistence-based FG demotion.
+DEMO_INIT_DEMOTE: ProfileT = dict(
+    DEMO,
+    bg_model=1,
+    vibe_K=8,
+    vibe_R=20,
+    vibe_min_match=2,
+    vibe_phi_update=16,
+    vibe_phi_diffuse=16,
+    vibe_init_scheme=2,
+    vibe_prng_seed=0xDEADBEEF,
+    vibe_coupled_rolls=True,
+    vibe_bg_init_external=1,
+    vibe_bg_init_lookahead_n=0,
+    vibe_bg_init_mode=2,        # BG_INIT_MVTW
+    vibe_bg_init_mvtw_k=12,
+    vibe_demote_en=True,
+    vibe_demote_K_persist=30,
+    vibe_demote_kernel=3,
+    vibe_demote_consistency_thresh=3,
+)
+
 PROFILES: dict[str, ProfileT] = {
     "default":           DEFAULT,
     "default_hflip":     DEFAULT_HFLIP,
@@ -223,6 +305,8 @@ PROFILES: dict[str, ProfileT] = {
     "no_gamma_cor":      NO_GAMMA_COR,
     "no_scaler":         NO_SCALER,
     "demo":              DEMO,
+    "demo_r12":          DEMO_R12,
+    "demo_k20":          DEMO_K20,
     "no_hud":            NO_HUD,
     "default_vibe":      DEFAULT_VIBE,
     "vibe_k20":          VIBE_K20,
@@ -230,8 +314,13 @@ PROFILES: dict[str, ProfileT] = {
     "vibe_no_gauss":      VIBE_NO_GAUSS,
     "vibe_init_frame0":   VIBE_INIT_FRAME0,
     "vibe_init_external":      VIBE_INIT_EXTERNAL,
+    "vibe_init_imrm":     VIBE_INIT_IMRM,
+    "vibe_init_mvtw":     VIBE_INIT_MVTW,
+    "vibe_init_mam":      VIBE_INIT_MAM,
     "vibe_demote":                  VIBE_DEMOTE,
     "demo_vibe_demote":             DEMO_VIBE_DEMOTE,
+    "demo_init_mvtw":               DEMO_INIT_MVTW,
+    "demo_init_demote":             DEMO_INIT_DEMOTE,
     "pbas_default":                 PBAS_DEFAULT,
     "pbas_lookahead":               PBAS_LOOKAHEAD,
     "pbas_default_raute4":          PBAS_DEFAULT_RAUTE4,

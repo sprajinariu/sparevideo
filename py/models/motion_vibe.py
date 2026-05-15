@@ -22,6 +22,7 @@ from models.motion import (
     N_OUT, N_LABELS_INT, MIN_COMPONENT_PIXELS, MAX_CHAIN_DEPTH,
     PRIME_FRAMES, _draw_bboxes, _rgb_to_y,
 )
+from models.ops.bg_init import compute_bg_estimate
 from models.ops.morph_open import morph_open
 from models.ops.morph_close import morph_close
 from models.ops.vibe import INIT_SEED_MAGICS
@@ -90,6 +91,12 @@ def compute_lookahead_median_bank(
     k: int,
     lookahead_n: int,
     seed: int,
+    bg_init_mode: str = "median",
+    bg_init_imrm_tau: int = 20,
+    bg_init_imrm_iters: int = 3,
+    bg_init_mvtw_k: int = 24,
+    bg_init_mam_delta: int = 8,
+    bg_init_mam_dilate: int = 2,
 ) -> np.ndarray:
     """Compute the ViBe sample bank from a lookahead-median of RGB frames.
 
@@ -99,8 +106,10 @@ def compute_lookahead_median_bank(
     Algorithm:
       1. Convert each RGB frame to luma Y using project coefficients
          (77*R + 150*G + 29*B) >> 8 — matches ``_rgb_to_y`` / ``rgb2ycrcb.sv``.
-      2. Compute the per-pixel temporal median over the first ``lookahead_n``
-         frames (0 = all frames).
+      2. Compute the per-pixel BG estimate over the first ``lookahead_n``
+         frames (0 = all frames). Method is selected by ``bg_init_mode``:
+         "median" (default, paper-canonical), "imrm", "mvtw", or "mam".
+         See py/models/ops/bg_init.py.
       3. Seed a base as ``(seed ^ _ROM_SEED_DOMAIN_OFFSET) & 0xFFFFFFFF`` to
          avoid colliding with the RTL's self-init PRNG stream.  Construct
          N = ceil(K / 4) parallel Xorshift32 streams, each seeded as
@@ -131,8 +140,16 @@ def compute_lookahead_median_bank(
             f"lookahead_n={lookahead_n} out of range [1, {n_total}]"
         )
 
-    # Per-pixel temporal median → (H, W) uint8.
-    median = np.median(y_stack[:n], axis=0).astype(np.uint8)
+    # Per-pixel BG estimate over the lookahead window → (H, W) uint8.
+    median = compute_bg_estimate(
+        y_stack[:n],
+        mode=bg_init_mode,
+        imrm_tau=bg_init_imrm_tau,
+        imrm_iters=bg_init_imrm_iters,
+        mvtw_k=bg_init_mvtw_k,
+        mam_delta=bg_init_mam_delta,
+        mam_dilate=bg_init_mam_dilate,
+    )
     h, w = median.shape
 
     # Domain-separated base seed (avoids collision with self-init PRNG state).

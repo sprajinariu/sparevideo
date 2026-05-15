@@ -64,10 +64,12 @@ def _cfg_t_field_names() -> set[str]:
 
 EXPECTED_PROFILES = {
     "default", "default_hflip", "no_ema", "no_morph", "no_gauss",
-    "no_gamma_cor", "no_scaler", "demo", "no_hud",
+    "no_gamma_cor", "no_scaler", "demo", "demo_r12", "demo_k20", "no_hud",
     "default_vibe", "vibe_k20", "vibe_no_diffuse", "vibe_no_gauss",
     "vibe_init_frame0", "vibe_init_external",
+    "vibe_init_imrm", "vibe_init_mvtw", "vibe_init_mam",
     "vibe_demote", "demo_vibe_demote",
+    "demo_init_mvtw", "demo_init_demote",
     "pbas_default", "pbas_lookahead",
     "pbas_default_raute4", "pbas_default_raute4_rcap",
 }

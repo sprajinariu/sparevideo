@@ -36,6 +36,12 @@ def produce_masks_vibe(
     vibe_coupled_rolls: bool,
     vibe_bg_init_external: int,
     vibe_bg_init_lookahead_n: int,
+    vibe_bg_init_mode: int = 0,          # 0=median, 1=imrm, 2=mvtw, 3=mam
+    vibe_bg_init_imrm_tau: int = 20,
+    vibe_bg_init_imrm_iters: int = 3,
+    vibe_bg_init_mvtw_k: int = 24,
+    vibe_bg_init_mam_delta: int = 8,
+    vibe_bg_init_mam_dilate: int = 2,
     vibe_demote_en: bool = False,
     vibe_demote_K_persist: int = 30,
     vibe_demote_kernel: int = 3,
@@ -94,16 +100,28 @@ def produce_masks_vibe(
         # Lazy import to avoid circular import (motion_vibe → _vibe_mask → motion_vibe).
         from models.motion_vibe import compute_lookahead_median_bank  # noqa: PLC0415
         n = vibe_bg_init_lookahead_n  # 0 = all frames (compute_lookahead_median_bank sentinel)
+        _MODE_NAMES = {0: "median", 1: "imrm", 2: "mvtw", 3: "mam"}
         bank = compute_lookahead_median_bank(
             rgb_frames=frames,
             k=vibe_K,
             lookahead_n=n,
             seed=vibe_prng_seed,
+            bg_init_mode=_MODE_NAMES[int(vibe_bg_init_mode)],
+            bg_init_imrm_tau=int(vibe_bg_init_imrm_tau),
+            bg_init_imrm_iters=int(vibe_bg_init_imrm_iters),
+            bg_init_mvtw_k=int(vibe_bg_init_mvtw_k),
+            bg_init_mam_delta=int(vibe_bg_init_mam_delta),
+            bg_init_mam_dilate=int(vibe_bg_init_mam_dilate),
         )
         h_b, w_b, _ = bank.shape
         v.H = h_b
         v.W = w_b
         v.samples = bank
+        # Demote state — init_from_frame normally sets these; the external-init
+        # path bypasses it, so initialise explicitly here to match the canonical
+        # priming state (fg_count=0, prev_final_bg=all-True).
+        v.fg_count = np.zeros((h_b, w_b), dtype=np.uint8)
+        v.prev_final_bg = np.ones((h_b, w_b), dtype=bool)
         # v.prng_state is already vibe_prng_seed (set in ViBe.__init__) — no change needed.
     else:
         raise ValueError(f"unknown vibe_bg_init_external {vibe_bg_init_external}")
