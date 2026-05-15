@@ -23,6 +23,7 @@ from typing import Optional
 
 import numpy as np
 
+from models.ops.bg_init import compute_bg_estimate
 from models.ops.xorshift import xorshift32
 
 # Magic XOR constants for parallel init streams in _init_scheme_c.
@@ -118,18 +119,27 @@ class ViBe:
         self,
         frames: np.ndarray,
         lookahead_n: Optional[int] = None,
+        mode: str = "median",
+        imrm_tau: int = 20,
+        imrm_iters: int = 3,
+        mvtw_k: int = 24,
+        mam_delta: int = 8,
+        mam_dilate: int = 2,
     ) -> None:
-        """Seed the sample bank from a temporal median over the first
+        """Seed the sample bank from a per-pixel BG estimate over the first
         `lookahead_n` frames of `frames`. When `lookahead_n` is None, use
         all frames in the stack.
 
-        Equivalent to `init_from_frame(median(frames[:lookahead_n], axis=0))`
-        but routes through the configured init_scheme so noise structure
-        and PRNG advance count match the canonical frame-0 path.
+        The BG estimate is computed by `models.ops.bg_init.compute_bg_estimate`
+        with the selected `mode`:
+          - "median" (default): per-pixel temporal median (paper-canonical).
+          - "imrm":  iterative motion-rejected median.
+          - "mvtw":  per-pixel min-variance temporal window.
+          - "mam":   motion-aware (frame-diff outlier rejection) median.
 
-        Args:
-            frames: (N, H, W) uint8 stack of Y frames, N >= 1.
-            lookahead_n: number of leading frames to median over. None ⇒ all.
+        Routes the resulting BG image through the configured `init_scheme`
+        so noise structure and PRNG advance count match the canonical
+        frame-0 path.
         """
         assert frames.ndim == 3 and frames.dtype == np.uint8, \
             "frames must be a (N, H, W) uint8 stack"
@@ -138,8 +148,15 @@ class ViBe:
         n = n_total if lookahead_n is None else int(lookahead_n)
         assert 1 <= n <= n_total, \
             f"lookahead_n={lookahead_n} out of range [1, {n_total}]"
-        bg_est = np.median(frames[:n], axis=0).astype(np.uint8)
-        # Reuse the configured init scheme to seed the bank around bg_est.
+        bg_est = compute_bg_estimate(
+            frames[:n],
+            mode=mode,
+            imrm_tau=imrm_tau,
+            imrm_iters=imrm_iters,
+            mvtw_k=mvtw_k,
+            mam_delta=mam_delta,
+            mam_dilate=mam_dilate,
+        )
         self.init_from_frame(bg_est)
 
     def _init_scheme_c(self, frame_0: np.ndarray) -> None:

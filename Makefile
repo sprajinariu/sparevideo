@@ -151,13 +151,30 @@ prepare:
 	   vibe_k=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_K); \
 	   lookahead=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_lookahead_n); \
 	   seed=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_prng_seed); \
+	   mode_int=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_mode); \
+	   imrm_tau=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_imrm_tau); \
+	   imrm_iters=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_imrm_iters); \
+	   mvtw_k=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_mvtw_k); \
+	   mam_delta=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_mam_delta); \
+	   mam_dilate=$$($(VENV_PY) $(CURDIR)/py/profiles.py --query "$(CFG)" --field vibe_bg_init_mam_dilate); \
+	   case "$$mode_int" in \
+	     0) mode_name=median ;; 1) mode_name=imrm ;; \
+	     2) mode_name=mvtw   ;; 3) mode_name=mam  ;; \
+	     *) echo "ERROR: unknown vibe_bg_init_mode=$$mode_int" >&2; exit 1 ;; \
+	   esac; \
 	   $(VENV_PY) $(CURDIR)/py/gen_vibe_init_rom.py \
 	       --input  $(CURDIR)/$(DATA_DIR)/input.bin \
 	       --output $(CURDIR)/$(DATA_DIR)/init_bank.mem \
 	       --width  $(WIDTH) --height $(HEIGHT) \
 	       --k      $$vibe_k \
 	       --lookahead-n $$lookahead \
-	       --seed   $$seed; \
+	       --seed   $$seed \
+	       --bg-init-mode       $$mode_name \
+	       --bg-init-imrm-tau   $$imrm_tau \
+	       --bg-init-imrm-iters $$imrm_iters \
+	       --bg-init-mvtw-k     $$mvtw_k \
+	       --bg-init-mam-delta  $$mam_delta \
+	       --bg-init-mam-dilate $$mam_dilate; \
 	   printf 'VIBE_BG_INIT_EXTERNAL=1\nVIBE_INIT_BANK_FILE=%s\n' \
 	       '$(CURDIR)/$(DATA_DIR)/init_bank.mem' >> $(DATA_DIR)/config.mk; \
 	 else \
@@ -207,19 +224,21 @@ render:
 #   2. `make demo-publish` promotes them to $(DEMO_PUBLISH_DIR) — the path
 #      referenced by the README.
 
-# RTL-backend (publishable) demo length: 3 s @ 15 fps.
-DEMO_PUBLISH_FRAMES ?= 45
+# RTL-backend (publishable) demo length: 10 s @ 15 fps (matches EXP=1 length).
+DEMO_PUBLISH_FRAMES ?= 150
 # Model-backend (EXP=1) demo length: full 10 s master @ 15 fps.
 DEMO_EXP_FRAMES     ?= 150
 
-# Per-clip EXP frame count overrides. If unset, the clip uses DEMO_EXP_FRAMES.
-# Set when a clip's stabilized master is shorter than DEMO_EXP_FRAMES (because
-# only a portion of the raw was usable — typically a scene cut or motion artifact).
-DEMO_EXP_FRAMES_people ?= 75   # raw has a scene cut at ~5 s; only first 5 s usable
+# Per-clip frame count overrides. If unset, the clip uses the global default
+# (DEMO_PUBLISH_FRAMES for RTL, DEMO_EXP_FRAMES for EXP=1). Set when a clip's
+# stabilized master is shorter than the default (typically a scene cut).
+DEMO_EXP_FRAMES_people     ?= 75   # raw has a scene cut at ~5 s; only first 5 s usable
+DEMO_PUBLISH_FRAMES_people ?= 75   # same constraint applies to the RTL backend
 
-# Resolve EXP frame count for a given clip name, falling back to the global default.
-# Usage: $(call demo_exp_frames,<clip-name>)
-demo_exp_frames = $(or $(DEMO_EXP_FRAMES_$(1)),$(DEMO_EXP_FRAMES))
+# Resolve frame count for a given clip name, falling back to the global default.
+# Usage: $(call demo_exp_frames,<clip-name>) / $(call demo_publish_frames,<clip-name>)
+demo_exp_frames     = $(or $(DEMO_EXP_FRAMES_$(1)),$(DEMO_EXP_FRAMES))
+demo_publish_frames = $(or $(DEMO_PUBLISH_FRAMES_$(1)),$(DEMO_PUBLISH_FRAMES))
 
 DEMO_WIDTH          ?= 320
 DEMO_HEIGHT         ?= 240
@@ -284,36 +303,46 @@ demo-real: $(REAL_SOURCES:%=demo-real-%)
 ifeq ($(EXP),1)
 demo-real-%: DEMO_REAL_FRAMES = $(call demo_exp_frames,$*)
 else
-demo-real-%: DEMO_REAL_FRAMES = $(DEMO_FRAMES)
+demo-real-%: DEMO_REAL_FRAMES = $(call demo_publish_frames,$*)
+endif
+
+# DEMO_CFG selects the profile used for prepare/compile/sim/model. Default
+# `demo` (EMA-based). Non-default values append the profile name to the
+# output webp basename so different CFGs don't clobber each other.
+DEMO_CFG ?= demo
+ifeq ($(DEMO_CFG),demo)
+DEMO_OUT_SUFFIX :=
+else
+DEMO_OUT_SUFFIX := -$(DEMO_CFG)
 endif
 
 demo-real-%:
 	$(MAKE) prepare SOURCE=$(CURDIR)/media/source/$*-$(DEMO_WIDTH)x$(DEMO_HEIGHT).mp4 \
-	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_REAL_FRAMES) MODE=binary CFG=demo
+	    WIDTH=$(DEMO_WIDTH) HEIGHT=$(DEMO_HEIGHT) FRAMES=$(DEMO_REAL_FRAMES) MODE=binary CFG=$(DEMO_CFG)
 ifeq ($(DEMO_BACKEND),rtl)
-	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=demo
-	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=demo
+	$(MAKE) compile CTRL_FLOW=ccl_bbox CFG=$(DEMO_CFG)
+	$(MAKE) sim     CTRL_FLOW=ccl_bbox CFG=$(DEMO_CFG)
 	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_ccl_bbox.bin
-	$(MAKE) compile CTRL_FLOW=motion CFG=demo
-	$(MAKE) sim     CTRL_FLOW=motion CFG=demo
+	$(MAKE) compile CTRL_FLOW=motion CFG=$(DEMO_CFG)
+	$(MAKE) sim     CTRL_FLOW=motion CFG=$(DEMO_CFG)
 	cp $(CURDIR)/dv/data/output.bin $(CURDIR)/dv/data/output_motion.bin
 else
 	cd py && $(HARNESS) model --input $(CURDIR)/dv/data/input.bin \
 	    --output $(CURDIR)/dv/data/output_ccl_bbox.bin \
-	    --mode binary --ctrl-flow ccl_bbox --cfg demo
+	    --mode binary --ctrl-flow ccl_bbox --cfg $(DEMO_CFG)
 	cd py && $(HARNESS) model --input $(CURDIR)/dv/data/input.bin \
 	    --output $(CURDIR)/dv/data/output_motion.bin \
-	    --mode binary --ctrl-flow motion --cfg demo
+	    --mode binary --ctrl-flow motion --cfg $(DEMO_CFG)
 endif
 	@mkdir -p $(DEMO_DRAFT_DIR)
 	cd $(CURDIR) && PYTHONPATH=py $(VENV_PY) -m demo \
 	    --input  dv/data/input.bin \
 	    --ccl    dv/data/output_ccl_bbox.bin \
 	    --motion dv/data/output_motion.bin \
-	    --out    $(DEMO_DRAFT_DIR)/$*.webp \
+	    --out    $(DEMO_DRAFT_DIR)/$*$(DEMO_OUT_SUFFIX).webp \
 	    --width $(DEMO_WIDTH) --height $(DEMO_HEIGHT) --frames $(DEMO_REAL_FRAMES) \
 	    --fps   $(DEMO_FPS)
-	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/$*.webp — run 'make demo-publish' to promote."
+	@echo "Draft WebP written to $(DEMO_DRAFT_DIR)/$*$(DEMO_OUT_SUFFIX).webp — run 'make demo-publish' to promote."
 
 # Promote draft WebPs to the README-referenced media/demo/ dir.
 # WHICH=both|synthetic|<real-name> selects which panels to publish; default both.

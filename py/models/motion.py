@@ -81,7 +81,10 @@ def _compute_mask(y_cur, y_ref, thresh):
 
 
 # CCL defaults — mirror the RTL parameters. Keep in sync with sparevideo_pkg.
-N_OUT                = 32
+# Env-var override (SPAREVIDEO_N_OUT) is for one-off Python sweeps; the RTL
+# value is locked to sparevideo_pkg.CCL_N_OUT.
+import os as _os  # noqa: PLC0415
+N_OUT                = int(_os.environ.get("SPAREVIDEO_N_OUT", "32"))
 N_LABELS_INT         = 64
 MIN_COMPONENT_PIXELS = 16
 MAX_CHAIN_DEPTH      = 8
